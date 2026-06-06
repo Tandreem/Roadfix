@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RoadFix Admin Panel</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import { getDatabase, ref, onValue, set, push, update, remove, get } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",
+  authDomain: "roadfix-demo.firebaseapp.com",
+  databaseURL: "https://roadfix-demo-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "roadfix-demo",
+  storageBucket: "roadfix-demo.firebasestorage.app",
+  messagingSenderId: "274952184107",
+  appId: "1:274952184107:web:63188439d92ec31103a56e"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db  = getDatabase(app);
+
+// ── AUTH ────────────────────────────────────────────
+onAuthStateChanged(auth, user => {
+  if (user) {
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('admin-app').style.display   = 'flex';
+    document.getElementById('admin-email').textContent   = user.email;
+    startListeners();
+  } else {
+    document.getElementById('login-screen').style.display = 'flex';
+    document.getElementById('admin-app').style.display   = 'none';
+  }
+});
+
+window.adminLogin = async function() {
+  const e = document.getElementById('al-email').value.trim();
+  const p = document.getElementById('al-pass').value;
+  const err = document.getElementById('al-err');
+  err.textContent = 'Signing in...';
+  try { await signInWithEmailAndPassword(auth, e, p); err.textContent = ''; }
+  catch(ex) { err.textContent = 'Invalid credentials'; }
+};
+window.adminLogout = () => signOut(auth);
+
+// ── COUNTERS ─────────────────────────────────────────
+let allJobs={}, allMechs={}, allCusts={}, allAlerts={};
+
+function startListeners() {
+  // JOBS
+  onValue(ref(db,'jobs'), snap => {
+    allJobs = snap.val() || {};
+    renderJobs();
+    updateDashboard();
+  });
+  // MECHANICS
+  onValue(ref(db,'mechanics'), snap => {
+    allMechs = snap.val() || {};
+    renderMechanics();
+    updateDashboard();
+  });
+  // CUSTOMERS
+  onValue(ref(db,'customers'), snap => {
+    allCusts = snap.val() || {};
+    renderCustomers();
+    updateDashboard();
+  });
+  // ALERTS — SOS real time
+  onValue(ref(db,'alerts'), snap => {
+    allAlerts = snap.val() || {};
+    renderAlerts();
+    updateDashboard();
+    // show sidebar SOS badge
+    const active = Object.values(allAlerts).filter(a=>a.status==='active');
+    const sb = document.getElementById('sos-sidebar');
+    const badge = document.getElementById('sos-top-badge');
+    if (active.length > 0) {
+      if (sb) { sb.style.display='flex'; sb.querySelector('.sos-count').textContent = active.length + ' Active SOS'; }
+      if (badge) { badge.textContent = '🆘 '+active.length+' SOS'; badge.style.display='inline-flex'; }
+    } else {
+      if (sb) sb.style.display='none';
+      if (badge) badge.style.display='none';
+    }
+  });
+}
+
+// ── DASHBOARD ────────────────────────────────────────
+function updateDashboard() {
+  const jobs   = Object.values(allJobs);
+  const mechs  = Object.values(allMechs);
+  const custs  = Object.values(allCusts);
+  const alerts = Object.values(allAlerts);
+
+  const active  = jobs.filter(j=>j.status&&j.status!=='done').length;
+  const done    = jobs.filter(j=>j.status==='done').length;
+  const gmv     = jobs.filter(j=>j.finalPrice).reduce((s,j)=>s+(j.finalPrice||0),0);
+  const online  = mechs.filter(m=>m.status==='online'||m.status==='enroute').length;
+  const sosAct  = alerts.filter(a=>a.status==='active').length;
+
+  setText('d-active',   active);
+  setText('d-done',     done);
+  setText('d-mechs',    online);
+  setText('d-custs',    custs.length);
+  setText('d-gmv',      gmv>0?'₹'+gmv.toLocaleString('en-IN'):'₹0');
+  setText('d-sos',      sosAct);
+  setText('d-alerts',   Object.keys(allAlerts).length);
+  setText('d-verified', mechs.filter(m=>m.verified).length);
+}
+
+// ── JOBS TABLE ───────────────────────────────────────
+function renderJobs() {
+  const tbody = document.getElementById('jobs-tbody');
+  if (!tbody) return;
+  const list = Object.values(allJobs).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+  if (list.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="9" class="empty-row">No jobs yet — open Customer app and create a job</td></tr>';
+    return;
+  }
+  tbody.innerHTML = list.map(j => `
+    <tr class="${j.status==='done'?'row-done':''}">
+      <td><span class="mono">#${j.id||'—'}</span></td>
+      <td>${j.customerName||'—'}</td>
+      <td>${j.mechanic||'<span class="muted">Unassigned</span>'}</td>
+      <td>${j.issue||'—'}</td>
+      <td class="price-cell">${j.status==='done'&&j.finalPrice?'<span class="final-price">₹'+j.finalPrice+'</span>':'<span class="est-price">₹'+(j.estimateLow||'?')+'–'+(j.estimateHigh||'?')+'</span>'}</td>
+      <td><span class="bdg ${sBadge(j.status)}">${sLabel(j.status)}</span></td>
+      <td><span class="bdg ${pBadge(j.partType)}">${j.partType||'—'}</span></td>
+      <td class="muted">${j.location||'—'}</td>
+      <td class="muted">${ago(j.createdAt)}</td>
+    </tr>`).join('');
+}
+
+// ── MECHANICS TABLE ──────────────────────────────────
+function renderMechanics() {
+  const tbody = document.getElementById('mechs-tbody');
+  if (!tbody) return;
+  const list = Object.entries(allMechs).sort((a,b)=>(b[1].createdAt||0)-(a[1].createdAt||0));
+  if (list.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-row">No mechanics registered — open Mechanic app and register</td></tr>';
+    return;
+  }
+  tbody.innerHTML = list.map(([uid,m]) => `
+    <tr>
+      <td><div class="mech-name-cell"><div class="mini-av" style="background:#1D4ED8">${(m.name||'M').substr(0,2).toUpperCase()}</div>${m.name||'—'}</div></td>
+      <td>${m.phone||'—'}</td>
+      <td>${m.city||'—'}</td>
+      <td>${m.skills||'General'}</td>
+      <td><span class="${m.gpsOn?'status-on':'status-off'}">${m.gpsOn?'📍 ON':'OFF'}</span></td>
+      <td><span class="${m.bodycam?'status-on':'status-off'}">${m.bodycam?'🎥 ON':'OFF'}</span></td>
+      <td><span class="bdg ${m.status==='online'?'b-g':m.status==='enroute'?'b-p':m.status==='fixing'?'b-b':'b-off'}">${m.status||'offline'}</span></td>
+      <td>
+        <span class="bdg ${m.verified?'b-g':'b-y'}">${m.verified?'✅ Verified':'⏳ Pending'}</span>
+        ${!m.verified?`<button class="action-btn" onclick="verifyMech('${uid}')">Verify</button>`:''}
+      </td>
+    </tr>`).join('');
+}
+
+// ── CUSTOMERS TABLE ──────────────────────────────────
+function renderCustomers() {
+  const tbody = document.getElementById('custs-tbody');
+  if (!tbody) return;
+  const list = Object.entries(allCusts).sort((a,b)=>(b[1].createdAt||0)-(a[1].createdAt||0));
+  if (list.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-row">No customers registered — open Customer app and register</td></tr>';
+    return;
+  }
+  tbody.innerHTML = list.map(([uid,c]) => `
+    <tr>
+      <td><div class="mech-name-cell"><div class="mini-av" style="background:var(--or2);color:var(--or);border:1px solid var(--or)">${(c.name||'C').substr(0,2).toUpperCase()}</div>${c.name||'—'}</div></td>
+      <td>${c.phone||'—'}</td>
+      <td>${c.email||'—'}</td>
+      <td>${c.city||'—'}</td>
+      <td class="muted">${ago(c.createdAt)}</td>
+      <td><span class="bdg b-g">Active</span></td>
+    </tr>`).join('');
+}
+
+// ── ALERTS PANEL ─────────────────────────────────────
+function renderAlerts() {
+  const container = document.getElementById('alerts-container');
+  if (!container) return;
+  const list = Object.entries(allAlerts).sort((a,b)=>(b[1].time||0)-(a[1].time||0));
+  if (list.length === 0) {
+    container.innerHTML = '<div class="empty-card">No alerts. SOS alerts from customer and mechanic apps appear here in real time.</div>';
+    return;
+  }
+  container.innerHTML = list.map(([id,a]) => `
+    <div class="alert-card ${a.status==='active'?'alert-active':'alert-done'}">
+      <div class="alert-ico">${a.type&&a.type.includes('sos')?'🆘':'⚠️'}</div>
+      <div class="alert-body">
+        <div class="alert-title">${a.type==='customer_sos'?'Customer SOS':a.type==='mechanic_sos'?'Mechanic SOS':'Alert'} — <strong>${a.name||'Unknown'}</strong></div>
+        <div class="alert-sub">📍 ${a.location||'Location unknown'} · 📞 ${a.phone||'—'} · App: ${a.app||'unknown'}</div>
+        <div class="alert-sub muted">${new Date(a.time||Date.now()).toLocaleString('en-IN')}</div>
+      </div>
+      <div class="alert-actions">
+        <span class="bdg ${a.status==='active'?'b-r':'b-g'}">${a.status||'active'}</span>
+        ${a.status==='active'?`<button class="action-btn green" onclick="resolveAlert('${id}')">Resolve</button>`:''}
+      </div>
+    </div>`).join('');
+}
+
+// ── ACTIONS ──────────────────────────────────────────
+window.verifyMech = function(uid) {
+  update(ref(db,'mechanics/'+uid),{verified:true});
+};
+window.resolveAlert = function(id) {
+  update(ref(db,'alerts/'+id),{status:'resolved'});
+};
+
+// ── HELPERS ──────────────────────────────────────────
+function setText(id,val){const e=document.getElementById(id);if(e)e.textContent=val;}
+function ago(ts){if(!ts)return'—';const s=Math.floor((Date.now()-ts)/1000);if(s<60)return s+'s ago';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago';}
+function sLabel(s){return{pending:'Pending',searching_mechanic:'Searching',mechanic_assigned:'Assigned',enroute:'En route',fixing:'Fixing',done:'Done ✓',declined:'Declined'}[s]||s||'—';}
+function sBadge(s){return{done:'b-g',fixing:'b-b',enroute:'b-p',mechanic_assigned:'b-b',searching_mechanic:'b-o',pending:'b-y',declined:'b-off'}[s]||'b-y';}
+function pBadge(t){return t==='OEM'?'b-b':t==='ODM'?'b-g':'b-y';}
+
+// ── LIVE CLOCK ───────────────────────────────────────
+setInterval(()=>{
+  const el=document.getElementById('live-time');
+  if(el)el.textContent=new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+},1000);
+</script>
+
+<style>
+:root{
+  --bg:#080C18;--bg2:#0F1626;--bg3:#162035;--card:#111E33;
+  --bdr:rgba(255,255,255,0.06);--bdr2:rgba(255,255,255,0.11);
+  --tx:#EEF2FF;--tx2:#7B90B8;--tx3:#3D5070;
+  --or:#F97316;--or2:rgba(249,115,22,0.13);
+  --bl:#3B82F6;--bl2:rgba(59,130,246,0.13);
+  --gn:#22C55E;--gn2:rgba(34,197,94,0.11);
+  --rd:#EF4444;--rd2:rgba(239,68,68,0.12);
+  --yw:#EAB308;--yw2:rgba(234,179,8,0.11);
+  --pu:#A855F7;--pu2:rgba(168,85,247,0.11);
+  --r:10px;--r2:16px;
+  --fh:'Syne',sans-serif;--fb:'DM Sans',sans-serif;
+  --sidebar:230px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:var(--bg);font-family:var(--fb);color:var(--tx)}
+
+/* LOGIN */
+#login-screen{position:fixed;inset:0;background:radial-gradient(ellipse at 50% 0%,rgba(249,115,22,.08),transparent 70%),var(--bg);display:flex;align-items:center;justify-content:center;z-index:999;padding:24px}
+.login-box{background:var(--card);border:1px solid var(--bdr2);border-radius:var(--r2);padding:32px;width:100%;max-width:380px}
+.login-logo{font-family:var(--fh);font-size:28px;font-weight:800;text-align:center;margin-bottom:4px}
+.login-logo em{color:var(--or);font-style:normal}
+.login-sub{font-size:13px;color:var(--tx2);text-align:center;margin-bottom:24px}
+.field{margin-bottom:13px}
+.field label{display:block;font-size:12px;font-weight:500;color:var(--tx2);margin-bottom:5px}
+.field input{background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:14px;padding:11px 13px;width:100%;outline:none;transition:border .2s}
+.field input:focus{border-color:var(--or)}
+.field input::placeholder{color:var(--tx3)}
+.login-err{font-size:12px;color:var(--rd);text-align:center;margin-bottom:10px;min-height:16px}
+.login-hint{font-size:11px;color:var(--tx3);text-align:center;margin-top:12px;line-height:1.6}
+.login-hint strong{color:var(--or)}
+.btn-login{width:100%;background:var(--or);color:#fff;border:none;border-radius:var(--r);padding:13px;font-family:var(--fh);font-size:15px;font-weight:700;cursor:pointer;transition:transform .15s}
+.btn-login:active{transform:scale(.97)}
+
+/* APP SHELL */
+#admin-app{display:none;height:100vh;overflow:hidden}
+.sidebar{width:var(--sidebar);flex-shrink:0;background:var(--bg2);border-right:1px solid var(--bdr);display:flex;flex-direction:column;height:100vh;overflow-y:auto}
+.sidebar::-webkit-scrollbar{display:none}
+.sb-logo{padding:20px 16px 16px;border-bottom:1px solid var(--bdr)}
+.sb-logo-t{font-family:var(--fh);font-size:19px;font-weight:800}
+.sb-logo-t em{color:var(--or);font-style:normal}
+.sb-logo-s{font-size:11px;color:var(--tx3);margin-top:2px}
+.sb-live{display:flex;align-items:center;gap:6px;padding:8px 14px;font-size:11px;color:var(--gn);border-bottom:1px solid var(--bdr)}
+.live-dot{width:7px;height:7px;border-radius:50%;background:var(--gn);animation:blink 1.2s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
+.sb-sos{background:var(--rd2);border:1px solid rgba(239,68,68,.25);border-radius:var(--r);padding:9px 12px;margin:8px 10px;display:flex;align-items:center;gap:8px;cursor:pointer;animation:blink 1.5s infinite;display:none}
+.sos-count{font-family:var(--fh);font-size:12px;font-weight:700;color:var(--rd)}
+.sb-section{padding:12px 12px 5px;font-family:var(--fh);font-size:10px;font-weight:700;color:var(--tx3);letter-spacing:.1em;text-transform:uppercase}
+.sb-item{display:flex;align-items:center;gap:8px;padding:8px 13px;margin:1px 6px;border-radius:var(--r);cursor:pointer;transition:background .15s;font-size:13px;color:var(--tx2)}
+.sb-item:hover{background:var(--bg3)}.sb-item.active{background:var(--or2);color:var(--or)}
+.sb-ico{font-size:16px;width:20px;text-align:center;flex-shrink:0}
+.sb-bottom{margin-top:auto;padding:12px;border-top:1px solid var(--bdr)}
+.sb-user{display:flex;align-items:center;gap:8px;padding:6px}
+.sb-av{width:30px;height:30px;border-radius:50%;background:var(--or2);border:1.5px solid var(--or);display:flex;align-items:center;justify-content:center;font-family:var(--fh);font-size:11px;font-weight:700;color:var(--or)}
+
+/* MAIN */
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+.topbar{flex-shrink:0;padding:14px 20px;background:var(--bg2);border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;gap:12px}
+.tb-title{font-family:var(--fh);font-size:17px;font-weight:700;white-space:nowrap}
+.tb-right{display:flex;align-items:center;gap:10px;flex-shrink:0}
+.tb-time{font-size:12px;color:var(--tx2);font-family:monospace}
+.tb-sos-btn{background:var(--rd);color:#fff;border:none;border-radius:var(--r);padding:6px 12px;font-family:var(--fh);font-size:12px;font-weight:700;cursor:pointer;display:none}
+.content{flex:1;overflow-y:auto;padding:18px 20px}
+.content::-webkit-scrollbar{width:4px}.content::-webkit-scrollbar-thumb{background:var(--bdr2);border-radius:2px}
+.view{display:none}.view.active{display:block}
+
+/* ATOMS */
+.bdg{display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;white-space:nowrap}
+.b-g{background:var(--gn2);color:var(--gn)}.b-o{background:var(--or2);color:var(--or)}.b-r{background:var(--rd2);color:var(--rd)}.b-b{background:var(--bl2);color:var(--bl)}.b-y{background:var(--yw2);color:var(--yw)}.b-p{background:var(--pu2);color:var(--pu)}.b-off{background:rgba(255,255,255,.06);color:var(--tx2)}
+.muted{color:var(--tx2)}
+.mono{font-family:monospace;font-size:12px;color:var(--tx3)}
+.final-price{font-family:var(--fh);font-weight:700;color:var(--or)}
+.est-price{font-size:12px;color:var(--yw)}
+.empty-row{text-align:center;color:var(--tx3);padding:28px 20px;font-size:13px}
+.empty-card{text-align:center;color:var(--tx3);padding:40px 20px;font-size:13px;background:var(--card);border-radius:var(--r2);border:1px solid var(--bdr)}
+.status-on{color:var(--gn);font-size:12px;font-weight:500}
+.status-off{color:var(--tx3);font-size:12px}
+.action-btn{background:var(--bl2);color:var(--bl);border:none;border-radius:6px;padding:3px 10px;font-size:11px;font-weight:600;cursor:pointer;margin-left:5px;font-family:var(--fh)}
+.action-btn.green{background:var(--gn2);color:var(--gn)}
+.action-btn:hover{opacity:.8}
+
+/* KPI GRID */
+.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+.kpi-grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
+.kpi{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:14px}
+.kpi-ico{font-size:22px;margin-bottom:8px}
+.kpi-val{font-family:var(--fh);font-size:24px;font-weight:800;margin-bottom:2px}
+.kpi-lbl{font-size:12px;color:var(--tx2)}
+.kpi-sub{font-size:11px;color:var(--tx3);margin-top:3px}
+
+/* TABLES */
+.table-wrap{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);overflow:hidden;margin-bottom:14px}
+.table-head{padding:12px 16px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between}
+.table-head-title{font-family:var(--fh);font-size:13px;font-weight:700}
+table{width:100%;border-collapse:collapse}
+th{font-family:var(--fh);font-size:10px;font-weight:700;color:var(--tx3);letter-spacing:.07em;text-transform:uppercase;padding:9px 12px;text-align:left;border-bottom:1px solid var(--bdr);white-space:nowrap}
+td{padding:9px 12px;border-bottom:1px solid var(--bdr);font-size:13px;vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:rgba(255,255,255,.015)}
+tr.row-done td{opacity:.6}
+.mech-name-cell{display:flex;align-items:center;gap:8px}
+.mini-av{width:28px;height:28px;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;font-family:var(--fh);font-size:11px;font-weight:700;flex-shrink:0}
+
+/* ALERTS */
+.alert-card{display:flex;align-items:flex-start;gap:12px;padding:13px 15px;border-radius:var(--r2);margin-bottom:9px;border:1px solid var(--bdr)}
+.alert-active{background:var(--rd2);border-color:rgba(239,68,68,.3);animation:blink 2s 4}
+.alert-done{background:var(--card);opacity:.7}
+.alert-ico{font-size:24px;flex-shrink:0}
+.alert-body{flex:1;min-width:0}
+.alert-title{font-size:13px;font-weight:600;margin-bottom:3px}
+.alert-sub{font-size:12px;color:var(--tx2);margin-top:2px;line-height:1.4}
+.alert-actions{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0}
+
+/* LIVE MAP placeholder */
+.map-panel{background:var(--bg3);border-radius:var(--r2);border:1px solid var(--bdr2);height:280px;position:relative;overflow:hidden;margin-bottom:14px;display:flex;align-items:center;justify-content:center}
+.map-inner{width:100%;height:100%}
+
+/* INFO BOXES */
+.info-box{background:linear-gradient(135deg,rgba(249,115,22,.1),rgba(249,115,22,.03));border:1px solid rgba(249,115,22,.22);border-radius:var(--r2);padding:16px;margin-bottom:14px}
+.info-box h3{font-family:var(--fh);font-size:15px;font-weight:700;color:var(--or);margin-bottom:10px}
+.info-step{display:flex;align-items:flex-start;gap:10px;margin-bottom:9px;font-size:13px;line-height:1.6;color:var(--tx2)}
+.info-n{width:22px;height:22px;border-radius:50%;background:var(--or);color:#fff;display:flex;align-items:center;justify-content:center;font-family:var(--fh);font-size:11px;font-weight:700;flex-shrink:0;margin-top:1px}
+code{background:var(--bg3);border:1px solid var(--bdr2);border-radius:4px;padding:1px 6px;font-family:monospace;font-size:12px;color:var(--or)}
+
+/* DATA STRUCTURE */
+.data-tree{background:var(--bg3);border-radius:var(--r);padding:14px;font-family:monospace;font-size:12px;color:var(--tx2);line-height:1.8;overflow-x:auto}
+.data-tree .key{color:var(--bl)}.data-tree .val{color:var(--gn)}.data-tree .str{color:var(--or)}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-screen">
+  <div class="login-box">
+    <div class="login-logo">Road<em>Fix</em> Admin</div>
+    <div class="login-sub">Company manager login</div>
+    <div class="field"><label>Admin email</label><input id="al-email" type="email" placeholder="admin@roadfix.in" autocomplete="email"></div>
+    <div class="field"><label>Password</label><input id="al-pass" type="password" placeholder="••••••••" autocomplete="current-password"></div>
+    <div class="login-err" id="al-err"></div>
+    <button class="btn-login" onclick="adminLogin()">Sign in to admin panel →</button>
+    <div class="login-hint">Use your <strong>Firebase admin email & password</strong><br>Same credentials you used to create the Firebase project</div>
+  </div>
+</div>
+
+<!-- ADMIN APP -->
+<div id="admin-app" style="display:none;height:100vh;overflow:hidden;display:flex">
+
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+    <div class="sb-logo">
+      <div class="sb-logo-t">Road<em>Fix</em></div>
+      <div class="sb-logo-s">Admin Control Panel</div>
+    </div>
+    <div class="sb-live"><div class="live-dot"></div>Firebase connected · Live</div>
+
+    <!-- SOS ALERT IN SIDEBAR -->
+    <div class="sb-sos" id="sos-sidebar" onclick="showView('v-alerts')">
+      <span style="font-size:18px">🆘</span>
+      <div><div class="sos-count">Active SOS</div><div style="font-size:11px;color:var(--tx2);margin-top:1px">Tap to view</div></div>
+    </div>
+
+    <div class="sb-section">Operations</div>
+    <div class="sb-item active" id="si-dash"    onclick="showView('v-dash')"><div class="sb-ico">📊</div>Dashboard</div>
+    <div class="sb-item"        id="si-jobs"    onclick="showView('v-jobs')"><div class="sb-ico">🔧</div>Live jobs</div>
+    <div class="sb-item"        id="si-alerts"  onclick="showView('v-alerts')"><div class="sb-ico">🚨</div>Alerts & SOS</div>
+    <div class="sb-item"        id="si-map"     onclick="showView('v-map')"><div class="sb-ico">🗺️</div>Live map</div>
+
+    <div class="sb-section">People</div>
+    <div class="sb-item" id="si-mechs"  onclick="showView('v-mechs')"><div class="sb-ico">👷</div>Mechanics</div>
+    <div class="sb-item" id="si-custs"  onclick="showView('v-custs')"><div class="sb-ico">👥</div>Customers</div>
+
+    <div class="sb-section">More</div>
+    <div class="sb-item" id="si-setup"  onclick="showView('v-setup')"><div class="sb-ico">⚙️</div>Setup guide</div>
+
+    <div class="sb-bottom">
+      <div class="sb-user">
+        <div class="sb-av">AD</div>
+        <div style="min-width:0">
+          <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="admin-email">admin</div>
+          <div style="font-size:11px;color:var(--tx3)">Super admin</div>
+        </div>
+      </div>
+      <button style="width:100%;background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);padding:8px;color:var(--tx2);font-size:12px;cursor:pointer;margin-top:6px;font-family:var(--fh);font-weight:600" onclick="adminLogout()">Sign out</button>
+    </div>
+  </div>
+
+  <!-- MAIN AREA -->
+  <div class="main">
+    <div class="topbar">
+      <div class="tb-title" id="tb-title">Dashboard</div>
+      <div class="tb-right">
+        <div class="tb-time" id="live-time">—</div>
+        <span class="bdg b-r tb-sos-btn" id="sos-top-badge" style="display:none;cursor:pointer" onclick="showView('v-alerts')">🆘 0 SOS</span>
+      </div>
+    </div>
+
+    <div class="content">
+
+      <!-- ═══ DASHBOARD ═══ -->
+      <div id="v-dash" class="view active">
+        <div class="kpi-grid">
+          <div class="kpi"><div class="kpi-ico">🔧</div><div class="kpi-val" style="color:var(--or)" id="d-active">0</div><div class="kpi-lbl">Active jobs</div><div class="kpi-sub">Real time</div></div>
+          <div class="kpi"><div class="kpi-ico">✅</div><div class="kpi-val" style="color:var(--gn)" id="d-done">0</div><div class="kpi-lbl">Completed</div><div class="kpi-sub">All time</div></div>
+          <div class="kpi"><div class="kpi-ico">👷</div><div class="kpi-val" style="color:var(--bl)" id="d-mechs">0</div><div class="kpi-lbl">Mechanics online</div><div class="kpi-sub">GPS tracked</div></div>
+          <div class="kpi"><div class="kpi-ico">💰</div><div class="kpi-val" style="color:var(--gn)" id="d-gmv">₹0</div><div class="kpi-lbl">GMV (paid jobs)</div><div class="kpi-sub">Final prices</div></div>
+        </div>
+        <div class="kpi-grid">
+          <div class="kpi"><div class="kpi-ico">👥</div><div class="kpi-val" style="color:var(--yw)" id="d-custs">0</div><div class="kpi-lbl">Registered customers</div></div>
+          <div class="kpi"><div class="kpi-ico">🚨</div><div class="kpi-val" style="color:var(--rd)" id="d-sos">0</div><div class="kpi-lbl">Active SOS alerts</div></div>
+          <div class="kpi"><div class="kpi-ico">🔔</div><div class="kpi-val" id="d-alerts">0</div><div class="kpi-lbl">Total alerts</div></div>
+          <div class="kpi"><div class="kpi-ico">✅</div><div class="kpi-val" style="color:var(--gn)" id="d-verified">0</div><div class="kpi-lbl">Verified mechanics</div></div>
+        </div>
+
+        <!-- HOW TO TEST -->
+        <div class="info-box">
+          <h3>🎯 How to test real-time sync</h3>
+          <div class="info-step"><div class="info-n">1</div><div>Open <strong style="color:var(--or)">Customer app</strong> in another tab → Register → Report issue → AI diagnose → Book mechanic → watch job appear in Live Jobs below</div></div>
+          <div class="info-step"><div class="info-n">2</div><div>Open <strong style="color:var(--gn)">Mechanic app</strong> in a third tab → Register → toggle online → accept the gig → status updates here live</div></div>
+          <div class="info-step"><div class="info-n">3</div><div>Press <strong style="color:var(--rd)">SOS</strong> in either app → alert appears in the Alerts tab within 1 second with GPS location</div></div>
+          <div class="info-step"><div class="info-n">4</div><div>New mechanic registrations appear in the <strong>Mechanics</strong> tab — click <strong>Verify</strong> to mark them verified</div></div>
+        </div>
+
+        <!-- RECENT JOBS PREVIEW -->
+        <div class="table-wrap">
+          <div class="table-head"><div class="table-head-title">Recent jobs (live)</div><span class="bdg b-g">● Live</span></div>
+          <div style="overflow-x:auto">
+          <table>
+            <thead><tr><th>Job ID</th><th>Customer</th><th>Mechanic</th><th>Issue</th><th>Price</th><th>Status</th><th>Parts</th><th>Time</th></tr></thead>
+            <tbody id="jobs-tbody"><tr><td colspan="8" class="empty-row">Waiting for Firebase — open Customer app to create a job</td></tr></tbody>
+          </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ LIVE JOBS ═══ -->
+      <div id="v-jobs" class="view">
+        <div class="table-wrap">
+          <div class="table-head"><div class="table-head-title">All jobs — live from Firebase</div><span class="bdg b-g">● Synced</span></div>
+          <div style="overflow-x:auto">
+          <table>
+            <thead><tr><th>Job ID</th><th>Customer</th><th>Mechanic</th><th>Issue</th><th>Price</th><th>Status</th><th>Parts</th><th>Location</th><th>Time</th></tr></thead>
+            <tbody id="jobs-tbody-2"><tr><td colspan="9" class="empty-row">No jobs yet</td></tr></tbody>
+          </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ ALERTS & SOS ═══ -->
+      <div id="v-alerts" class="view">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <div style="font-family:var(--fh);font-size:15px;font-weight:700">Alerts & SOS — real time</div>
+          <span class="bdg b-g">● Live from Firebase</span>
+        </div>
+        <div id="alerts-container"><div class="empty-card">No alerts yet. Trigger SOS in customer or mechanic app — it appears here instantly.</div></div>
+      </div>
+
+      <!-- ═══ LIVE MAP ═══ -->
+      <div id="v-map" class="view">
+        <div class="map-panel">
+          <svg id="map-svg" class="map-inner" viewBox="0 0 800 280">
+            <rect width="800" height="280" fill="#162035"/>
+            <!-- Grid -->
+            <line x1="0" y1="56" x2="800" y2="56" stroke="#1E2E45" stroke-width="0.5"/><line x1="0" y1="112" x2="800" y2="112" stroke="#1E2E45" stroke-width="0.5"/><line x1="0" y1="168" x2="800" y2="168" stroke="#1E2E45" stroke-width="0.5"/><line x1="0" y1="224" x2="800" y2="224" stroke="#1E2E45" stroke-width="0.5"/>
+            <line x1="160" y1="0" x2="160" y2="280" stroke="#1E2E45" stroke-width="0.5"/><line x1="320" y1="0" x2="320" y2="280" stroke="#1E2E45" stroke-width="0.5"/><line x1="480" y1="0" x2="480" y2="280" stroke="#1E2E45" stroke-width="0.5"/><line x1="640" y1="0" x2="640" y2="280" stroke="#1E2E45" stroke-width="0.5"/>
+            <!-- Roads -->
+            <line x1="0" y1="140" x2="800" y2="140" stroke="#1F3050" stroke-width="12"/><line x1="400" y1="0" x2="400" y2="280" stroke="#1F3050" stroke-width="12"/>
+            <line x1="0" y1="84" x2="800" y2="84" stroke="#192840" stroke-width="6"/><line x1="0" y1="196" x2="800" y2="196" stroke="#192840" stroke-width="6"/>
+            <line x1="240" y1="0" x2="240" y2="280" stroke="#192840" stroke-width="6"/><line x1="560" y1="0" x2="560" y2="280" stroke="#192840" stroke-width="6"/>
+            <!-- Static demo dots -->
+            <circle cx="350" cy="155" r="10" fill="#EF4444"><animate attributeName="r" values="10;18;10" dur="2s" repeatCount="indefinite"/></circle>
+            <text x="350" y="175" fill="white" font-size="10" text-anchor="middle" font-family="DM Sans">Customer SOS</text>
+            <circle cx="280" cy="120" r="8" fill="#3B82F6"/>
+            <text x="280" y="108" fill="white" font-size="10" text-anchor="middle" font-family="DM Sans">Mechanic 1</text>
+            <circle cx="500" cy="110" r="8" fill="#22C55E"/>
+            <text x="500" y="98" fill="white" font-size="10" text-anchor="middle" font-family="DM Sans">Mechanic 2</text>
+            <rect x="360" y="48" width="80" height="18" rx="4" fill="#F97316"/><text x="400" y="60" fill="white" font-size="10" text-anchor="middle" font-family="DM Sans">Outlet</text>
+            <line x1="280" y1="120" x2="350" y2="155" stroke="#3B82F6" stroke-width="1.5" stroke-dasharray="5,3"/>
+          </svg>
+        </div>
+        <div class="kpi-grid-3">
+          <div class="kpi"><div class="kpi-ico">📍</div><div class="kpi-val" style="color:var(--gn)" id="d-mechs-map">0</div><div class="kpi-lbl">Mechanics with GPS ON</div></div>
+          <div class="kpi"><div class="kpi-ico">🔧</div><div class="kpi-val" style="color:var(--or)" id="d-active-map">0</div><div class="kpi-lbl">Jobs in progress</div></div>
+          <div class="kpi"><div class="kpi-ico">🆘</div><div class="kpi-val" style="color:var(--rd)" id="d-sos-map">0</div><div class="kpi-lbl">Active SOS</div></div>
+        </div>
+        <div style="font-size:12px;color:var(--tx3);text-align:center;padding:8px 0">Map shows live mechanic GPS positions as they update in Firebase. Customer SOS pings flash red.</div>
+      </div>
+
+      <!-- ═══ MECHANICS ═══ -->
+      <div id="v-mechs" class="view">
+        <div class="kpi-grid-3" style="margin-bottom:14px">
+          <div class="kpi"><div class="kpi-ico">👷</div><div class="kpi-val" style="color:var(--gn)" id="d-mechs-tab">0</div><div class="kpi-lbl">Online now</div></div>
+          <div class="kpi"><div class="kpi-ico">✅</div><div class="kpi-val" style="color:var(--bl)" id="d-verified-tab">0</div><div class="kpi-lbl">Verified</div></div>
+          <div class="kpi"><div class="kpi-ico">⏳</div><div class="kpi-val" style="color:var(--yw)" id="d-pending-tab">0</div><div class="kpi-lbl">Pending verification</div></div>
+        </div>
+        <div class="table-wrap">
+          <div class="table-head"><div class="table-head-title">All registered mechanics</div><span class="bdg b-g">● Live</span></div>
+          <div style="overflow-x:auto">
+          <table>
+            <thead><tr><th>Name</th><th>Phone</th><th>City</th><th>Skills</th><th>GPS</th><th>Bodycam</th><th>Status</th><th>Verification</th></tr></thead>
+            <tbody id="mechs-tbody"><tr><td colspan="8" class="empty-row">No mechanics registered yet — open Mechanic app and register</td></tr></tbody>
+          </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ CUSTOMERS ═══ -->
+      <div id="v-custs" class="view">
+        <div class="kpi-grid-3" style="margin-bottom:14px">
+          <div class="kpi"><div class="kpi-ico">👥</div><div class="kpi-val" style="color:var(--bl)" id="d-custs-tab">0</div><div class="kpi-lbl">Registered customers</div></div>
+          <div class="kpi"><div class="kpi-ico">🔧</div><div class="kpi-val" style="color:var(--or)" id="d-jobs-tab">0</div><div class="kpi-lbl">Total jobs created</div></div>
+          <div class="kpi"><div class="kpi-ico">💰</div><div class="kpi-val" style="color:var(--gn)" id="d-gmv-tab">₹0</div><div class="kpi-lbl">Total GMV</div></div>
+        </div>
+        <div class="table-wrap">
+          <div class="table-head"><div class="table-head-title">All registered customers</div><span class="bdg b-g">● Live</span></div>
+          <div style="overflow-x:auto">
+          <table>
+            <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>City</th><th>Registered</th><th>Status</th></tr></thead>
+            <tbody id="custs-tbody"><tr><td colspan="6" class="empty-row">No customers registered yet — open Customer app and register</td></tr></tbody>
+          </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ SETUP GUIDE ═══ -->
+      <div id="v-setup" class="view">
+        <div class="info-box">
+          <h3>🔥 Firebase setup checklist</h3>
+          <div class="info-step"><div class="info-n">1</div><div><strong>Authentication enabled</strong> — Firebase console → Build → Authentication → Email/Password → Enable</div></div>
+          <div class="info-step"><div class="info-n">2</div><div><strong>Realtime Database enabled</strong> — Build → Realtime Database → Test mode → Enable</div></div>
+          <div class="info-step"><div class="info-n">3</div><div><strong>All 3 files uploaded</strong> to <code>github.com/lakhyajit/roadfix-demo</code> with correct Firebase config</div></div>
+          <div class="info-step"><div class="info-n">4</div><div><strong>Admin login</strong> — use same Google account email as your Firebase project owner, or create a user in Firebase Auth with any email/password</div></div>
+        </div>
+        <div class="table-wrap" style="padding:16px">
+          <div style="font-family:var(--fh);font-size:13px;font-weight:700;margin-bottom:12px">Firebase data structure</div>
+          <div class="data-tree">
+<span class="key">/customers</span>/{uid} → {name, phone, city, email, role, createdAt}<br>
+<span class="key">/mechanics</span>/{uid} → {name, phone, skills, status, gpsOn, bodycam, verified, lat, lng}<br>
+<span class="key">/jobs</span>/{jobId} → {customerId, customerName, issue, status, mechanic, partType, estimateLow, estimateHigh, finalPrice}<br>
+<span class="key">/alerts</span>/{alertId} → {type, name, phone, location, lat, lng, time, status, app}<br>
+<br>
+<span class="key">job status flow:</span><br>
+<span class="val">pending</span> → <span class="val">searching_mechanic</span> → <span class="val">mechanic_assigned</span> → <span class="val">enroute</span> → <span class="val">fixing</span> → <span class="val">done</span><br>
+<br>
+<span class="key">alert types:</span> <span class="str">customer_sos</span> · <span class="str">mechanic_sos</span>
+          </div>
+        </div>
+        <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:14px;margin-top:2px">
+          <div style="font-family:var(--fh);font-size:13px;font-weight:700;margin-bottom:8px;color:var(--or)">Live URLs</div>
+          <div style="font-size:12px;color:var(--tx2);line-height:2">
+            🚗 Customer: <code>lakhyajit.github.io/roadfix-demo/roadfix-customer-FINAL.html</code><br>
+            🔧 Mechanic: <code>lakhyajit.github.io/roadfix-demo/roadfix-mechanic-FINAL.html</code><br>
+            📊 Admin: <code>lakhyajit.github.io/roadfix-demo/roadfix-admin-FINAL.html</code>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /content -->
+  </div><!-- /main -->
+</div><!-- /admin-app -->
+
+<script>
+var views=['v-dash','v-jobs','v-alerts','v-map','v-mechs','v-custs','v-setup'];
+var siMap={'v-dash':'si-dash','v-jobs':'si-jobs','v-alerts':'si-alerts','v-map':'si-map','v-mechs':'si-mechs','v-custs':'si-custs','v-setup':'si-setup'};
+var titles={'v-dash':'Dashboard','v-jobs':'Live jobs','v-alerts':'Alerts & SOS','v-map':'Live map','v-mechs':'Mechanics','v-custs':'Customers','v-setup':'Setup guide'};
+
+function showView(id){
+  views.forEach(function(v){var e=document.getElementById(v);if(e)e.classList.remove('active');});
+  var n=document.getElementById(id);if(n)n.classList.add('active');
+  Object.values(siMap).forEach(function(s){var e=document.getElementById(s);if(e)e.classList.remove('active');});
+  var si=siMap[id];if(si){var e=document.getElementById(si);if(e)e.classList.add('active');}
+  var t=document.getElementById('tb-title');if(t)t.textContent=titles[id]||'Admin';
+
+  // sync secondary tbody for jobs page
+  if(id==='v-jobs'){
+    var t2=document.getElementById('jobs-tbody-2');
+    var t1=document.getElementById('jobs-tbody');
+    if(t2&&t1)t2.innerHTML=t1.innerHTML;
+  }
+  // sync map kpis
+  if(id==='v-map'){
+    var dm=document.getElementById('d-mechs-map');if(dm)dm.textContent=document.getElementById('d-mechs').textContent;
+    var da=document.getElementById('d-active-map');if(da)da.textContent=document.getElementById('d-active').textContent;
+    var ds=document.getElementById('d-sos-map');if(ds)ds.textContent=document.getElementById('d-sos').textContent;
+  }
+  // sync mechs tab kpis
+  if(id==='v-mechs'){
+    var dm2=document.getElementById('d-mechs-tab');if(dm2)dm2.textContent=document.getElementById('d-mechs').textContent;
+    var dv2=document.getElementById('d-verified-tab');if(dv2)dv2.textContent=document.getElementById('d-verified').textContent;
+  }
+  // sync custs tab kpis
+  if(id==='v-custs'){
+    var dc2=document.getElementById('d-custs-tab');if(dc2)dc2.textContent=document.getElementById('d-custs').textContent;
+    var dj2=document.getElementById('d-jobs-tab');if(dj2)dj2.textContent=parseInt(document.getElementById('d-active').textContent||0)+parseInt(document.getElementById('d-done').textContent||0);
+    var dg2=document.getElementById('d-gmv-tab');if(dg2)dg2.textContent=document.getElementById('d-gmv').textContent;
+  }
+}
+
+// Enter key on login
+document.addEventListener('keydown',function(e){
+  if(e.key==='Enter'){
+    var s=document.getElementById('login-screen');
+    if(s&&s.style.display!=='none')window.adminLogin();
+  }
+});
+</script>
+</body>
+</html>

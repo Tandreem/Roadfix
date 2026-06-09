@@ -3,22 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>RoadFix Admin Panel</title>
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<title>RoadFix Admin v4</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import { getDatabase, ref, onValue, set, push, update, remove, get } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
-const firebaseConfig={
-  apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",
-  authDomain:"roadfix-demo.firebaseapp.com",
-  databaseURL:"https://roadfix-demo-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId:"roadfix-demo",
-  storageBucket:"roadfix-demo.firebasestorage.app",
-  messagingSenderId:"274952184107",
-  appId:"1:274952184107:web:63188439d92ec31103a56e"
-};
-const app=initializeApp(firebaseConfig);
+import { getDatabase, ref, onValue, update, remove } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+const FC={apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",authDomain:"roadfix-demo.firebaseapp.com",databaseURL:"https://roadfix-demo-default-rtdb.asia-southeast1.firebasedatabase.app",projectId:"roadfix-demo",storageBucket:"roadfix-demo.firebasestorage.app",messagingSenderId:"274952184107",appId:"1:274952184107:web:63188439d92ec31103a56e"};
+const app=initializeApp(FC);
 const auth=getAuth(app);
 const db=getDatabase(app);
 
@@ -33,8 +25,7 @@ onAuthStateChanged(auth,user=>{
     document.getElementById('admin-app').style.display='none';
   }
 });
-
-window.adminLogin=async function(){
+window.adminLogin=async()=>{
   const e=document.getElementById('al-email').value.trim();
   const p=document.getElementById('al-pass').value;
   const err=document.getElementById('al-err');
@@ -44,264 +35,231 @@ window.adminLogin=async function(){
 };
 window.adminLogout=()=>signOut(auth);
 
-let allJobs={},allMechs={},allCusts={},allAlerts={};
+// ── DATA ──────────────────────────────────────────────
+let J={},M={},C={},A={};
 
 function startListeners(){
-  onValue(ref(db,'jobs'),snap=>{allJobs=snap.val()||{};renderJobs();updateDash();});
-  onValue(ref(db,'mechanics'),snap=>{allMechs=snap.val()||{};renderMechanics();updateDash();});
-  onValue(ref(db,'customers'),snap=>{allCusts=snap.val()||{};renderCustomers();updateDash();});
-  onValue(ref(db,'alerts'),snap=>{
-    allAlerts=snap.val()||{};renderAlerts();updateDash();
-    const active=Object.values(allAlerts).filter(a=>a.status==='active');
-    const sb=document.getElementById('sos-sidebar');
-    const badge=document.getElementById('sos-top-badge');
+  onValue(ref(db,'jobs'),s=>{J=s.val()||{};renderAll();});
+  onValue(ref(db,'mechanics'),s=>{M=s.val()||{};renderAll();});
+  onValue(ref(db,'customers'),s=>{C=s.val()||{};renderAll();});
+  onValue(ref(db,'alerts'),s=>{
+    A=s.val()||{};renderAll();
+    const active=Object.values(A).filter(a=>a.status==='active');
+    const sos=document.getElementById('sos-sidebar');
+    const badge=document.getElementById('sos-badge');
     if(active.length>0){
-      if(sb){sb.style.display='flex';sb.querySelector('.sos-count').textContent=active.length+' Active SOS';}
-      if(badge){badge.textContent='🆘 '+active.length+' SOS';badge.style.display='inline-flex';}
+      if(sos){sos.style.display='flex';sos.querySelector('.sos-cnt').textContent=active.length+' Active SOS';}
+      if(badge){badge.textContent='🆘 '+active.length;badge.style.display='inline-flex';}
     } else {
-      if(sb)sb.style.display='none';
+      if(sos)sos.style.display='none';
       if(badge)badge.style.display='none';
     }
   });
 }
 
-function updateDash(){
-  const jobs=Object.values(allJobs);
-  const mechs=Object.values(allMechs);
-  const custs=Object.values(allCusts);
-  const alerts=Object.values(allAlerts);
-  setText('d-active',jobs.filter(j=>j.status&&j.status!=='done').length);
-  setText('d-done',jobs.filter(j=>j.status==='done').length);
-  setText('d-mechs',mechs.filter(m=>m.status==='online'||m.status==='enroute').length);
-  setText('d-custs',custs.length);
-  const gmv=jobs.filter(j=>j.finalPrice).reduce((s,j)=>s+(j.finalPrice||0),0);
-  setText('d-gmv',gmv>0?'₹'+gmv.toLocaleString('en-IN'):'₹0');
-  setText('d-sos',alerts.filter(a=>a.status==='active').length);
-  setText('d-alerts',Object.keys(allAlerts).length);
-  setText('d-verified',mechs.filter(m=>m.verified).length);
-  setText('d-pending',mechs.filter(m=>!m.verified).length);
+function renderAll(){
+  updateKPIs();
+  renderJobs();
+  renderMechanics();
+  renderCustomers();
+  renderAlerts();
+}
+
+function updateKPIs(){
+  const jList=Object.values(J);
+  const mList=Object.values(M);
+  const cList=Object.values(C);
+  const aList=Object.values(A);
+  const active=jList.filter(j=>j.status&&j.status!=='done').length;
+  const done=jList.filter(j=>j.status==='done').length;
+  const online=mList.filter(m=>m.status==='online'||m.status==='enroute').length;
+  const verified=mList.filter(m=>m.verified).length;
+  const pending=mList.filter(m=>!m.verified).length;
+  const sosActive=aList.filter(a=>a.status==='active').length;
+  const gmv=jList.filter(j=>j.finalPrice).reduce((s,j)=>s+(j.finalPrice||0),0);
+  setEl('d-active',active);setEl('d-done',done);setEl('d-online',online);setEl('d-verified',verified);
+  setEl('d-custs',cList.length);setEl('d-sos',sosActive);setEl('d-gmv',gmv>0?'₹'+gmv.toLocaleString('en-IN'):'₹0');setEl('d-pending',pending);
+  // Update mechanic tab stats
+  setEl('d-m-online',online);setEl('d-m-verified',verified);setEl('d-m-pending',pending);
+  // Update customer tab stats
+  setEl('d-c-total',cList.length);setEl('d-c-jobs',jList.length);setEl('d-c-gmv',gmv>0?'₹'+gmv.toLocaleString('en-IN'):'₹0');
 }
 
 function renderJobs(){
   ['jobs-tbody','jobs-tbody-2'].forEach(tid=>{
-    const tbody=document.getElementById(tid);
-    if(!tbody)return;
-    const list=Object.entries(allJobs).sort((a,b)=>(b[1].createdAt||0)-(a[1].createdAt||0));
-    if(list.length===0){tbody.innerHTML='<tr><td colspan="9" class="empty-row">No jobs yet</td></tr>';return;}
-    tbody.innerHTML=list.map(([id,j])=>`
+    const tb=document.getElementById(tid);if(!tb)return;
+    const list=Object.entries(J).sort((a,b)=>(b[1].createdAt||0)-(a[1].createdAt||0));
+    if(list.length===0){tb.innerHTML='<tr><td colspan="9" class="empty-row">No jobs yet. Customer creates a job → appears here instantly.</td></tr>';return;}
+    tb.innerHTML=list.map(([id,j])=>`
       <tr class="${j.status==='done'?'row-done':''}">
-        <td><span class="mono">#${j.id||'—'}</span></td>
+        <td><span class="mono">#${j.id||id.slice(-6)}</span></td>
         <td>${j.customerName||'—'}</td>
-        <td>${j.vehicle||'<span class="muted">Unknown vehicle</span>'}</td>
+        <td style="font-size:11px;max-width:100px">${j.vehicle||'—'}</td>
         <td>${j.mechanic||'<span class="muted">Unassigned</span>'}</td>
-        <td>${j.issue||'—'}</td>
-        <td class="price-cell">${j.status==='done'&&j.finalPrice?'<span class="final-price">₹'+j.finalPrice+'</span>':'<span class="est-price">₹'+(j.estimateLow||'?')+'–'+(j.estimateHigh||'?')+'</span>'}</td>
+        <td style="font-size:11px;max-width:80px">${(j.issue||'—').slice(0,40)}</td>
+        <td>${j.status==='done'&&j.finalPrice?'<span class="price-final">₹'+j.finalPrice+'</span>':'<span class="price-est">₹'+(j.estimateLow||'?')+'–'+(j.estimateHigh||'?')+'</span>'}</td>
         <td><span class="bdg ${sBadge(j.status)}">${sLabel(j.status)}</span></td>
         <td><span class="bdg ${pBadge(j.partType)}">${j.partType||'—'}</span></td>
-        <td><button class="del-btn" onclick="deleteJob('${id}')">🗑</button></td>
+        <td><button class="del-btn" onclick="delJob('${id}')">🗑</button></td>
       </tr>`).join('');
   });
 }
 
 function renderMechanics(){
-  const tbody=document.getElementById('mechs-tbody');
-  if(!tbody)return;
-  const list=Object.entries(allMechs).sort((a,b)=>(b[1].createdAt||0)-(a[1].createdAt||0));
-  if(list.length===0){tbody.innerHTML='<tr><td colspan="9" class="empty-row">No mechanics registered yet</td></tr>';return;}
-  tbody.innerHTML=list.map(([uid,m])=>`
-    <tr>
-      <td><div style="display:flex;align-items:center;gap:7px"><div class="mini-av" style="background:#1D4ED8">${(m.name||'M').substr(0,2).toUpperCase()}</div>${m.name||'—'}</div></td>
+  const tb=document.getElementById('mechs-tbody');if(!tb)return;
+  const list=Object.entries(M).sort((a,b)=>(b[1].createdAt||0)-(a[1].createdAt||0));
+  if(list.length===0){tb.innerHTML='<tr><td colspan="9" class="empty-row">No mechanics registered yet. Open Mechanic app → register → appear here.</td></tr>';return;}
+  tb.innerHTML=list.map(([uid,m])=>{
+    const pfpHtml=m.pfp?`<img src="${m.pfp}" style="width:28px;height:28px;border-radius:50%;object-fit:cover;flex-shrink:0">`:`<div class="mini-av" style="background:#1D4ED8">${(m.name||'M').substr(0,2).toUpperCase()}</div>`;
+    return `<tr>
+      <td><div style="display:flex;align-items:center;gap:6px">${pfpHtml}<span>${m.name||'—'}</span></div></td>
       <td>${m.phone||'—'}</td>
       <td>${m.city||'—'}</td>
-      <td style="max-width:120px;font-size:11px">${m.skills||'General'}</td>
+      <td style="font-size:11px;max-width:100px">${m.skills||'General'}</td>
       <td><span class="${m.gpsOn?'status-on':'status-off'}">${m.gpsOn?'📍 ON':'OFF'}</span></td>
-      <td><span class="${m.bodycam?'status-on':'status-off'}">${m.bodycam?'🎥 ON':'OFF'}</span></td>
-      <td><span class="bdg ${m.status==='online'?'b-g':m.status==='enroute'?'b-p':'b-off'}">${m.status||'offline'}</span></td>
+      <td><span class="${m.status==='online'?'status-on':m.status==='enroute'?'status-warn':'status-off'}">${m.status||'offline'}</span></td>
       <td>
         ${m.verified
           ?'<span class="bdg b-g">✅ Verified</span>'
-          :`<span class="bdg b-y">⏳ Pending</span> <button class="action-btn" onclick="verifyMech('${uid}')">Verify</button>`}
+          :`<span class="bdg b-y">⏳ Pending</span> <button class="action-btn" onclick="verifyMech('${uid}')">Verify ✓</button>`}
       </td>
-      <td>
-        <button class="del-btn" onclick="deleteMech('${uid}','${m.name}')">🗑 Delete</button>
-      </td>
-    </tr>`).join('');
-  setText('d-mechs-tab',Object.values(allMechs).filter(m=>m.status==='online'||m.status==='enroute').length);
-  setText('d-verified-tab',Object.values(allMechs).filter(m=>m.verified).length);
-  setText('d-pending-tab',Object.values(allMechs).filter(m=>!m.verified).length);
+      <td><button class="del-btn" onclick="delMech('${uid}','${(m.name||'').replace(/'/g,'')}')">🗑 Del</button></td>
+    </tr>`;
+  }).join('');
 }
 
 function renderCustomers(){
-  const tbody=document.getElementById('custs-tbody');
-  if(!tbody)return;
-  const list=Object.entries(allCusts).sort((a,b)=>(b[1].createdAt||0)-(a[1].createdAt||0));
-  if(list.length===0){tbody.innerHTML='<tr><td colspan="7" class="empty-row">No customers registered yet</td></tr>';return;}
-  tbody.innerHTML=list.map(([uid,c])=>`
-    <tr>
-      <td><div style="display:flex;align-items:center;gap:7px"><div class="mini-av" style="background:var(--or2);color:var(--or);border:1px solid var(--or)">${(c.name||'C').substr(0,2).toUpperCase()}</div>${c.name||'—'}</div></td>
+  const tb=document.getElementById('custs-tbody');if(!tb)return;
+  const list=Object.entries(C).sort((a,b)=>(b[1].createdAt||0)-(a[1].createdAt||0));
+  if(list.length===0){tb.innerHTML='<tr><td colspan="7" class="empty-row">No customers registered yet. Open Customer app → register → appear here.</td></tr>';return;}
+  tb.innerHTML=list.map(([uid,c])=>{
+    const pfpHtml=c.pfp?`<img src="${c.pfp}" style="width:26px;height:26px;border-radius:50%;object-fit:cover;flex-shrink:0">`:`<div class="mini-av" style="background:rgba(249,115,22,.2);color:#F97316;border:1px solid #F97316">${(c.name||'C').substr(0,2).toUpperCase()}</div>`;
+    return `<tr>
+      <td><div style="display:flex;align-items:center;gap:6px">${pfpHtml}<span>${c.name||'—'}</span></div></td>
       <td>${c.phone||'—'}</td>
       <td>${c.email||'—'}</td>
       <td>${c.city||'—'}</td>
       <td class="muted">${ago(c.createdAt)}</td>
       <td><span class="bdg b-g">Active</span></td>
-      <td><button class="del-btn" onclick="deleteCust('${uid}','${c.name}')">🗑 Delete</button></td>
-    </tr>`).join('');
+      <td><button class="del-btn" onclick="delCust('${uid}','${(c.name||'').replace(/'/g,'')}')">🗑 Del</button></td>
+    </tr>`;
+  }).join('');
 }
 
 function renderAlerts(){
-  const container=document.getElementById('alerts-container');
-  if(!container)return;
-  const list=Object.entries(allAlerts).sort((a,b)=>(b[1].time||0)-(a[1].time||0));
-  if(list.length===0){container.innerHTML='<div class="empty-card">No alerts yet. SOS from customer or mechanic apps appears here instantly.</div>';return;}
+  const container=document.getElementById('alerts-container');if(!container)return;
+  const list=Object.entries(A).sort((a,b)=>(b[1].time||0)-(a[1].time||0));
+  if(list.length===0){container.innerHTML='<div class="empty-card">No alerts. SOS from Customer or Mechanic app appears here instantly with GPS + Google Maps link.</div>';return;}
   container.innerHTML=list.map(([id,a])=>`
     <div class="alert-card ${a.status==='active'?'alert-active':'alert-done'}">
-      <div class="alert-ico">${a.type&&a.type.includes('sos')?'🆘':'⚠️'}</div>
-      <div class="alert-body">
-        <div class="alert-title">${a.type==='customer_sos'?'Customer SOS':a.type==='mechanic_sos'?'Mechanic SOS':'Alert'} — <strong>${a.name||'Unknown'}</strong></div>
-        <div class="alert-sub">📍 ${a.location||'Unknown'} · 📞 ${a.phone||'—'} · App: ${a.app||'—'}</div>
+      <div style="font-size:22px;flex-shrink:0">${a.type&&a.type.includes('sos')?'🆘':'⚠️'}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:600;margin-bottom:3px">${a.type==='customer_sos'?'Customer SOS':a.type==='mechanic_sos'?'Mechanic SOS':'Alert'} — <strong>${a.name||'?'}</strong></div>
+        <div style="font-size:11px;color:var(--tx2);margin-top:2px">📍 ${a.location||'—'} · 📞 ${a.phone||'—'} · App: ${a.app||'—'}</div>
         ${a.mapsLink?`<a href="${a.mapsLink}" target="_blank" style="font-size:11px;color:var(--bl)">📌 Open in Google Maps</a>`:''}
-        <div class="alert-sub muted">${new Date(a.time||Date.now()).toLocaleString('en-IN')}</div>
+        <div style="font-size:10px;color:var(--tx3);margin-top:2px">${new Date(a.time||Date.now()).toLocaleString('en-IN')}</div>
       </div>
-      <div class="alert-actions">
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex-shrink:0">
         <span class="bdg ${a.status==='active'?'b-r':'b-g'}">${a.status||'active'}</span>
         ${a.status==='active'?`<button class="action-btn green" onclick="resolveAlert('${id}')">Resolve</button>`:''}
-        <button class="del-btn" onclick="deleteAlert('${id}')">🗑</button>
+        <button class="del-btn" onclick="delAlert('${id}')">🗑</button>
       </div>
     </div>`).join('');
 }
 
 // ── ACTIONS ──────────────────────────────────────────
-window.verifyMech=uid=>{update(ref(db,'mechanics/'+uid),{verified:true});};
-
-window.deleteMech=(uid,name)=>{
-  if(!confirm('Delete mechanic "'+name+'"? This cannot be undone.'))return;
-  remove(ref(db,'mechanics/'+uid));
-  showToast('Mechanic deleted');
+window.verifyMech=uid=>{
+  update(ref(db,'mechanics/'+uid),{verified:true});
+  toast('✅ Mechanic verified — they will auto-redirect now');
 };
-
-window.deleteCust=(uid,name)=>{
-  if(!confirm('Delete customer "'+name+'"? This cannot be undone.'))return;
-  remove(ref(db,'customers/'+uid));
-  showToast('Customer deleted');
-};
-
-window.deleteJob=id=>{
-  if(!confirm('Delete this job record?'))return;
-  remove(ref(db,'jobs/'+id));
-  showToast('Job deleted');
-};
-
-window.deleteAlert=id=>{
-  remove(ref(db,'alerts/'+id));
-  showToast('Alert deleted');
-};
-
+window.delMech=(uid,name)=>{if(!confirm('Delete mechanic "'+name+'"?'))return;remove(ref(db,'mechanics/'+uid));toast('Deleted');};
+window.delCust=(uid,name)=>{if(!confirm('Delete customer "'+name+'"?'))return;remove(ref(db,'customers/'+uid));toast('Deleted');};
+window.delJob=id=>{if(!confirm('Delete this job?'))return;remove(ref(db,'jobs/'+id));toast('Deleted');};
+window.delAlert=id=>{remove(ref(db,'alerts/'+id));toast('Alert removed');};
 window.resolveAlert=id=>{update(ref(db,'alerts/'+id),{status:'resolved'});};
 
-// ── HELPERS ──────────────────────────────────────────
-function setText(id,val){const e=document.getElementById(id);if(e)e.textContent=val;}
+// ── HELPERS ───────────────────────────────────────────
 function setEl(id,val){const e=document.getElementById(id);if(e)e.textContent=val;}
-function ago(ts){if(!ts)return'—';const s=Math.floor((Date.now()-ts)/1000);if(s<60)return s+'s ago';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago';}
+function ago(ts){if(!ts)return'—';const s=Math.floor((Date.now()-ts)/1000);if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';if(s<86400)return Math.floor(s/3600)+'h';return Math.floor(s/86400)+'d';}
 function sLabel(s){return{pending:'Pending',searching_mechanic:'Searching',mechanic_assigned:'Assigned',enroute:'En route',fixing:'Fixing',done:'Done ✓',declined:'Declined'}[s]||s||'—';}
 function sBadge(s){return{done:'b-g',fixing:'b-b',enroute:'b-p',mechanic_assigned:'b-b',searching_mechanic:'b-o',pending:'b-y',declined:'b-off'}[s]||'b-y';}
 function pBadge(t){return t==='OEM'?'b-b':t==='ODM'?'b-g':'b-y';}
-function showToast(msg){let t=document.getElementById('a-toast');if(!t){t=document.createElement('div');t.id='a-toast';t.style.cssText='position:fixed;bottom:20px;right:20px;background:var(--card);border:1px solid var(--bdr2);color:var(--tx);padding:10px 18px;border-radius:10px;font-size:13px;z-index:999;transition:opacity .3s';document.body.appendChild(t);}t.textContent=msg;t.style.opacity='1';clearTimeout(window._aToast);window._aToast=setTimeout(()=>{t.style.opacity='0';},2500);}
-
-setInterval(()=>{const el=document.getElementById('live-time');if(el)el.textContent=new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});},1000);
+function toast(msg){let t=document.getElementById('a-toast');if(!t){t=document.createElement('div');t.id='a-toast';t.style.cssText='position:fixed;bottom:18px;right:18px;background:var(--card);border:1px solid var(--bdr2);color:var(--tx);padding:9px 16px;border-radius:9px;font-size:13px;z-index:999;transition:opacity .3s';document.body.appendChild(t);}t.textContent=msg;t.style.opacity='1';clearTimeout(window._aT);window._aT=setTimeout(()=>{t.style.opacity='0';},2200);}
+setInterval(()=>{const e=document.getElementById('live-time');if(e)e.textContent=new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});},1000);
 </script>
 <style>
-:root{
-  --bg:#080C18;--bg2:#0F1626;--bg3:#162035;--card:#111E33;
-  --bdr:rgba(255,255,255,0.06);--bdr2:rgba(255,255,255,0.11);
-  --tx:#EEF2FF;--tx2:#7B90B8;--tx3:#3D5070;
-  --or:#F97316;--or2:rgba(249,115,22,0.13);
-  --bl:#3B82F6;--bl2:rgba(59,130,246,0.13);
-  --gn:#22C55E;--gn2:rgba(34,197,94,0.11);
-  --rd:#EF4444;--rd2:rgba(239,68,68,0.12);
-  --yw:#EAB308;--yw2:rgba(234,179,8,0.11);
-  --pu:#A855F7;--pu2:rgba(168,85,247,0.11);
-  --fh:'Syne',sans-serif;--fb:'DM Sans',sans-serif;--r:10px;--r2:16px;--sidebar:220px;
-}
+:root{--bg:#080C18;--bg2:#0F1626;--bg3:#162035;--card:#111E33;--bdr:rgba(255,255,255,.06);--bdr2:rgba(255,255,255,.11);--tx:#EEF2FF;--tx2:#7B90B8;--tx3:#3D5070;--or:#F97316;--or2:rgba(249,115,22,.13);--bl:#3B82F6;--bl2:rgba(59,130,246,.13);--gn:#22C55E;--gn2:rgba(34,197,94,.11);--rd:#EF4444;--rd2:rgba(239,68,68,.12);--yw:#EAB308;--yw2:rgba(234,179,8,.11);--pu:#A855F7;--pu2:rgba(168,85,247,.11);--fh:'Syne',sans-serif;--fb:'DM Sans',sans-serif;--r:9px;--r2:14px;--sw:210px}
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden;background:var(--bg);font-family:var(--fb);color:var(--tx)}
-#login-screen{position:fixed;inset:0;background:radial-gradient(ellipse at 50% 0%,rgba(249,115,22,.08),transparent 70%),var(--bg);display:flex;align-items:center;justify-content:center;z-index:999;padding:24px}
-.login-box{background:var(--card);border:1px solid var(--bdr2);border-radius:var(--r2);padding:28px;width:100%;max-width:360px}
-.login-logo{font-family:var(--fh);font-size:26px;font-weight:800;text-align:center;margin-bottom:4px}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
+#login-screen{position:fixed;inset:0;background:radial-gradient(ellipse at 50% 0%,rgba(249,115,22,.08),transparent 70%),var(--bg);display:flex;align-items:center;justify-content:center;z-index:999;padding:22px}
+.login-box{background:var(--card);border:1px solid var(--bdr2);border-radius:var(--r2);padding:24px;width:100%;max-width:340px}
+.login-logo{font-family:var(--fh);font-size:24px;font-weight:800;text-align:center;margin-bottom:4px}
 .login-logo em{color:var(--or);font-style:normal}
-.login-sub{font-size:13px;color:var(--tx2);text-align:center;margin-bottom:20px}
-.field{margin-bottom:11px}
-.field label{display:block;font-size:12px;font-weight:500;color:var(--tx2);margin-bottom:4px}
-.field input{background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:14px;padding:10px 12px;width:100%;outline:none;transition:border .2s}
-.field input:focus{border-color:var(--or)}
-.field input::placeholder{color:var(--tx3)}
-.login-err{font-size:12px;color:var(--rd);text-align:center;margin-bottom:9px;min-height:15px}
-.btn-login{width:100%;background:var(--or);color:#fff;border:none;border-radius:var(--r);padding:12px;font-family:var(--fh);font-size:14px;font-weight:700;cursor:pointer;transition:transform .15s}
-.btn-login:active{transform:scale(.97)}
-.login-hint{font-size:11px;color:var(--tx3);text-align:center;margin-top:11px;line-height:1.6}
-.login-hint strong{color:var(--or)}
+.fld{margin-bottom:10px}
+.fld label{display:block;font-size:11px;font-weight:500;color:var(--tx2);margin-bottom:3px}
+.fld input{background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:14px;padding:9px 11px;width:100%;outline:none;transition:border .15s}
+.fld input:focus{border-color:var(--or)}
+.fld input::placeholder{color:var(--tx3)}
 #admin-app{display:none;height:100vh;overflow:hidden}
-.sidebar{width:var(--sidebar);flex-shrink:0;background:var(--bg2);border-right:1px solid var(--bdr);display:flex;flex-direction:column;height:100vh;overflow-y:auto}
+.sidebar{width:var(--sw);flex-shrink:0;background:var(--bg2);border-right:1px solid var(--bdr);display:flex;flex-direction:column;height:100vh;overflow-y:auto}
 .sidebar::-webkit-scrollbar{display:none}
-.sb-logo{padding:18px 14px 14px;border-bottom:1px solid var(--bdr)}
-.sb-logo-t{font-family:var(--fh);font-size:18px;font-weight:800}
+.sb-logo{padding:16px 14px 12px;border-bottom:1px solid var(--bdr)}
+.sb-logo-t{font-family:var(--fh);font-size:16px;font-weight:800}
 .sb-logo-t em{color:var(--or);font-style:normal}
-.sb-logo-s{font-size:11px;color:var(--tx3);margin-top:2px}
 .sb-live{display:flex;align-items:center;gap:5px;padding:7px 12px;font-size:11px;color:var(--gn);border-bottom:1px solid var(--bdr)}
 .live-dot{width:6px;height:6px;border-radius:50%;background:var(--gn);animation:blink 1.2s infinite}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
-.sb-sos{background:var(--rd2);border:1px solid rgba(239,68,68,.25);border-radius:var(--r);padding:8px 10px;margin:7px 8px;display:flex;align-items:center;gap:7px;cursor:pointer;animation:blink 1.5s infinite;display:none}
-.sos-count{font-family:var(--fh);font-size:11px;font-weight:700;color:var(--rd)}
-.sb-section{padding:11px 10px 4px;font-family:var(--fh);font-size:10px;font-weight:700;color:var(--tx3);letter-spacing:.1em;text-transform:uppercase}
-.sb-item{display:flex;align-items:center;gap:7px;padding:7px 11px;margin:1px 5px;border-radius:var(--r);cursor:pointer;transition:background .15s;font-size:13px;color:var(--tx2)}
+.sb-sos{background:var(--rd2);border:1px solid rgba(239,68,68,.25);border-radius:var(--r);padding:7px 10px;margin:6px 8px;display:flex;align-items:center;gap:7px;cursor:pointer;animation:blink 1.5s infinite;display:none}
+.sos-cnt{font-family:var(--fh);font-size:11px;font-weight:700;color:var(--rd)}
+.sb-sec{padding:10px 10px 4px;font-family:var(--fh);font-size:10px;font-weight:700;color:var(--tx3);letter-spacing:.1em;text-transform:uppercase}
+.sb-item{display:flex;align-items:center;gap:7px;padding:7px 11px;margin:1px 5px;border-radius:var(--r);cursor:pointer;transition:background .12s;font-size:13px;color:var(--tx2)}
 .sb-item:hover{background:var(--bg3)}.sb-item.active{background:var(--or2);color:var(--or)}
-.sb-ico{font-size:15px;width:19px;text-align:center;flex-shrink:0}
-.sb-bottom{margin-top:auto;padding:10px;border-top:1px solid var(--bdr)}
-.sb-user{display:flex;align-items:center;gap:7px;padding:5px}
-.sb-av{width:28px;height:28px;border-radius:50%;background:var(--or2);border:1.5px solid var(--or);display:flex;align-items:center;justify-content:center;font-family:var(--fh);font-size:10px;font-weight:700;color:var(--or)}
+.sb-ico{font-size:15px;width:18px;text-align:center;flex-shrink:0}
+.sb-bottom{margin-top:auto;padding:9px;border-top:1px solid var(--bdr)}
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
-.topbar{flex-shrink:0;padding:12px 18px;background:var(--bg2);border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;gap:11px}
-.tb-title{font-family:var(--fh);font-size:16px;font-weight:700;white-space:nowrap}
-.tb-right{display:flex;align-items:center;gap:9px;flex-shrink:0}
-.tb-time{font-size:12px;color:var(--tx2);font-family:monospace}
-.content{flex:1;overflow-y:auto;padding:16px 18px}
-.content::-webkit-scrollbar{width:4px}.content::-webkit-scrollbar-thumb{background:var(--bdr2);border-radius:2px}
+.topbar{flex-shrink:0;padding:11px 16px;background:var(--bg2);border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;gap:10px}
+.tb-title{font-family:var(--fh);font-size:15px;font-weight:700;white-space:nowrap}
+.content{flex:1;overflow-y:auto;padding:14px 16px}
+.content::-webkit-scrollbar{width:3px}.content::-webkit-scrollbar-thumb{background:var(--bdr2);border-radius:2px}
 .view{display:none}.view.active{display:block}
-.bdg{display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;padding:2px 7px;border-radius:999px;white-space:nowrap}
+.bdg{display:inline-flex;align-items:center;font-size:11px;font-weight:600;padding:2px 7px;border-radius:999px;white-space:nowrap}
 .b-g{background:var(--gn2);color:var(--gn)}.b-o{background:var(--or2);color:var(--or)}.b-r{background:var(--rd2);color:var(--rd)}.b-b{background:var(--bl2);color:var(--bl)}.b-y{background:var(--yw2);color:var(--yw)}.b-p{background:var(--pu2);color:var(--pu)}.b-off{background:rgba(255,255,255,.06);color:var(--tx2)}
-.muted{color:var(--tx2)}.mono{font-family:monospace;font-size:12px;color:var(--tx3)}
-.final-price{font-family:var(--fh);font-weight:700;color:var(--or)}.est-price{font-size:12px;color:var(--yw)}
-.empty-row{text-align:center;color:var(--tx3);padding:24px 20px;font-size:13px}
-.empty-card{text-align:center;color:var(--tx3);padding:36px 20px;font-size:13px;background:var(--card);border-radius:var(--r2);border:1px solid var(--bdr)}
-.status-on{color:var(--gn);font-size:12px;font-weight:500}.status-off{color:var(--tx3);font-size:12px}
-.action-btn{background:var(--bl2);color:var(--bl);border:none;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:600;cursor:pointer;margin-left:4px;font-family:var(--fh)}
+.muted{color:var(--tx2)}.mono{font-family:monospace;font-size:11px;color:var(--tx3)}
+.price-final{font-family:var(--fh);font-weight:700;color:var(--or)}.price-est{font-size:11px;color:var(--yw)}
+.empty-row{text-align:center;color:var(--tx3);padding:22px 20px;font-size:13px}
+.empty-card{text-align:center;color:var(--tx3);padding:32px 20px;font-size:13px;background:var(--card);border-radius:var(--r2);border:1px solid var(--bdr)}
+.status-on{color:var(--gn);font-size:12px;font-weight:500}
+.status-warn{color:var(--yw);font-size:12px;font-weight:500}
+.status-off{color:var(--tx3);font-size:12px}
+.action-btn{background:var(--bl2);color:var(--bl);border:none;border-radius:5px;padding:3px 8px;font-size:11px;font-weight:600;cursor:pointer;font-family:var(--fh)}
 .action-btn.green{background:var(--gn2);color:var(--gn)}
-.del-btn{background:var(--rd2);color:var(--rd);border:none;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:600;cursor:pointer;margin-left:4px;font-family:var(--fh);transition:opacity .15s}
-.del-btn:hover{opacity:.8}
-.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:11px;margin-bottom:14px}
-.kpi-grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:11px;margin-bottom:14px}
-.kpi{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:13px}
-.kpi-ico{font-size:20px;margin-bottom:7px}.kpi-val{font-family:var(--fh);font-size:22px;font-weight:800;margin-bottom:2px}.kpi-lbl{font-size:12px;color:var(--tx2)}.kpi-sub{font-size:11px;color:var(--tx3);margin-top:3px}
-.table-wrap{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);overflow:hidden;margin-bottom:13px}
-.table-head{padding:11px 14px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between}
-.table-head-title{font-family:var(--fh);font-size:13px;font-weight:700}
+.del-btn{background:var(--rd2);color:var(--rd);border:none;border-radius:5px;padding:3px 8px;font-size:11px;font-weight:600;cursor:pointer;font-family:var(--fh)}
+/* CLICKABLE KPI CARDS */
+.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
+.kpi-grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px}
+.kpi{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:12px;cursor:pointer;transition:border-color .15s}
+.kpi:hover{border-color:var(--bdr2)}
+.kpi-ico{font-size:19px;margin-bottom:6px}
+.kpi-val{font-family:var(--fh);font-size:20px;font-weight:800;margin-bottom:2px}
+.kpi-lbl{font-size:11px;color:var(--tx2)}
+.kpi-hint{font-size:10px;color:var(--tx3);margin-top:2px}
+.table-wrap{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);overflow:hidden;margin-bottom:12px}
+.table-head{padding:10px 13px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between}
+.table-head-title{font-family:var(--fh);font-size:12px;font-weight:700}
 table{width:100%;border-collapse:collapse}
-th{font-family:var(--fh);font-size:10px;font-weight:700;color:var(--tx3);letter-spacing:.07em;text-transform:uppercase;padding:8px 11px;text-align:left;border-bottom:1px solid var(--bdr);white-space:nowrap}
-td{padding:8px 11px;border-bottom:1px solid var(--bdr);font-size:13px;vertical-align:middle}
+th{font-family:var(--fh);font-size:10px;font-weight:700;color:var(--tx3);letter-spacing:.07em;text-transform:uppercase;padding:7px 10px;text-align:left;border-bottom:1px solid var(--bdr);white-space:nowrap}
+td{padding:7px 10px;border-bottom:1px solid var(--bdr);font-size:12px;vertical-align:middle}
 tr:last-child td{border-bottom:none}
 tr:hover td{background:rgba(255,255,255,.015)}
 tr.row-done td{opacity:.6}
-.mech-name-cell{display:flex;align-items:center;gap:7px}
 .mini-av{width:26px;height:26px;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;font-family:var(--fh);font-size:10px;font-weight:700;flex-shrink:0}
-.alert-card{display:flex;align-items:flex-start;gap:11px;padding:12px 14px;border-radius:var(--r2);margin-bottom:8px;border:1px solid var(--bdr)}
+.alert-card{display:flex;align-items:flex-start;gap:10px;padding:11px 13px;border-radius:var(--r2);margin-bottom:7px;border:1px solid var(--bdr)}
 .alert-active{background:var(--rd2);border-color:rgba(239,68,68,.3);animation:blink 2s 4}
 .alert-done{background:var(--card);opacity:.7}
-.alert-ico{font-size:22px;flex-shrink:0}.alert-body{flex:1;min-width:0}
-.alert-title{font-size:13px;font-weight:600;margin-bottom:3px}.alert-sub{font-size:12px;color:var(--tx2);margin-top:2px;line-height:1.4}
-.alert-actions{display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex-shrink:0}
-.info-box{background:linear-gradient(135deg,rgba(249,115,22,.1),rgba(249,115,22,.03));border:1px solid rgba(249,115,22,.22);border-radius:var(--r2);padding:14px;margin-bottom:13px}
-.info-box h3{font-family:var(--fh);font-size:14px;font-weight:700;color:var(--or);margin-bottom:9px}
-.info-step{display:flex;align-items:flex-start;gap:9px;margin-bottom:8px;font-size:13px;line-height:1.6;color:var(--tx2)}
-.info-n{width:20px;height:20px;border-radius:50%;background:var(--or);color:#fff;display:flex;align-items:center;justify-content:center;font-family:var(--fh);font-size:11px;font-weight:700;flex-shrink:0;margin-top:1px}
+.info-box{background:linear-gradient(135deg,rgba(249,115,22,.1),rgba(249,115,22,.03));border:1px solid rgba(249,115,22,.22);border-radius:var(--r2);padding:13px;margin-bottom:12px}
+.info-box h3{font-family:var(--fh);font-size:13px;font-weight:700;color:var(--or);margin-bottom:8px}
+.info-step{display:flex;align-items:flex-start;gap:8px;margin-bottom:7px;font-size:12px;color:var(--tx2);line-height:1.6}
+.info-n{width:18px;height:18px;border-radius:50%;background:var(--or);color:#fff;display:flex;align-items:center;justify-content:center;font-family:var(--fh);font-size:10px;font-weight:700;flex-shrink:0;margin-top:1px}
 </style>
 </head>
 <body>
@@ -309,79 +267,101 @@ tr.row-done td{opacity:.6}
 <div id="login-screen">
   <div class="login-box">
     <div class="login-logo">Road<em>Fix</em> Admin</div>
-    <div class="login-sub">Manager login</div>
-    <div class="field"><label>Admin email</label><input id="al-email" type="email" placeholder="admin@roadfix.in" autocomplete="email"></div>
-    <div class="field"><label>Password</label><input id="al-pass" type="password" placeholder="••••••••" autocomplete="current-password"></div>
-    <div class="login-err" id="al-err"></div>
-    <button class="btn-login" onclick="adminLogin()">Sign in →</button>
-    <div class="login-hint">Use your <strong>Firebase project email</strong> and password</div>
+    <div style="font-size:12px;color:var(--tx2);text-align:center;margin-bottom:16px">Manager login</div>
+    <div class="fld"><label>Admin email</label><input id="al-email" type="email" placeholder="admin@roadfix.in" autocomplete="email"></div>
+    <div class="fld"><label>Password</label><input id="al-pass" type="password" placeholder="••••••••" autocomplete="current-password"></div>
+    <div style="font-size:11px;color:var(--rd);text-align:center;margin-bottom:8px;min-height:14px" id="al-err"></div>
+    <button style="width:100%;background:var(--or);color:#fff;border:none;border-radius:var(--r);padding:11px;font-family:var(--fh);font-size:14px;font-weight:700;cursor:pointer" onclick="adminLogin()">Sign in →</button>
+    <div style="font-size:10px;color:var(--tx3);text-align:center;margin-top:10px;line-height:1.6">Use Firebase Auth credentials<br>Create one at console.firebase.google.com</div>
   </div>
 </div>
 
 <!-- ADMIN APP -->
 <div id="admin-app" style="display:none;height:100vh;overflow:hidden;display:flex">
-  <!-- SIDEBAR -->
   <div class="sidebar">
-    <div class="sb-logo">
-      <div class="sb-logo-t">Road<em>Fix</em></div>
-      <div class="sb-logo-s">Admin Control Panel</div>
-    </div>
-    <div class="sb-live"><div class="live-dot"></div>Firebase · Live</div>
+    <div class="sb-logo"><div class="sb-logo-t">Road<em>Fix</em></div><div style="font-size:10px;color:var(--tx3);margin-top:2px">Admin Panel v4</div></div>
+    <div class="sb-live"><div class="live-dot"></div>Firebase connected · Live</div>
     <div class="sb-sos" id="sos-sidebar" onclick="showView('v-alerts')">
-      <span style="font-size:16px">🆘</span>
-      <div><div class="sos-count">Active SOS</div><div style="font-size:10px;color:var(--tx2);margin-top:1px">Tap to view</div></div>
+      <span style="font-size:15px">🆘</span>
+      <div><div class="sos-cnt">Active SOS</div><div style="font-size:10px;color:var(--tx2)">Click to view</div></div>
     </div>
-    <div class="sb-section">Operations</div>
+    <div class="sb-sec">Operations</div>
     <div class="sb-item active" id="si-dash" onclick="showView('v-dash')"><div class="sb-ico">📊</div>Dashboard</div>
     <div class="sb-item" id="si-jobs" onclick="showView('v-jobs')"><div class="sb-ico">🔧</div>Live jobs</div>
     <div class="sb-item" id="si-alerts" onclick="showView('v-alerts')"><div class="sb-ico">🚨</div>Alerts & SOS</div>
-    <div class="sb-section">People</div>
+    <div class="sb-sec">People</div>
     <div class="sb-item" id="si-mechs" onclick="showView('v-mechs')"><div class="sb-ico">👷</div>Mechanics</div>
     <div class="sb-item" id="si-custs" onclick="showView('v-custs')"><div class="sb-ico">👥</div>Customers</div>
     <div class="sb-bottom">
-      <div class="sb-user">
-        <div class="sb-av">AD</div>
-        <div style="min-width:0"><div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="admin-email">admin</div><div style="font-size:10px;color:var(--tx3)">Super admin</div></div>
+      <div style="display:flex;align-items:center;gap:7px;padding:5px">
+        <div style="width:26px;height:26px;border-radius:50%;background:var(--or2);border:1.5px solid var(--or);display:flex;align-items:center;justify-content:center;font-family:var(--fh);font-size:10px;font-weight:700;color:var(--or)">AD</div>
+        <div style="min-width:0;flex:1"><div style="font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="admin-email">admin</div></div>
       </div>
-      <button style="width:100%;background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);padding:7px;color:var(--tx2);font-size:12px;cursor:pointer;margin-top:5px;font-family:var(--fh);font-weight:600" onclick="adminLogout()">Sign out</button>
+      <button style="width:100%;background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);padding:7px;color:var(--tx2);font-size:11px;cursor:pointer;margin-top:5px;font-family:var(--fh);font-weight:600" onclick="adminLogout()">Sign out</button>
     </div>
   </div>
 
-  <!-- MAIN -->
   <div class="main">
     <div class="topbar">
       <div class="tb-title" id="tb-title">Dashboard</div>
-      <div class="tb-right">
-        <div class="tb-time" id="live-time">—</div>
-        <span class="bdg b-r" id="sos-top-badge" style="display:none;cursor:pointer" onclick="showView('v-alerts')">🆘 0 SOS</span>
+      <div style="display:flex;align-items:center;gap:9px">
+        <div style="font-size:11px;color:var(--tx2);font-family:monospace" id="live-time">—</div>
+        <span class="bdg b-r" id="sos-badge" style="display:none;cursor:pointer" onclick="showView('v-alerts')">🆘 0</span>
       </div>
     </div>
 
     <div class="content">
-      <!-- DASHBOARD -->
+      <!-- DASHBOARD — all KPI cards CLICKABLE to navigate -->
       <div id="v-dash" class="view active">
         <div class="kpi-grid">
-          <div class="kpi"><div class="kpi-ico">🔧</div><div class="kpi-val" style="color:var(--or)" id="d-active">0</div><div class="kpi-lbl">Active jobs</div></div>
-          <div class="kpi"><div class="kpi-ico">✅</div><div class="kpi-val" style="color:var(--gn)" id="d-done">0</div><div class="kpi-lbl">Completed</div></div>
-          <div class="kpi"><div class="kpi-ico">👷</div><div class="kpi-val" style="color:var(--bl)" id="d-mechs">0</div><div class="kpi-lbl">Mechanics online</div></div>
-          <div class="kpi"><div class="kpi-ico">💰</div><div class="kpi-val" style="color:var(--gn)" id="d-gmv">₹0</div><div class="kpi-lbl">GMV (paid)</div></div>
+          <div class="kpi" onclick="showView('v-jobs')" title="Click to view all jobs">
+            <div class="kpi-ico">🔧</div><div class="kpi-val" style="color:var(--or)" id="d-active">0</div>
+            <div class="kpi-lbl">Active jobs</div><div class="kpi-hint">↗ Click to view</div>
+          </div>
+          <div class="kpi" onclick="showView('v-jobs')" title="Click to view jobs">
+            <div class="kpi-ico">✅</div><div class="kpi-val" style="color:var(--gn)" id="d-done">0</div>
+            <div class="kpi-lbl">Completed</div><div class="kpi-hint">↗ Click to view</div>
+          </div>
+          <div class="kpi" onclick="showView('v-mechs')" title="Click to view mechanics">
+            <div class="kpi-ico">👷</div><div class="kpi-val" style="color:var(--bl)" id="d-online">0</div>
+            <div class="kpi-lbl">Mechanics online</div><div class="kpi-hint">↗ Click to manage</div>
+          </div>
+          <div class="kpi" onclick="showView('v-dash')">
+            <div class="kpi-ico">💰</div><div class="kpi-val" style="color:var(--gn)" id="d-gmv">₹0</div>
+            <div class="kpi-lbl">GMV (paid)</div>
+          </div>
         </div>
         <div class="kpi-grid">
-          <div class="kpi"><div class="kpi-ico">👥</div><div class="kpi-val" style="color:var(--yw)" id="d-custs">0</div><div class="kpi-lbl">Customers</div></div>
-          <div class="kpi"><div class="kpi-ico">🚨</div><div class="kpi-val" style="color:var(--rd)" id="d-sos">0</div><div class="kpi-lbl">Active SOS</div></div>
-          <div class="kpi"><div class="kpi-ico">⏳</div><div class="kpi-val" style="color:var(--yw)" id="d-pending">0</div><div class="kpi-lbl">Pending verify</div></div>
-          <div class="kpi"><div class="kpi-ico">✅</div><div class="kpi-val" style="color:var(--gn)" id="d-verified">0</div><div class="kpi-lbl">Verified mechs</div></div>
+          <div class="kpi" onclick="showView('v-custs')" title="Click to view customers">
+            <div class="kpi-ico">👥</div><div class="kpi-val" style="color:var(--yw)" id="d-custs">0</div>
+            <div class="kpi-lbl">Customers</div><div class="kpi-hint">↗ Click to manage</div>
+          </div>
+          <div class="kpi" onclick="showView('v-alerts')" title="Click to view SOS alerts">
+            <div class="kpi-ico">🚨</div><div class="kpi-val" style="color:var(--rd)" id="d-sos">0</div>
+            <div class="kpi-lbl">Active SOS</div><div class="kpi-hint">↗ Click to view</div>
+          </div>
+          <div class="kpi" onclick="showView('v-mechs')" title="Click to verify mechanics">
+            <div class="kpi-ico">⏳</div><div class="kpi-val" style="color:var(--yw)" id="d-pending">0</div>
+            <div class="kpi-lbl">Pending verify</div><div class="kpi-hint">↗ Click to verify</div>
+          </div>
+          <div class="kpi" onclick="showView('v-mechs')" title="Click to view verified mechanics">
+            <div class="kpi-ico">✅</div><div class="kpi-val" style="color:var(--gn)" id="d-verified">0</div>
+            <div class="kpi-lbl">Verified mechs</div><div class="kpi-hint">↗ Click to view</div>
+          </div>
         </div>
+
         <div class="info-box">
-          <h3>🎯 How to test real-time</h3>
-          <div class="info-step"><div class="info-n">1</div><div>Customer app (Tab 1) → Register → Report issue → AI diagnose → Book mechanic → job appears in Live Jobs instantly</div></div>
-          <div class="info-step"><div class="info-n">2</div><div>Mechanic app (Tab 2) → Register → <strong style="color:var(--or)">Come here and click Verify</strong> → mechanic can now accept jobs</div></div>
-          <div class="info-step"><div class="info-n">3</div><div>SOS button in any app → red alert appears in Alerts tab in under 1 second with GPS coordinates + Google Maps link</div></div>
-          <div class="info-step"><div class="info-n">4</div><div>Delete any mechanic or customer using the 🗑 button — confirmation required before deletion</div></div>
+          <h3>🎯 How to use this panel</h3>
+          <div class="info-step"><div class="info-n">1</div><div>All KPI cards above are clickable — click any card to navigate to that section</div></div>
+          <div class="info-step"><div class="info-n">2</div><div>Mechanic registers → appears in Mechanics tab as ⏳ Pending → click <strong>Verify ✓</strong> → mechanic auto-enters app instantly</div></div>
+          <div class="info-step"><div class="info-n">3</div><div>Customer triggers SOS → red alert with GPS + Google Maps link appears in Alerts tab in under 1 second</div></div>
+          <div class="info-step"><div class="info-n">4</div><div>Delete any mechanic, customer, job or alert using the 🗑 buttons — confirmation required</div></div>
+          <div class="info-step"><div class="info-n">5</div><div>All data is real-time — open Customer + Mechanic apps in other tabs and watch changes here instantly</div></div>
         </div>
+
         <div class="table-wrap">
-          <div class="table-head"><div class="table-head-title">Recent jobs</div><span class="bdg b-g">● Live</span></div>
-          <div style="overflow-x:auto"><table><thead><tr><th>Job ID</th><th>Customer</th><th>Vehicle</th><th>Mechanic</th><th>Issue</th><th>Price</th><th>Status</th><th>Parts</th><th>Del</th></tr></thead><tbody id="jobs-tbody"><tr><td colspan="9" class="empty-row">No jobs yet</td></tr></tbody></table></div>
+          <div class="table-head"><div class="table-head-title">Recent jobs (live)</div><span class="bdg b-g">● Live</span></div>
+          <div style="overflow-x:auto"><table><thead><tr><th>Job</th><th>Customer</th><th>Vehicle</th><th>Mechanic</th><th>Issue</th><th>Price</th><th>Status</th><th>Parts</th><th>Del</th></tr></thead><tbody id="jobs-tbody"><tr><td colspan="9" class="empty-row">No jobs yet</td></tr></tbody></table></div>
         </div>
       </div>
 
@@ -389,37 +369,42 @@ tr.row-done td{opacity:.6}
       <div id="v-jobs" class="view">
         <div class="table-wrap">
           <div class="table-head"><div class="table-head-title">All jobs — live from Firebase</div><span class="bdg b-g">● Synced</span></div>
-          <div style="overflow-x:auto"><table><thead><tr><th>Job ID</th><th>Customer</th><th>Vehicle</th><th>Mechanic</th><th>Issue</th><th>Price</th><th>Status</th><th>Parts</th><th>Del</th></tr></thead><tbody id="jobs-tbody-2"><tr><td colspan="9" class="empty-row">No jobs yet</td></tr></tbody></table></div>
+          <div style="overflow-x:auto"><table><thead><tr><th>Job</th><th>Customer</th><th>Vehicle</th><th>Mechanic</th><th>Issue</th><th>Price</th><th>Status</th><th>Parts</th><th>Del</th></tr></thead><tbody id="jobs-tbody-2"><tr><td colspan="9" class="empty-row">No jobs yet</td></tr></tbody></table></div>
         </div>
       </div>
 
       <!-- ALERTS -->
       <div id="v-alerts" class="view">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:13px">
-          <div style="font-family:var(--fh);font-size:14px;font-weight:700">Alerts & SOS — real time</div>
-          <span class="bdg b-g">● Live Firebase</span>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:11px">
+          <div style="font-family:var(--fh);font-size:13px;font-weight:700">Alerts & SOS — real time</div>
+          <span class="bdg b-g">● Live</span>
         </div>
-        <div id="alerts-container"><div class="empty-card">No alerts yet. SOS from customer or mechanic app appears here instantly with GPS + Google Maps link.</div></div>
+        <div id="alerts-container"><div class="empty-card">No alerts yet.</div></div>
       </div>
 
-      <!-- MECHANICS -->
+      <!-- MECHANICS — with pfp, verify, delete -->
       <div id="v-mechs" class="view">
-        <div class="kpi-grid-3" style="margin-bottom:13px">
-          <div class="kpi"><div class="kpi-ico">👷</div><div class="kpi-val" style="color:var(--gn)" id="d-mechs-tab">0</div><div class="kpi-lbl">Online now</div></div>
-          <div class="kpi"><div class="kpi-ico">✅</div><div class="kpi-val" style="color:var(--bl)" id="d-verified-tab">0</div><div class="kpi-lbl">Verified</div></div>
-          <div class="kpi"><div class="kpi-ico">⏳</div><div class="kpi-val" style="color:var(--yw)" id="d-pending-tab">0</div><div class="kpi-lbl">Pending verification</div></div>
+        <div class="kpi-grid-3" style="margin-bottom:12px">
+          <div class="kpi"><div class="kpi-ico">👷</div><div class="kpi-val" style="color:var(--gn)" id="d-m-online">0</div><div class="kpi-lbl">Online now</div></div>
+          <div class="kpi"><div class="kpi-ico">✅</div><div class="kpi-val" style="color:var(--bl)" id="d-m-verified">0</div><div class="kpi-lbl">Verified</div></div>
+          <div class="kpi"><div class="kpi-ico">⏳</div><div class="kpi-val" style="color:var(--yw)" id="d-m-pending">0</div><div class="kpi-lbl">Pending — click Verify</div></div>
         </div>
         <div class="table-wrap">
           <div class="table-head"><div class="table-head-title">All mechanics — click Verify to activate</div><span class="bdg b-g">● Live</span></div>
-          <div style="overflow-x:auto"><table><thead><tr><th>Name</th><th>Phone</th><th>City</th><th>Skills</th><th>GPS</th><th>Bodycam</th><th>Status</th><th>Verification</th><th>Delete</th></tr></thead><tbody id="mechs-tbody"><tr><td colspan="9" class="empty-row">No mechanics registered yet</td></tr></tbody></table></div>
+          <div style="overflow-x:auto"><table><thead><tr><th>Name + Photo</th><th>Phone</th><th>City</th><th>Skills</th><th>GPS</th><th>Status</th><th>Verification</th><th>Delete</th></tr></thead><tbody id="mechs-tbody"><tr><td colspan="8" class="empty-row">No mechanics yet</td></tr></tbody></table></div>
         </div>
       </div>
 
       <!-- CUSTOMERS -->
       <div id="v-custs" class="view">
+        <div class="kpi-grid-3" style="margin-bottom:12px">
+          <div class="kpi"><div class="kpi-ico">👥</div><div class="kpi-val" style="color:var(--bl)" id="d-c-total">0</div><div class="kpi-lbl">Registered customers</div></div>
+          <div class="kpi"><div class="kpi-ico">🔧</div><div class="kpi-val" style="color:var(--or)" id="d-c-jobs">0</div><div class="kpi-lbl">Total jobs</div></div>
+          <div class="kpi"><div class="kpi-ico">💰</div><div class="kpi-val" style="color:var(--gn)" id="d-c-gmv">₹0</div><div class="kpi-lbl">GMV</div></div>
+        </div>
         <div class="table-wrap">
-          <div class="table-head"><div class="table-head-title">All customers — registered via app</div><span class="bdg b-g">● Live</span></div>
-          <div style="overflow-x:auto"><table><thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>City</th><th>Registered</th><th>Status</th><th>Delete</th></tr></thead><tbody id="custs-tbody"><tr><td colspan="7" class="empty-row">No customers registered yet</td></tr></tbody></table></div>
+          <div class="table-head"><div class="table-head-title">All customers</div><span class="bdg b-g">● Live</span></div>
+          <div style="overflow-x:auto"><table><thead><tr><th>Name + Photo</th><th>Phone</th><th>Email</th><th>City</th><th>Joined</th><th>Status</th><th>Delete</th></tr></thead><tbody id="custs-tbody"><tr><td colspan="7" class="empty-row">No customers yet</td></tr></tbody></table></div>
         </div>
       </div>
     </div>

@@ -2,520 +2,441 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <title>MechPro — Mechanic</title>
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
 <script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import { getDatabase, ref, set, push, onValue, update, get } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
-const firebaseConfig = {
-  apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",
-  authDomain:"roadfix-demo.firebaseapp.com",
-  databaseURL:"https://roadfix-demo-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId:"roadfix-demo",
-  storageBucket:"roadfix-demo.firebasestorage.app",
-  messagingSenderId:"274952184107",
-  appId:"1:274952184107:web:63188439d92ec31103a56e"
-};
-const app=initializeApp(firebaseConfig);
-const auth=getAuth(app);
-const db=getDatabase(app);
-window._db=db; window._ref=ref; window._set=set;
-window._push=push; window._onValue=onValue; window._update=update;
+import{initializeApp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import{getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,onAuthStateChanged}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import{getDatabase,ref,set,push,onValue,update,get}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+const app=initializeApp({apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",authDomain:"roadfix-demo.firebaseapp.com",databaseURL:"https://roadfix-demo-default-rtdb.asia-southeast1.firebasedatabase.app",projectId:"roadfix-demo",storageBucket:"roadfix-demo.firebasestorage.app",messagingSenderId:"274952184107",appId:"1:274952184107:web:63188439d92ec31103a56e"});
+const auth=getAuth(app),db=getDatabase(app);
 
-// ── AUTH STATE ──────────────────────────────────────
+// ── STATE ─────────────────────────────────────────────
+let uid=null,profile=null,jobId=null,currentJob=null,shownGig=false,chatUnsub=null;
+
+// ── AUTH (FIX x: onValue = instant verification redirect) ─
 onAuthStateChanged(auth,user=>{
   if(user){
-    window._currentUser=user;
-    get(ref(db,'mechanics/'+user.uid)).then(snap=>{
-      const p=snap.val();
-      if(p){
-        window._mechProfile=p;
-        setEl('mech-name-display',p.name);
-        setEl('mech-avi',p.name.substr(0,2).toUpperCase());
-        setEl('profile-name-p',p.name);
-        setEl('profile-sub-p',p.phone+' · '+p.city);
-        setEl('profile-av',p.name.substr(0,2).toUpperCase());
-        // ── VERIFICATION GATE ──────────────────────
-        if(!p.verified){
-          N('m-pending');
-          return;
-        }
-        // Update online status
-        update(ref(db,'mechanics/'+user.uid),{status:'online',gpsOn:true,bodycam:true,lastSeen:Date.now()});
-        N('m-home');
-        startListeners();
+    uid=user.uid;
+    // FIX x + iv + viii: realtime listener on mechanic profile
+    // This fires immediately AND whenever verified flag changes — no refresh needed
+    onValue(ref(db,'mechanics/'+uid),snap=>{
+      const p=snap.val();if(!p)return;
+      profile=p;
+      applyProfile(p);
+      if(!p.verified){
+        // Hard block — stay on pending screen
+        if(cur!=='m-pending')go('m-pending');
       } else {
-        N('m-home');
+        // VERIFIED — auto-redirect without refresh
+        if(cur==='m-pending'||cur==='m-login'||cur==='m-register'){
+          update(ref(db,'mechanics/'+uid),{status:'online',gpsOn:true,bodycam:true,lastSeen:Date.now()});
+          go('m-home');
+          startListeners();
+          toast('✅ Verified! Welcome to MechPro.');
+        } else if(cur==='m-home') {
+          // Already on home, just update profile display
+        }
       }
     });
-  } else {
-    window._currentUser=null;
-    N('m-login');
-  }
+  } else {uid=null;profile=null;go('m-login');}
 });
 
+// FIX iv+viii: apply ALL profile fields everywhere
+function applyProfile(p){
+  const ini=(p.name||'M').split(' ').map(w=>w[0]).join('').substr(0,2).toUpperCase();
+  qsa('.m-ini').forEach(e=>e.textContent=ini);
+  qsa('.m-name').forEach(e=>e.textContent=p.name||'Mechanic');
+  qsa('.m-phone').forEach(e=>e.textContent=(p.phone||'')+(p.city?' · '+p.city:''));
+  if(p.pfp){qsa('.m-pfp').forEach(e=>{e.src=p.pfp;e.style.display='block';});qsa('.m-ini').forEach(e=>e.style.display='none');}
+  if(p.skills){const sw=document.getElementById('skills-wrap');if(sw)sw.innerHTML=p.skills.split(',').map(s=>`<span class="bdg b-g">${s.trim()}</span>`).join('');}
+}
+
 // ── REGISTER ─────────────────────────────────────────
-window.registerMechanic=async function(){
-  const name=document.getElementById('mreg-name').value.trim();
-  const phone=document.getElementById('mreg-phone').value.trim();
-  const city=document.getElementById('mreg-city').value.trim();
-  const skills=document.getElementById('mreg-skills').value.trim();
-  const email=document.getElementById('mreg-email').value.trim();
-  const pass=document.getElementById('mreg-pass').value;
-  const err=document.getElementById('mreg-error');
-  if(!name||!phone||!email||!pass){err.textContent='Fill all fields';return;}
+window.doReg=async()=>{
+  const n=gv('mn'),ph=gv('mph'),ci=gv('mci'),sk=gv('msk'),em=gv('mem'),pw=gv('mpw');
+  const err=ge('mr-err');
+  if(!n||!ph||!em||!pw){err.textContent='Fill all required fields';return;}
+  // FIX vi: pfp REQUIRED for mechanics
+  const pfpF=ge('m-pfp-inp').files[0];
+  if(!pfpF){err.textContent='Profile photo is required for mechanics ✱';return;}
   err.textContent='Creating account...';
   try{
-    const cred=await createUserWithEmailAndPassword(auth,email,pass);
-    const uid=cred.user.uid;
-    const profile={name,phone,city:city||'Guwahati',skills:skills||'General',email,role:'mechanic',
-      status:'online',gpsOn:true,bodycam:true,rating:5.0,
-      verified:false, // STARTS UNVERIFIED — admin must verify
-      createdAt:Date.now(),totalJobs:0,earnings:0};
-    await set(ref(db,'mechanics/'+uid),profile);
-    window._mechProfile=profile;
+    const c=await createUserWithEmailAndPassword(auth,em,pw);
+    const pfp=await b64(pfpF);
+    const p={name:n,phone:ph,city:ci||'',skills:sk||'General',email:em,role:'mechanic',
+      status:'online',gpsOn:true,bodycam:true,rating:5.0,verified:false,createdAt:Date.now(),pfp};
+    await set(ref(db,'mechanics/'+c.user.uid),p);
     err.textContent='';
-    // Go to pending screen
-    N('m-pending');
+    // onAuthStateChanged will fire and redirect to pending
   }catch(e){err.textContent=e.message.replace('Firebase: ','').replace(/\(.*\)/,'');}
 };
-
-// ── LOGIN ─────────────────────────────────────────────
-window.loginMechanic=async function(){
-  const email=document.getElementById('mlogin-email').value.trim();
-  const pass=document.getElementById('mlogin-pass').value;
-  const err=document.getElementById('mlogin-error');
-  err.textContent='Signing in...';
-  try{await signInWithEmailAndPassword(auth,email,pass);err.textContent='';}
+window.doLogin=async()=>{
+  const err=ge('ml-err');err.textContent='Signing in...';
+  try{await signInWithEmailAndPassword(auth,gv('mlem'),gv('mlpw'));err.textContent='';}
   catch(e){err.textContent='Invalid email or password';}
 };
+window.doLogout=async()=>{if(uid)await update(ref(db,'mechanics/'+uid),{status:'offline'});await signOut(auth);};
 
-window.logoutMechanic=async function(){
-  if(window._currentUser){
-    await update(ref(db,'mechanics/'+window._currentUser.uid),{status:'offline'});
-  }
-  await signOut(auth);
-};
-
-// ── VERIFICATION POLLING ──────────────────────────────
-// While on pending screen, poll Firebase every 10s for verification
-function pollVerification(){
-  if(!window._currentUser)return;
-  window._verifyPoll=setInterval(()=>{
-    get(ref(db,'mechanics/'+window._currentUser.uid)).then(snap=>{
-      const p=snap.val();
-      if(p&&p.verified){
-        clearInterval(window._verifyPoll);
-        window._mechProfile=p;
-        update(ref(db,'mechanics/'+window._currentUser.uid),{status:'online',gpsOn:true,bodycam:true});
-        N('m-home');
-        startListeners();
-        showToast('✅ You are now verified! Welcome aboard.');
-      }
-    });
-  },10000);
-}
-
-// ── LISTENERS ─────────────────────────────────────────
+// ── LIVE LISTENERS ────────────────────────────────────
 function startListeners(){
-  // Listen for jobs assigned to this mechanic
+  // FIX xiv: job listener with atomic lock
   onValue(ref(db,'jobs'),snap=>{
-    const jobs=snap.val()||{};
-    Object.entries(jobs).forEach(([id,job])=>{
-      if(job.status==='searching_mechanic'&&!window._shownGig){
-        window._shownGig=true;
-        window._currentJobId=id;
-        window._currentJob=job;
+    const all=snap.val()||{};
+    Object.entries(all).forEach(([id,job])=>{
+      // FIX xiv: only show if status is searching AND no mechanicId locked yet
+      if(job.status==='searching_mechanic'&&!job.mechanicId&&!shownGig){
+        shownGig=true;jobId=id;currentJob=job;
         showGigAlert(id,job);
       }
+      // If I'm assigned and job becomes done
+      if(job.mechanicId===uid&&job.status==='done'&&jobId===id){
+        tx('active-job','None');
+      }
     });
   });
-  // Listen for SOS alerts
+  // Customer SOS alerts
   onValue(ref(db,'alerts'),snap=>{
-    const alerts=snap.val()||{};
-    const active=Object.values(alerts).filter(a=>a.status==='active'&&a.type==='customer_sos');
-    const bar=document.getElementById('sos-alert-bar');
+    const all=snap.val()||{};
+    const active=Object.values(all).filter(a=>a.status==='active'&&a.type==='customer_sos');
+    const bar=ge('sos-bar');
     if(bar){
-      if(active.length>0){
-        bar.style.display='flex';
-        const latest=active[active.length-1];
-        setEl('sos-alert-text','🆘 Customer SOS: '+latest.name+' · '+latest.location);
-      } else {
-        bar.style.display='none';
-      }
+      bar.style.display=active.length>0?'flex':'none';
+      if(active.length>0){const l=active[active.length-1];tx('sos-bar-txt','🆘 '+l.name+' · '+l.location);}
     }
   });
-  // GPS update every 30s
-  window._gpsInterval=setInterval(()=>{
-    if(!window._currentUser||!navigator.geolocation)return;
-    navigator.geolocation.getCurrentPosition(pos=>{
-      update(ref(db,'mechanics/'+window._currentUser.uid),{
-        lat:pos.coords.latitude,lng:pos.coords.longitude,lastGPS:Date.now()
-      });
-    },{},{enableHighAccuracy:true});
-  },30000);
-}
-
-function showGigAlert(jobId,job){
-  // Show preview on home
-  const prev=document.getElementById('gig-prev');
-  if(prev)prev.style.display='block';
-  setEl('gig-prev-title','🔔 New job — '+(job.issue||'Repair'));
-  setEl('gig-prev-price','₹'+(job.estimateLow||'—')+'–'+(job.estimateHigh||'—'));
-  const badge=document.getElementById('gig-nav-badge');
-  if(badge)badge.style.display='block';
-  // Populate gig detail
-  setEl('gig-detail-title',job.issue||'Vehicle repair');
-  setEl('gig-detail-location','📍 '+(job.location||'Guwahati'));
-  setEl('gig-detail-price','₹'+(job.estimateLow||'—')+'–'+(job.estimateHigh||'—'));
-  setEl('gig-detail-customer',job.customerName||'Customer');
-  setEl('gig-detail-phone',job.customerPhone||'—');
-  setEl('gig-detail-parts',job.partType||'OEM');
-  // ── VEHICLE INFO ──
-  const vStr=job.vehicle||((job.vehicleMake?job.vehicleMake+' ':'')+
-    (job.vehicleModel?job.vehicleModel+' ':'')+
-    (job.vehicleYear?job.vehicleYear+' ':'')+
-    (job.vehicleFuel?job.vehicleFuel:''));
-  setEl('gig-detail-vehicle',vStr||'Not specified');
-  setEl('gig-detail-ai',job.aiConfidence?'AI confidence: '+job.aiConfidence:'—');
-}
-
-// ── ACCEPT / DECLINE ──────────────────────────────────
-window.acceptGig=function(){
-  if(!window._currentJobId||!window._currentUser)return;
-  const p=window._mechProfile||{};
-  update(ref(db,'jobs/'+window._currentJobId),{
-    status:'enroute',mechanic:p.name||'Mechanic',
-    mechanicId:window._currentUser.uid,
-    mechanicPhone:p.phone||'—',updatedAt:Date.now()
-  });
-  update(ref(db,'mechanics/'+window._currentUser.uid),{status:'enroute',activeJob:window._currentJobId,eta:4});
-  const badge=document.getElementById('gig-nav-badge');if(badge)badge.style.display='none';
-  N('m-nav');
-};
-
-window.declineGig=function(){
-  window._shownGig=false;
-  const prev=document.getElementById('gig-prev');if(prev)prev.style.display='none';
-  B();
-};
-
-window.completeJob=function(){
-  if(window._currentJobId&&window._currentUser){
-    update(ref(db,'jobs/'+window._currentJobId),{status:'done',finalPrice:1550,completedAt:Date.now()});
-    update(ref(db,'mechanics/'+window._currentUser.uid),{status:'online',activeJob:null,eta:null});
-    window._shownGig=false;
+  // FIX xii+xiii: GPS immediately + update Firebase online status
+  update(ref(db,'mechanics/'+uid),{status:'online',gpsOn:true,bodycam:true,lastSeen:Date.now()});
+  if(navigator.geolocation){
+    navigator.geolocation.getCurrentPosition(p=>{
+      update(ref(db,'mechanics/'+uid),{lat:p.coords.latitude,lng:p.coords.longitude,gpsOn:true});
+      tx('gps-stat','📍 GPS: '+p.coords.latitude.toFixed(4)+'°N');
+    },()=>tx('gps-stat','📍 GPS: Active'),{enableHighAccuracy:true,timeout:7000});
+    // Update every 30s
+    setInterval(()=>{
+      if(!uid)return;
+      navigator.geolocation.getCurrentPosition(p=>{
+        update(ref(db,'mechanics/'+uid),{lat:p.coords.latitude,lng:p.coords.longitude,lastGPS:Date.now()});
+        tx('gps-stat','📍 GPS: '+p.coords.latitude.toFixed(4)+'°N');
+      },()=>{},{enableHighAccuracy:true,timeout:5000});
+    },30000);
   }
-  N('m-done');
+}
+
+function showGigAlert(id,job){
+  const pv=ge('gig-prev');if(pv)pv.style.display='block';
+  tx('gig-prev-title','🔔 New job — '+(job.issue||'Repair'));
+  tx('gig-prev-price','₹'+(job.estimateLow||'—')+'–'+(job.estimateHigh||'—'));
+  const nb=ge('gig-badge');if(nb)nb.style.display='block';
+  // Populate gig detail
+  tx('gig-issue',job.issue||'—');
+  tx('gig-loc','📍 '+(job.location||'—'));
+  tx('gig-price','₹'+(job.estimateLow||'—')+'–'+(job.estimateHigh||'—'));
+  tx('gig-cust',job.customerName||'—');
+  tx('gig-cph',job.customerPhone||'—');
+  // Full vehicle info
+  const vstr=job.vehicle||((job.vehicleMake||'')+' '+(job.vehicleModel||'')+' '+(job.vehicleYear||'')+' '+(job.vehicleFuel||'')).trim();
+  tx('gig-veh',vstr||'Not specified');
+  tx('gig-parts',job.partType||'OEM');
+  tx('gig-cats',job.categories||'General');
+  tx('gig-ai',job.aiConfidence?'AI: '+job.aiConfidence:'—');
+}
+
+// FIX xiv: atomic lock — check before accepting
+window.acceptGig=()=>{
+  if(!jobId||!uid){toast('No active gig');return;}
+  const p=profile||{};
+  get(ref(db,'jobs/'+jobId)).then(snap=>{
+    const job=snap.val();
+    if(!job){toast('Job no longer available');shownGig=false;return;}
+    // FIX xiv: if another mechanic already locked it, reject
+    if(job.mechanicId&&job.mechanicId!==uid){
+      toast('⚠️ Job already taken by another mechanic');
+      shownGig=false;
+      const pv=ge('gig-prev');if(pv)pv.style.display='none';
+      back();return;
+    }
+    // Lock job to this mechanic
+    update(ref(db,'jobs/'+jobId),{status:'enroute',mechanic:p.name,mechanicId:uid,mechanicPhone:p.phone||'—',updatedAt:Date.now()});
+    update(ref(db,'mechanics/'+uid),{status:'enroute',activeJob:jobId,eta:4});
+    tx('active-job',currentJob?currentJob.issue:'Active job');
+    const nb=ge('gig-badge');if(nb)nb.style.display='none';
+    go('m-nav');
+  });
+};
+window.declineGig=()=>{shownGig=false;const pv=ge('gig-prev');if(pv)pv.style.display='none';back();};
+window.completeJob=()=>{
+  if(jobId&&uid){update(ref(db,'jobs/'+jobId),{status:'done',finalPrice:1550,completedAt:Date.now()});update(ref(db,'mechanics/'+uid),{status:'online',activeJob:null,eta:null});shownGig=false;jobId=null;}
+  go('m-done');
 };
 
 // ── ONLINE TOGGLE ─────────────────────────────────────
-window.toggleOnline=function(){
-  if(!window._currentUser)return;
-  const tt=document.getElementById('tt');
-  const isOn=tt.classList.contains('on');
+window.toggleOnline=()=>{
+  if(!uid)return;
+  const tt=ge('tt'),isOn=tt.classList.contains('on');
   tt.classList.toggle('on',!isOn);
-  setEl('tlbl',!isOn?'You are online':'You are offline');
-  setEl('tsub',!isOn?'Accepting gig requests':'Won\'t receive new gigs');
-  const bdg=document.getElementById('tbdg');
-  if(bdg){bdg.className=!isOn?'bdg b-g':'bdg b-off';bdg.textContent=!isOn?'● Active':'○ Offline';}
-  update(ref(db,'mechanics/'+window._currentUser.uid),{status:!isOn?'online':'offline'});
+  tx('tlbl',!isOn?'You are online':'You are offline');
+  tx('tsub',!isOn?'Accepting gig requests':'Not receiving gigs');
+  const bdg=ge('tbdg');if(bdg){bdg.className='bdg '+(!isOn?'b-g':'b-off');bdg.textContent=!isOn?'● Active':'○ Offline';}
+  update(ref(db,'mechanics/'+uid),{status:!isOn?'online':'offline'});
 };
 
-// ── MECHANIC SOS ──────────────────────────────────────
-window.mechSOS=function(){
-  document.getElementById('mech-sos-ov').classList.add('show');
-  if(!window._currentUser)return;
-  const p=window._mechProfile||{};
-  const sosData={type:'mechanic_sos',uid:window._currentUser.uid,name:p.name||'Mechanic',
-    phone:p.phone||'—',location:'Getting GPS...',time:Date.now(),status:'active',app:'mechanic'};
-  if(navigator.geolocation){
-    navigator.geolocation.getCurrentPosition(pos=>{
-      sosData.location=pos.coords.latitude.toFixed(5)+'°N, '+pos.coords.longitude.toFixed(5)+'°E';
-      sosData.lat=pos.coords.latitude; sosData.lng=pos.coords.longitude;
-      sosData.mapsLink='https://maps.google.com/?q='+pos.coords.latitude+','+pos.coords.longitude;
-      push(ref(db,'alerts'),sosData);
-    },()=>push(ref(db,'alerts'),sosData),{enableHighAccuracy:true});
-  } else push(ref(db,'alerts'),sosData);
+// ── SOS ───────────────────────────────────────────────
+window.mechSOS=()=>{
+  ge('msos-ov').style.display='flex';
+  if(!uid)return;
+  const p=profile||{};
+  const sos={type:'mechanic_sos',uid,name:p.name||'Mechanic',phone:p.phone||'—',location:'Getting GPS...',time:Date.now(),status:'active',app:'mechanic'};
+  if(navigator.geolocation)navigator.geolocation.getCurrentPosition(pos=>{sos.location=pos.coords.latitude.toFixed(5)+'°N, '+pos.coords.longitude.toFixed(5)+'°E';sos.lat=pos.coords.latitude;sos.lng=pos.coords.longitude;sos.mapsLink='https://maps.google.com/?q='+pos.coords.latitude+','+pos.coords.longitude;push(ref(db,'alerts'),sos);},()=>push(ref(db,'alerts'),sos),{enableHighAccuracy:true});
+  else push(ref(db,'alerts'),sos);
 };
 
 // ── CALL CUSTOMER ─────────────────────────────────────
-window.callCustomer=function(){
-  const phone=(window._currentJob&&window._currentJob.customerPhone)||'';
-  if(phone)window.location.href='tel:'+phone.replace(/\s/g,'');
-  else showToast('No phone number available');
+window.callCustomer=()=>{const ph=(currentJob&&currentJob.customerPhone)||'';if(ph)window.location.href='tel:'+ph.replace(/\s/g,'');else toast('No customer phone');};
+
+// ── CHAT (FIX i) ──────────────────────────────────────
+window.openMechChat=()=>{
+  if(!jobId){toast('No active job');return;}
+  go('m-chat');
+  if(chatUnsub)chatUnsub();
+  chatUnsub=onValue(ref(db,'chats/'+jobId),snap=>{
+    const msgs=snap.val()||{};
+    const box=ge('m-chat-box');if(!box)return;
+    const sorted=Object.values(msgs).sort((a,b)=>a.time-b.time);
+    box.innerHTML=sorted.map(m=>{
+      const mine=m.senderId===uid;
+      return `<div style="display:flex;justify-content:${mine?'flex-end':'flex-start'};margin-bottom:7px"><div style="max-width:76%;background:${mine?'var(--gn)':'var(--card)'};color:${mine?'#060D08':'var(--tx)'};border-radius:${mine?'14px 14px 4px 14px':'14px 14px 14px 4px'};padding:8px 12px;font-size:13px;line-height:1.4">${m.text}<div style="font-size:9px;opacity:.6;margin-top:2px;text-align:right">${new Date(m.time).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div></div></div>`;
+    }).join('');
+    box.scrollTop=box.scrollHeight;
+  });
+};
+window.sendMechMsg=()=>{
+  const inp=ge('m-chat-inp');if(!inp||!inp.value.trim()||!jobId)return;
+  const p=profile||{};
+  push(ref(db,'chats/'+jobId),{senderId:uid,senderName:p.name||'Mechanic',senderRole:'mechanic',text:inp.value.trim(),time:Date.now()});
+  inp.value='';
 };
 
+// ── PFP ───────────────────────────────────────────────
+window.uploadMechPfp=async(inp)=>{if(!uid||!inp.files[0])return;const d=await b64(inp.files[0]);await update(ref(db,'mechanics/'+uid),{pfp:d});toast('✅ Photo updated');};
+window.prevPfp=(inp,imgId,icoId)=>{const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{const img=ge(imgId),ico=ge(icoId);if(img){img.src=e.target.result;img.style.display='block';}if(ico)ico.style.display='none';};r.readAsDataURL(f);};
+
 // ── HELPERS ───────────────────────────────────────────
-function setEl(id,val){const e=document.getElementById(id);if(e)e.textContent=val;}
-function showToast(msg){
-  let t=document.getElementById('mtoast');
-  if(!t){t=document.createElement('div');t.id='mtoast';t.style.cssText='position:fixed;bottom:90px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.85);color:#fff;padding:10px 20px;border-radius:99px;font-size:13px;z-index:999;transition:opacity .3s';document.body.appendChild(t);}
-  t.textContent=msg;t.style.opacity='1';
-  clearTimeout(window._toastTimer);
-  window._toastTimer=setTimeout(()=>{t.style.opacity='0';},2500);
-}
+function gv(id){const e=ge(id);return e?e.value.trim():'';}
+function ge(id){return document.getElementById(id);}
+function qsa(s){return Array.from(document.querySelectorAll(s));}
+function tx(id,v){const e=ge(id);if(e)e.textContent=v;}
+function toast(msg){let t=ge('m-toast');if(!t){t=document.createElement('div');t.id='m-toast';t.style.cssText='position:fixed;bottom:85px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.9);color:#fff;padding:9px 18px;border-radius:99px;font-size:13px;z-index:9999;transition:opacity .3s;pointer-events:none;white-space:nowrap';document.body.appendChild(t);}t.textContent=msg;t.style.opacity='1';clearTimeout(window._mt);window._mt=setTimeout(()=>{t.style.opacity='0';},2500);}
+function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>r(e.target.result);x.onerror=j;x.readAsDataURL(f);});}
 </script>
 <style>
-:root{
-  --bg:#060D08;--bg2:#0D1810;--bg3:#14221A;--card:#102018;
-  --bdr:rgba(255,255,255,0.06);--bdr2:rgba(255,255,255,0.11);
-  --tx:#EEF8EE;--tx2:#7AAA82;--tx3:#3A5C44;
-  --gn:#4ADE80;--gn2:rgba(74,222,128,0.11);
-  --am:#FBBF24;--am2:rgba(251,191,36,0.11);
-  --rd:#F87171;--rd2:rgba(248,113,113,0.11);
-  --bl:#60A5FA;--bl2:rgba(96,165,250,0.11);
-  --or:#F97316;--or2:rgba(249,115,22,0.13);
-  --r:13px;--r2:20px;--fh:'Syne',sans-serif;--fb:'DM Sans',sans-serif;
-}
+:root{--bg:#060D08;--bg2:#0D1810;--bg3:#14221A;--card:#102018;--bdr:rgba(255,255,255,.06);--bdr2:rgba(255,255,255,.11);--tx:#EEF8EE;--tx2:#7AAA82;--tx3:#3A5C44;--gn:#4ADE80;--gn2:rgba(74,222,128,.11);--am:#FBBF24;--am2:rgba(251,191,36,.11);--rd:#F87171;--rd2:rgba(248,113,113,.11);--bl:#60A5FA;--bl2:rgba(96,165,250,.11);--or:#F97316;--or2:rgba(249,115,22,.13);--r:12px;--r2:18px;--fh:'Syne',sans-serif;--fb:'DM Sans',sans-serif}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;overflow:hidden;background:var(--bg)}
 body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;position:relative}
-.screen{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--bg);opacity:0;pointer-events:none;transition:opacity .22s}
-.screen.active{opacity:1;pointer-events:all}
-.sb{flex:1;overflow-y:auto;padding-bottom:80px}.sb::-webkit-scrollbar{display:none}
-@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
-@keyframes dot{0%,100%{opacity:1}50%{opacity:.3}}
-@keyframes blink{0%,100%{opacity:1}40%{opacity:.3}}
-@keyframes slideIn{from{transform:translateY(-10px);opacity:0}to{transform:translateY(0);opacity:1}}
-
-.auth-screen{justify-content:center;align-items:center;padding:28px 22px;background:radial-gradient(ellipse at 50% 0%,rgba(74,222,128,.07),transparent 70%),var(--bg)}
-.auth-logo{font-family:var(--fh);font-size:32px;font-weight:800;margin-bottom:5px;text-align:center}
-.auth-logo em{color:var(--gn);font-style:normal}
-.auth-sub{font-size:13px;color:var(--tx2);margin-bottom:22px;text-align:center;line-height:1.5}
-.auth-card{background:var(--card);border:1px solid var(--bdr2);border-radius:var(--r2);padding:20px;width:100%;margin-bottom:13px;max-height:72vh;overflow-y:auto}
-.auth-card::-webkit-scrollbar{display:none}
-.auth-title{font-family:var(--fh);font-size:17px;font-weight:700;margin-bottom:14px}
-.field{margin-bottom:11px}
-.field label{display:block;font-size:12px;font-weight:500;color:var(--tx2);margin-bottom:4px}
-.field input,.field select{background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:14px;padding:10px 12px;width:100%;outline:none;transition:border .2s}
-.field input:focus{border-color:var(--gn)}
-.field input::placeholder{color:var(--tx3)}
-.auth-err{font-size:12px;color:var(--rd);margin-bottom:9px;min-height:15px;text-align:center}
-.auth-switch{font-size:13px;color:var(--tx2);text-align:center;cursor:pointer}
-.auth-switch span{color:var(--gn);font-weight:600}
-.btn{width:100%;border:none;border-radius:var(--r);padding:12px;font-family:var(--fh);font-size:14px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:7px;transition:transform .15s}
+.scr{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--bg);opacity:0;pointer-events:none;transition:opacity .2s}
+.scr.on{opacity:1;pointer-events:all}
+.sb{flex:1;overflow-y:auto;padding-bottom:76px}.sb::-webkit-scrollbar{display:none}
+@keyframes pp{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
+@keyframes dd{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes bi{0%,100%{opacity:1}40%{opacity:.3}}
+@keyframes si{from{transform:translateY(-10px);opacity:0}to{transform:translateY(0);opacity:1}}
+.auth{justify-content:center;align-items:center;padding:24px 20px;background:radial-gradient(ellipse at 50% 0%,rgba(74,222,128,.07),transparent 70%),var(--bg)}
+.logo{font-family:var(--fh);font-size:28px;font-weight:800;text-align:center;margin-bottom:4px}
+.logo em{color:var(--gn);font-style:normal}
+.ac{background:var(--card);border:1px solid var(--bdr2);border-radius:var(--r2);padding:18px;width:100%;margin-bottom:12px;max-height:68vh;overflow-y:auto}
+.ac::-webkit-scrollbar{display:none}
+.at{font-family:var(--fh);font-size:15px;font-weight:700;margin-bottom:12px}
+.f{margin-bottom:9px}
+.f label{display:block;font-size:11px;font-weight:500;color:var(--tx2);margin-bottom:3px}
+.f input,.f select{background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:14px;padding:9px 11px;width:100%;outline:none;transition:border .15s}
+.f input:focus{border-color:var(--gn)}
+.f input::placeholder{color:var(--tx3)}
+.f select option{background:var(--bg3)}
+.err{font-size:11px;color:var(--rd);min-height:14px;text-align:center;margin-bottom:7px}
+.sw{font-size:13px;color:var(--tx2);text-align:center;cursor:pointer;margin-top:4px}
+.sw span{color:var(--gn);font-weight:600}
+.pfp-up{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.pfp-ring{width:52px;height:52px;border-radius:50%;background:var(--bg3);border:2px dashed var(--gn);overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:22px;cursor:pointer;flex-shrink:0}
+.pfp-ring img{width:100%;height:100%;object-fit:cover;display:none}
+.btn{width:100%;border:none;border-radius:var(--r);padding:11px;font-family:var(--fh);font-size:14px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:transform .15s;margin-bottom:6px}
 .btn:active{transform:scale(.97)}
 .b-gn{background:var(--gn);color:#060D08}.b-ghost{background:var(--bg3);color:var(--tx);border:1px solid var(--bdr2)}.b-rd{background:var(--rd);color:#fff}.b-bl{background:var(--bl);color:#060D08}
-.topbar{flex-shrink:0;padding:44px 16px 12px;display:flex;align-items:center;justify-content:space-between;background:var(--bg);border-bottom:1px solid var(--bdr);z-index:5}
-.logo{font-family:var(--fh);font-size:20px;font-weight:800;display:flex;align-items:center;gap:5px}
-.logo em{color:var(--gn);font-style:normal}
-.avi{width:32px;height:32px;border-radius:50%;background:var(--gn2);border:1.5px solid var(--gn);display:flex;align-items:center;justify-content:center;font-family:var(--fh);font-size:11px;font-weight:700;color:var(--gn);cursor:pointer}
-.back{display:flex;align-items:center;gap:5px;font-size:14px;color:var(--tx2);cursor:pointer}
-.pg-t{font-family:var(--fh);font-size:17px;font-weight:700;flex:1;text-align:center}
-.sp{width:46px}
-.bnav{flex-shrink:0;display:flex;background:var(--bg2);border-top:1px solid var(--bdr2);padding:7px 0 17px}
+.pending{justify-content:center;align-items:center;padding:28px 22px;text-align:center;background:var(--bg)}
+.topbar{flex-shrink:0;padding:42px 14px 11px;display:flex;align-items:center;justify-content:space-between;background:var(--bg);border-bottom:1px solid var(--bdr);z-index:5}
+.lgo{font-family:var(--fh);font-size:18px;font-weight:800}
+.lgo em{color:var(--gn);font-style:normal}
+.m-avi-wrap{width:31px;height:31px;border-radius:50%;overflow:hidden;background:var(--gn2);border:1.5px solid var(--gn);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}
+.m-pfp{width:100%;height:100%;object-fit:cover}
+.m-ini{font-family:var(--fh);font-size:11px;font-weight:700;color:var(--gn)}
+.back{font-size:13px;color:var(--tx2);cursor:pointer}
+.pgt{font-family:var(--fh);font-size:15px;font-weight:700;flex:1;text-align:center}
+.sp{width:42px}
+.bnav{flex-shrink:0;display:flex;background:var(--bg2);border-top:1px solid var(--bdr2);padding:6px 0 15px}
 .bn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;position:relative}
-.bn-i{font-size:20px;transition:transform .15s}.bn-l{font-size:10px;color:var(--tx3);font-weight:500}
+.bn-i{font-size:19px;transition:transform .15s}.bn-l{font-size:10px;color:var(--tx3);font-weight:500}
 .bn.on .bn-l{color:var(--gn)}.bn.on .bn-i{transform:translateY(-2px)}
-.bn-dot{position:absolute;top:-1px;right:calc(50% - 16px);width:7px;height:7px;border-radius:50%;background:var(--rd);border:1.5px solid var(--bg2);display:none}
-.bdg{display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px}
+.bn-dot{position:absolute;top:-1px;right:calc(50% - 15px);width:7px;height:7px;border-radius:50%;background:var(--rd);border:1.5px solid var(--bg2);display:none}
+.bdg{display:inline-flex;align-items:center;font-size:11px;font-weight:600;padding:2px 7px;border-radius:999px}
 .b-g{background:var(--gn2);color:var(--gn)}.b-a{background:var(--am2);color:var(--am)}.b-r{background:var(--rd2);color:var(--rd)}.b-b{background:var(--bl2);color:var(--bl)}.b-off{background:rgba(255,255,255,.06);color:var(--tx2)}
-.card{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:14px;margin-bottom:10px}
-.sec{padding:16px}.sec-l{font-family:var(--fh);font-size:11px;font-weight:700;color:var(--tx3);letter-spacing:.1em;text-transform:uppercase;margin-bottom:9px}
-.div{height:1px;background:var(--bdr);margin:0 16px}
-.status-bar{display:flex;gap:7px;margin-bottom:11px}
-.sb-item{flex:1;border-radius:var(--r);padding:8px 10px;display:flex;align-items:center;gap:6px;font-size:11px;font-weight:500;background:var(--gn2);border:1px solid rgba(74,222,128,.2);color:var(--gn)}
-.sb-dot{width:6px;height:6px;border-radius:50%;background:var(--gn);animation:dot 1.2s infinite;flex-shrink:0}
-.onl-tog{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:13px;display:flex;align-items:center;gap:10px;margin-bottom:12px;cursor:pointer}
-.tt{width:46px;height:24px;border-radius:12px;background:var(--bg3);border:1px solid var(--bdr2);position:relative;transition:background .3s;flex-shrink:0}
-.tt.on{background:var(--gn)}.th2{width:18px;height:18px;border-radius:50%;background:#fff;position:absolute;top:2px;left:2px;transition:left .25s}
-.tt.on .th2{left:24px}
-.sg{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
-.sc{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r);padding:11px 8px;text-align:center}
-.sc-n{font-family:var(--fh);font-size:20px;font-weight:800}.sc-l{font-size:10px;color:var(--tx3);margin-top:2px}
-.sos-alert-bar{background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:9px 12px;display:none;align-items:center;gap:8px;margin-bottom:11px;animation:blink 1.5s 5;cursor:pointer}
-.sos-bar-dot{width:7px;height:7px;border-radius:50%;background:var(--rd);animation:dot 1s infinite;flex-shrink:0}
-.gig-prev{background:linear-gradient(135deg,rgba(74,222,128,.14),rgba(74,222,128,.04));border:1.5px solid rgba(74,222,128,.3);border-radius:var(--r2);padding:13px;margin-bottom:11px;cursor:pointer;display:none;animation:slideIn .3s ease}
-.gig-card{background:linear-gradient(135deg,rgba(96,165,250,.1),rgba(96,165,250,.03));border:1.5px solid rgba(96,165,250,.28);border-radius:var(--r2);padding:16px;margin-bottom:11px}
-.vehicle-info-box{background:var(--am2);border:1px solid rgba(251,191,36,.25);border-radius:var(--r);padding:12px;margin-bottom:10px}
-.vehicle-info-box .v-title{font-family:var(--fh);font-size:12px;font-weight:700;color:var(--am);margin-bottom:6px}
-.vehicle-row{display:flex;justify-content:space-between;font-size:12px;padding:3px 0}
-.vehicle-row .vl{color:var(--tx2)}.vehicle-row .vv{font-weight:600;color:var(--tx)}
-.rrow{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--bdr)}
-.rrow:last-child{border-bottom:none}
-.rico{width:32px;height:32px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}
-.ri{flex:1}.rt{font-size:13px;font-weight:600}.rs{font-size:11px;color:var(--tx2);margin-top:2px}
-.ramt{font-family:var(--fh);font-size:13px;font-weight:700;color:var(--gn)}
-.er{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--bdr);font-size:13px}
-.er:last-child{border-bottom:none}.el{color:var(--tx2)}.ev{font-weight:600}
-.cr{display:flex;align-items:center;gap:9px;padding:10px 0;border-bottom:1px solid var(--bdr);cursor:pointer}
-.cr:last-child{border-bottom:none}.ck{font-size:17px;width:22px;text-align:center;flex-shrink:0}.cl{font-size:13px}
-.chart{display:flex;align-items:flex-end;gap:6px;height:70px;padding:0 16px;margin-bottom:4px}
-.bc{flex:1;display:flex;align-items:flex-end;justify-content:center;height:100%}
-.bf{width:100%;border-radius:4px 4px 0 0;background:var(--gn2);border:1px solid rgba(74,222,128,.18);transition:height .7s}
-.bf.today{background:var(--gn)}
-.cd{display:flex;padding:3px 16px 12px}
-.cd span{flex:1;text-align:center;font-size:10px;color:var(--tx3)}
-.ph{padding:20px 16px;display:flex;flex-direction:column;align-items:center;gap:7px;border-bottom:1px solid var(--bdr)}
-.pav2{width:62px;height:62px;border-radius:50%;background:var(--gn2);border:2.5px solid var(--gn);display:flex;align-items:center;justify-content:center;font-family:var(--fh);font-size:20px;font-weight:800;color:var(--gn)}
-.pn{font-family:var(--fh);font-size:18px;font-weight:700}.ps{font-size:12px;color:var(--tx2)}
+.card{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:13px;margin-bottom:9px}
+.sec{padding:13px}
+.sl{font-family:var(--fh);font-size:10px;font-weight:700;color:var(--tx3);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px}
+.sb-item{flex:1;border-radius:var(--r);padding:7px 9px;display:flex;align-items:center;gap:6px;font-size:11px;font-weight:500;background:var(--gn2);border:1px solid rgba(74,222,128,.2);color:var(--gn)}
+.sb-dot{width:6px;height:6px;border-radius:50%;background:var(--gn);animation:dd 1.2s infinite;flex-shrink:0}
+.onl-tog{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:12px;display:flex;align-items:center;gap:9px;margin-bottom:11px;cursor:pointer}
+.tt{width:44px;height:23px;border-radius:12px;background:var(--bg3);border:1px solid var(--bdr2);position:relative;transition:background .3s;flex-shrink:0}
+.tt.on{background:var(--gn)}.tth{width:17px;height:17px;border-radius:50%;background:#fff;position:absolute;top:2px;left:2px;transition:left .25s}
+.tt.on .tth{left:25px}
+.gig-prev{background:linear-gradient(135deg,rgba(74,222,128,.14),rgba(74,222,128,.04));border:1.5px solid rgba(74,222,128,.3);border-radius:var(--r2);padding:12px;margin-bottom:10px;cursor:pointer;display:none;animation:si .3s ease}
+.veh-box{background:var(--am2);border:1px solid rgba(251,191,36,.25);border-radius:var(--r);padding:11px;margin-bottom:9px}
+.veh-row{display:flex;justify-content:space-between;font-size:12px;padding:3px 0}
+.veh-row .vl{color:var(--tx2)}.veh-row .vv{font-weight:600}
+.ph{padding:16px 13px;display:flex;flex-direction:column;align-items:center;gap:7px;border-bottom:1px solid var(--bdr)}
+.p-avi{width:60px;height:60px;border-radius:50%;overflow:hidden;background:var(--gn2);border:2px solid var(--gn);display:flex;align-items:center;justify-content:center;cursor:pointer}
+.p-avi img{width:100%;height:100%;object-fit:cover}
 .psts{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--bdr)}
-.pst{background:var(--bg2);padding:12px;text-align:center}.pstn{font-family:var(--fh);font-size:18px;font-weight:800}.pstl{font-size:11px;color:var(--tx3);margin-top:2px}
-.sw{display:flex;flex-wrap:wrap;gap:5px;padding:11px 16px;border-bottom:1px solid var(--bdr)}
-.mit{display:flex;align-items:center;gap:11px;padding:12px 16px;border-bottom:1px solid var(--bdr);cursor:pointer;transition:background .15s}
-.mit:active{background:var(--bg3)}.mii{font-size:17px;width:21px;text-align:center}.mil{flex:1;font-size:13px}.mia{color:var(--tx3)}
-.call-btn-gn{background:var(--gn2);border:1px solid rgba(74,222,128,.3);border-radius:var(--r);padding:10px;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer}
-.call-btn-gn:active{transform:scale(.96)}
-.mech-sos-ov{position:fixed;inset:0;background:rgba(6,13,8,.95);z-index:200;display:none;flex-direction:column;align-items:center;justify-content:center;padding:28px;text-align:center}
-.mech-sos-ov.show{display:flex}
-
-/* PENDING SCREEN */
-.pending-screen{justify-content:center;align-items:center;padding:32px 24px;text-align:center;background:var(--bg)}
+.pst{background:var(--bg2);padding:10px;text-align:center}.pstn{font-family:var(--fh);font-size:16px;font-weight:800}.pstl{font-size:10px;color:var(--tx3);margin-top:2px}
+.sw2{display:flex;flex-wrap:wrap;gap:5px;padding:10px 13px;border-bottom:1px solid var(--bdr)}
+.mit{display:flex;align-items:center;gap:10px;padding:10px 13px;border-bottom:1px solid var(--bdr);cursor:pointer;font-size:13px}
+.mit:active{background:var(--bg3)}
+.er{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--bdr);font-size:13px}
+.er:last-child{border-bottom:none}
+.cr{display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--bdr);cursor:pointer}
+.cr:last-child{border-bottom:none}
+.msos-ov{position:fixed;inset:0;background:rgba(6,13,8,.95);z-index:200;display:none;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center}
 </style>
 </head>
 <body>
-
-<!-- MECHANIC SOS -->
-<div class="mech-sos-ov" id="mech-sos-ov">
-  <div style="font-size:72px;margin-bottom:14px;animation:pulse 1s infinite">🆘</div>
-  <div style="font-family:var(--fh);font-size:24px;font-weight:800;color:var(--rd);margin-bottom:8px">Mechanic SOS!</div>
-  <div style="font-size:13px;color:var(--tx2);margin-bottom:20px;line-height:1.8">✅ GPS captured<br>✅ Admin alerted instantly<br>✅ Emergency team notified</div>
-  <button class="btn b-rd" onclick="document.getElementById('mech-sos-ov').classList.remove('show')">✓ OK</button>
+<div class="msos-ov" id="msos-ov">
+  <div style="font-size:64px;margin-bottom:11px;animation:pp 1s infinite">🆘</div>
+  <div style="font-family:var(--fh);font-size:21px;font-weight:800;color:var(--rd);margin-bottom:7px">SOS Sent Live!</div>
+  <div style="font-size:12px;color:var(--tx2);margin-bottom:18px;line-height:1.8">✅ GPS captured · ✅ Admin alerted · ✅ Emergency team notified</div>
+  <button class="btn b-rd" style="max-width:200px" onclick="ge('msos-ov').style.display='none'">✓ OK</button>
 </div>
 
 <!-- LOGIN -->
-<div id="m-login" class="screen auth-screen active">
-  <div class="auth-logo">Mech<em>Pro</em></div>
-  <div class="auth-sub">Mechanic sign in</div>
-  <div class="auth-card">
-    <div class="auth-title">Sign in</div>
-    <div class="field"><label>Email</label><input id="mlogin-email" type="email" placeholder="your@email.com"></div>
-    <div class="field"><label>Password</label><input id="mlogin-pass" type="password" placeholder="••••••••"></div>
-    <div class="auth-err" id="mlogin-error"></div>
-    <button class="btn b-gn" onclick="loginMechanic()">Sign in →</button>
+<div id="m-login" class="scr auth on">
+  <div class="logo">Mech<em>Pro</em></div>
+  <div style="font-size:12px;color:var(--tx2);margin-bottom:16px;text-align:center">Mechanic sign in</div>
+  <div class="ac">
+    <div class="at">Sign in</div>
+    <div class="f"><label>Email</label><input id="mlem" type="email" placeholder="your@email.com"></div>
+    <div class="f"><label>Password</label><input id="mlpw" type="password" placeholder="••••••••"></div>
+    <div class="err" id="ml-err"></div>
+    <button class="btn b-gn" onclick="doLogin()">Sign in →</button>
   </div>
-  <div class="auth-switch">New mechanic? <span onclick="N('m-register')">Register here</span></div>
+  <div class="sw">New mechanic? <span onclick="go('m-register')">Register here</span></div>
 </div>
 
 <!-- REGISTER -->
-<div id="m-register" class="screen auth-screen">
-  <div class="auth-logo">Mech<em>Pro</em></div>
-  <div class="auth-sub">Join as a mechanic</div>
-  <div class="auth-card">
-    <div class="auth-title">Mechanic registration</div>
-    <div class="field"><label>Full name</label><input id="mreg-name" type="text" placeholder="Arjun Kalita"></div>
-    <div class="field"><label>Phone number</label><input id="mreg-phone" type="tel" placeholder="+91 94351 77810"></div>
-    <div class="field"><label>City</label><input id="mreg-city" type="text" placeholder="Guwahati"></div>
-    <div class="field"><label>Skills</label><input id="mreg-skills" type="text" placeholder="CV joint, Brakes, Engine..."></div>
-    <div class="field"><label>Email</label><input id="mreg-email" type="email" placeholder="your@email.com"></div>
-    <div class="field"><label>Password (min 6 chars)</label><input id="mreg-pass" type="password" placeholder="••••••••"></div>
-    <div class="auth-err" id="mreg-error"></div>
-    <button class="btn b-gn" onclick="registerMechanic()">Register →</button>
+<div id="m-register" class="scr auth">
+  <div class="logo">Mech<em>Pro</em></div>
+  <div style="font-size:12px;color:var(--tx2);margin-bottom:16px;text-align:center">Join as a verified mechanic</div>
+  <div class="ac">
+    <div class="at">Registration</div>
+    <div class="pfp-up">
+      <div class="pfp-ring" onclick="document.getElementById('m-pfp-inp').click()"><img id="mreg-img" src="" alt=""><span id="mreg-ico">📷</span></div>
+      <div><div style="font-size:12px;color:var(--tx2)">Profile photo</div><div style="font-size:11px;color:var(--rd)">Required ✱</div></div>
+      <input type="file" id="m-pfp-inp" accept="image/*" style="display:none" onchange="prevPfp(this,'mreg-img','mreg-ico')">
+    </div>
+    <div class="f"><label>Full name ✱</label><input id="mn" type="text" placeholder="Arjun Kalita"></div>
+    <div class="f"><label>Phone ✱</label><input id="mph" type="tel" placeholder="+91 94351 77810"></div>
+    <div class="f"><label>City</label><input id="mci" type="text" placeholder="Guwahati"></div>
+    <div class="f"><label>Skills (comma separated)</label><input id="msk" type="text" placeholder="CV joint, Brakes, Engine"></div>
+    <div class="f"><label>Email ✱</label><input id="mem" type="email" placeholder="your@email.com"></div>
+    <div class="f"><label>Password ✱</label><input id="mpw" type="password" placeholder="Min 6 characters"></div>
+    <div class="err" id="mr-err"></div>
+    <button class="btn b-gn" onclick="doReg()">Register & start earning →</button>
   </div>
-  <div class="auth-switch">Already registered? <span onclick="N('m-login')">Sign in</span></div>
+  <div class="sw">Already registered? <span onclick="go('m-login')">Sign in</span></div>
 </div>
 
-<!-- PENDING VERIFICATION — HARD BLOCK -->
-<div id="m-pending" class="screen pending-screen">
-  <div style="font-size:64px;margin-bottom:16px;animation:pulse 2s infinite">⏳</div>
-  <div style="font-family:var(--fh);font-size:22px;font-weight:800;color:var(--am);margin-bottom:8px">Verification Pending</div>
-  <div style="font-size:13px;color:var(--tx2);margin-bottom:28px;line-height:1.8;max-width:280px">
-    Your account is created but needs admin verification before you can accept jobs.<br><br>
-    An admin will verify your account shortly. You'll be automatically redirected when verified.
+<!-- PENDING — onValue auto-redirects when admin verifies -->
+<div id="m-pending" class="scr pending">
+  <div style="font-size:60px;margin-bottom:14px;animation:pp 2s infinite">⏳</div>
+  <div style="font-family:var(--fh);font-size:20px;font-weight:800;color:var(--am);margin-bottom:7px">Verification Pending</div>
+  <div style="font-size:12px;color:var(--tx2);margin-bottom:22px;line-height:1.8;max-width:280px">Your account is created.<br><strong style="color:var(--gn)">You will automatically enter the app the moment admin verifies you — no refresh needed.</strong></div>
+  <div style="background:var(--am2);border:1px solid rgba(251,191,36,.25);border-radius:var(--r2);padding:13px;width:100%;max-width:290px;text-align:center;margin-bottom:18px">
+    <div style="font-size:10px;color:var(--am);font-weight:700;margin-bottom:4px">HOW IT WORKS</div>
+    <div style="font-size:11px;color:var(--tx2);line-height:1.6">Admin opens their panel → Mechanics tab → clicks Verify → you auto-redirect here instantly</div>
   </div>
-  <div style="background:var(--am2);border:1px solid rgba(251,191,36,.25);border-radius:var(--r2);padding:14px;width:100%;max-width:300px;text-align:center;margin-bottom:20px">
-    <div style="font-size:11px;color:var(--am);font-weight:700;margin-bottom:5px">WHILE YOU WAIT</div>
-    <div style="font-size:12px;color:var(--tx2);line-height:1.6">Keep this app open. You'll be notified automatically once an admin verifies you.</div>
-  </div>
-  <button class="btn b-ghost" style="max-width:280px" onclick="logoutMechanic()">Sign out</button>
-  <div style="font-size:11px;color:var(--tx3);margin-top:14px">Checking every 10 seconds...</div>
+  <button class="btn b-ghost" style="max-width:240px" onclick="doLogout()">Sign out</button>
 </div>
 
 <!-- HOME -->
-<div id="m-home" class="screen">
+<div id="m-home" class="scr">
   <div class="topbar">
-    <div class="logo">Mech<em>Pro</em></div>
-    <div style="display:flex;gap:8px;align-items:center">
-      <button style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:5px 10px;font-family:var(--fh);font-size:11px;font-weight:700;color:var(--rd);cursor:pointer;position:relative" onclick="mechSOS()">🆘 SOS</button>
-      <div class="avi" id="mech-avi" onclick="N('m-profile')">AK</div>
+    <div class="lgo">Mech<em>Pro</em></div>
+    <div style="display:flex;gap:7px;align-items:center">
+      <button style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:5px 9px;font-family:var(--fh);font-size:11px;font-weight:700;color:var(--rd);cursor:pointer" onclick="mechSOS()">🆘 SOS</button>
+      <div class="m-avi-wrap" onclick="go('m-profile')"><img class="m-pfp" src="" alt="" style="display:none"><span class="m-ini">AK</span></div>
     </div>
   </div>
   <div class="sb">
     <div class="sec">
-      <div class="sos-alert-bar" id="sos-alert-bar" onclick="N('m-gig')">
-        <div class="sos-bar-dot"></div>
-        <div style="font-size:12px;font-weight:700;color:var(--rd);flex:1" id="sos-alert-text">Customer SOS active</div>
+      <div id="sos-bar" style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:8px 11px;display:none;align-items:center;gap:7px;margin-bottom:10px;animation:bi 1.5s 5;cursor:pointer" onclick="go('m-gig')">
+        <div style="width:7px;height:7px;border-radius:50%;background:var(--rd);animation:dd 1s infinite;flex-shrink:0"></div>
+        <div style="font-size:12px;font-weight:700;color:var(--rd);flex:1" id="sos-bar-txt">Customer SOS active</div>
         <span style="font-size:11px;color:var(--rd)">View →</span>
       </div>
-      <div class="status-bar">
-        <div class="sb-item"><div class="sb-dot"></div>📍 GPS ON</div>
+      <div style="display:flex;gap:7px;margin-bottom:10px">
+        <div class="sb-item"><div class="sb-dot"></div><span id="gps-stat">📍 GPS: Active</span></div>
         <div class="sb-item"><div class="sb-dot"></div>🎥 Bodycam ON</div>
       </div>
       <div class="onl-tog" onclick="toggleOnline()">
-        <div class="tt on" id="tt"><div class="th2"></div></div>
-        <div style="flex:1">
-          <div style="font-family:var(--fh);font-size:13px;font-weight:600" id="tlbl">You are online</div>
-          <div style="font-size:12px;color:var(--tx2);margin-top:2px" id="tsub">Accepting gig requests</div>
-        </div>
+        <div class="tt on" id="tt"><div class="tth"></div></div>
+        <div style="flex:1"><div style="font-family:var(--fh);font-size:13px;font-weight:600" id="tlbl">You are online</div><div style="font-size:11px;color:var(--tx2);margin-top:2px" id="tsub">Accepting gig requests</div></div>
         <span class="bdg b-g" id="tbdg">● Active</span>
       </div>
-      <div id="gig-prev" class="gig-prev" onclick="N('m-gig')">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
-          <div><div style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--gn)" id="gig-prev-title">🔔 Waiting for gigs...</div><div style="font-size:12px;color:var(--tx2);margin-top:2px">Tap to view and accept</div></div>
-          <div style="font-family:var(--fh);font-size:20px;font-weight:800" id="gig-prev-price">—</div>
+      <div id="gig-prev" class="gig-prev" onclick="go('m-gig')">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:5px">
+          <div><div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--gn)" id="gig-prev-title">🔔 Waiting for gigs...</div><div style="font-size:11px;color:var(--tx2);margin-top:2px">Tap to view and accept</div></div>
+          <div style="font-family:var(--fh);font-size:19px;font-weight:800" id="gig-prev-price">—</div>
         </div>
-        <div style="font-size:12px;color:var(--tx2)">→ Tap to accept</div>
       </div>
-      <div class="sg">
-        <div class="sc"><div class="sc-n">6</div><div class="sc-l">Today gigs</div></div>
-        <div class="sc"><div class="sc-n" style="color:var(--gn)">₹4.2k</div><div class="sc-l">Earned</div></div>
-        <div class="sc"><div class="sc-n" style="color:var(--am)">4.9⭐</div><div class="sc-l">Rating</div></div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:11px">
+        <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r);padding:10px 7px;text-align:center"><div style="font-family:var(--fh);font-size:19px;font-weight:800">6</div><div style="font-size:10px;color:var(--tx3);margin-top:2px">Today gigs</div></div>
+        <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r);padding:10px 7px;text-align:center"><div style="font-family:var(--fh);font-size:19px;font-weight:800;color:var(--gn)">₹4.2k</div><div style="font-size:10px;color:var(--tx3);margin-top:2px">Earned</div></div>
+        <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r);padding:10px 7px;text-align:center"><div style="font-family:var(--fh);font-size:19px;font-weight:800;color:var(--am)">4.9⭐</div><div style="font-size:10px;color:var(--tx3);margin-top:2px">Rating</div></div>
       </div>
-      <div style="font-family:var(--fh);font-size:13px;font-weight:700">Welcome, <span id="mech-name-display" style="color:var(--gn)">Mechanic</span> ✅</div>
-    </div>
-    <div class="div"></div>
-    <div class="sec">
-      <div class="sec-l">Recent jobs</div>
-      <div class="card" style="padding:0 13px">
-        <div class="rrow"><div class="rico" style="background:var(--gn2)">🔩</div><div class="ri"><div class="rt">CV joint repair</div><div class="rs">Zoo Road · Maruti Swift 2019</div></div><div style="text-align:right"><div class="ramt">+₹1,160</div></div></div>
-        <div class="rrow"><div class="rico" style="background:var(--bl2)">🔋</div><div class="ri"><div class="rt">Battery jump</div><div class="rs">Maligaon · Honda City 2021</div></div><div style="text-align:right"><div class="ramt">+₹520</div></div></div>
-      </div>
+      <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--gn)">Welcome, <span class="m-name">Mechanic</span> ✅</div>
+      <div style="font-size:11px;color:var(--tx2);margin-top:2px">Active job: <span id="active-job" style="color:var(--am)">None</span></div>
     </div>
   </div>
   <div class="bnav">
-    <div class="bn on" onclick="N('m-home')"><div class="bn-i">🏠</div><div class="bn-l">Home</div></div>
-    <div class="bn" onclick="N('m-gig')"><div class="bn-i">🔔</div><div class="bn-dot" id="gig-nav-badge"></div><div class="bn-l">Gigs</div></div>
-    <div class="bn" onclick="N('m-earn')"><div class="bn-i">💰</div><div class="bn-l">Earnings</div></div>
-    <div class="bn" onclick="N('m-profile')"><div class="bn-i">👤</div><div class="bn-l">Profile</div></div>
+    <div class="bn on" onclick="go('m-home')"><div class="bn-i">🏠</div><div class="bn-l">Home</div></div>
+    <div class="bn" onclick="go('m-gig')"><div class="bn-i">🔔</div><div class="bn-dot" id="gig-badge"></div><div class="bn-l">Gigs</div></div>
+    <div class="bn" onclick="go('m-earn')"><div class="bn-i">💰</div><div class="bn-l">Earnings</div></div>
+    <div class="bn" onclick="go('m-profile')"><div class="bn-i">👤</div><div class="bn-l">Profile</div></div>
   </div>
 </div>
 
 <!-- GIG DETAIL -->
-<div id="m-gig" class="screen">
-  <div class="topbar"><div class="back" onclick="B()">← Back</div><div class="pg-t">Gig alert</div><span class="bdg b-r">Urgent</span></div>
+<div id="m-gig" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Gig alert</div><span class="bdg b-r">Urgent</span></div>
   <div class="sb">
     <div class="sec">
-      <div style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:9px 12px;display:flex;align-items:center;gap:7px;margin-bottom:12px;animation:blink 1.5s 3"><span style="font-size:18px">🚨</span><span style="font-size:13px;font-weight:700;color:var(--rd);font-family:var(--fh)">New job — respond quickly!</span></div>
-      <div class="gig-card">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px">
-          <div>
-            <div style="font-family:var(--fh);font-size:15px;font-weight:700" id="gig-detail-title">Loading...</div>
-            <div style="font-size:12px;color:var(--tx2);margin-top:3px" id="gig-detail-location">📍 —</div>
-          </div>
-          <div style="text-align:right">
-            <div style="font-family:var(--fh);font-size:24px;font-weight:800;color:var(--gn)" id="gig-detail-price">₹—</div>
-            <div style="font-size:11px;color:var(--tx3)">Est. value</div>
-          </div>
+      <div style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:8px 11px;display:flex;align-items:center;gap:7px;margin-bottom:11px;animation:bi 1.5s 3"><span style="font-size:17px">🚨</span><span style="font-size:12px;font-weight:700;color:var(--rd);font-family:var(--fh)">New job — respond quickly!</span></div>
+      <div style="background:linear-gradient(135deg,rgba(96,165,250,.1),rgba(96,165,250,.03));border:1.5px solid rgba(96,165,250,.28);border-radius:var(--r2);padding:15px;margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:11px">
+          <div><div style="font-family:var(--fh);font-size:14px;font-weight:700" id="gig-issue">Loading...</div><div style="font-size:11px;color:var(--tx2);margin-top:2px" id="gig-loc">—</div></div>
+          <div style="text-align:right"><div style="font-family:var(--fh);font-size:22px;font-weight:800;color:var(--gn)" id="gig-price">₹—</div><div style="font-size:10px;color:var(--tx3)">Est. value</div></div>
         </div>
-        <!-- VEHICLE INFO — full details for mechanic -->
-        <div class="vehicle-info-box">
-          <div class="v-title">🚗 Vehicle information</div>
-          <div class="vehicle-row"><span class="vl">Vehicle</span><span class="vv" id="gig-detail-vehicle">—</span></div>
-          <div class="vehicle-row"><span class="vl">Parts type</span><span class="vv" id="gig-detail-parts">—</span></div>
-          <div class="vehicle-row"><span class="vl">AI confidence</span><span class="vv" id="gig-detail-ai">—</span></div>
+        <!-- Full vehicle info for mechanic -->
+        <div class="veh-box">
+          <div style="font-family:var(--fh);font-size:11px;font-weight:700;color:var(--am);margin-bottom:5px">🚗 Vehicle details</div>
+          <div class="veh-row"><span class="vl">Vehicle</span><span class="vv" id="gig-veh">—</span></div>
+          <div class="veh-row"><span class="vl">Parts chosen</span><span class="vv" id="gig-parts">—</span></div>
+          <div class="veh-row"><span class="vl">Categories</span><span class="vv" id="gig-cats">—</span></div>
+          <div class="veh-row"><span class="vl">AI confidence</span><span class="vv" id="gig-ai">—</span></div>
         </div>
-        <div style="background:var(--bg3);border-radius:var(--r);padding:11px;margin-bottom:10px">
-          <div style="font-family:var(--fh);font-size:11px;font-weight:700;color:var(--bl);letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px">Problem description</div>
-          <div style="font-size:12px;color:var(--tx2);line-height:1.6" id="gig-detail-issue-text">Loading...</div>
+        <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r);padding:10px;margin-bottom:9px">
+          <div style="font-size:11px;font-weight:600;margin-bottom:3px">Customer: <span id="gig-cust" style="color:var(--gn)">—</span></div>
+          <div style="font-size:11px;color:var(--tx2)">Phone: <span id="gig-cph">—</span></div>
         </div>
-        <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r);padding:10px;margin-bottom:10px">
-          <div style="font-size:12px;font-weight:600;margin-bottom:4px">Customer: <span id="gig-detail-customer" style="color:var(--gn)">—</span></div>
-          <div style="font-size:12px;color:var(--tx2)">Phone: <span id="gig-detail-phone">—</span></div>
-        </div>
-        <div style="background:var(--rd2);border:1px solid rgba(248,113,113,.2);border-radius:var(--r);padding:9px 11px;font-size:12px;color:var(--rd)">⚠️ GPS must stay ON · Bodycam required during job</div>
+        <div style="background:var(--rd2);border:1px solid rgba(248,113,113,.2);border-radius:var(--r);padding:8px 11px;font-size:11px;color:var(--rd)">⚠️ GPS must stay ON · Bodycam required</div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
         <button class="btn b-gn" onclick="acceptGig()">✅ Accept gig</button>
@@ -526,191 +447,150 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 </div>
 
 <!-- NAVIGATION -->
-<div id="m-nav" class="screen">
-  <div class="topbar"><div class="back" onclick="B()">← Back</div><div class="pg-t">Navigate</div><span class="bdg b-g">4 min</span></div>
+<div id="m-nav" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Navigate</div><span class="bdg b-g">En route</span></div>
   <div class="sb">
     <div class="sec">
-      <div class="status-bar">
-        <div class="sb-item"><div class="sb-dot"></div>GPS tracking · admin sees you</div>
+      <div style="display:flex;gap:7px;margin-bottom:10px">
+        <div class="sb-item"><div class="sb-dot"></div>GPS ON · admin sees you</div>
         <div class="sb-item"><div class="sb-dot"></div>🎥 Recording</div>
       </div>
-      <div style="background:var(--bg3);border-radius:var(--r2);height:190px;overflow:hidden;border:1px solid var(--bdr2);margin-bottom:11px">
-        <svg viewBox="0 0 380 190" width="100%" height="100%">
-          <rect width="380" height="190" fill="#14221A"/>
-          <line x1="0" y1="95" x2="380" y2="95" stroke="#1A3020" stroke-width="11"/><line x1="190" y1="0" x2="190" y2="190" stroke="#1A3020" stroke-width="11"/>
-          <polyline points="88,140 88,95 225,95 225,128" stroke="#4ADE80" stroke-width="3" fill="none" stroke-dasharray="8,4"/>
-          <circle cx="225" cy="128" r="9" fill="#F87171"/><text x="225" y="144" fill="white" font-size="8" text-anchor="middle" font-family="DM Sans">Customer</text>
-          <circle cx="88" cy="140" r="8" fill="#4ADE80"/><text x="88" y="154" fill="white" font-size="8" text-anchor="middle" font-family="DM Sans">You</text>
-        </svg>
+      <div style="background:var(--bg3);border-radius:var(--r2);height:175px;overflow:hidden;border:1px solid var(--bdr2);margin-bottom:10px">
+        <svg viewBox="0 0 380 175" width="100%" height="100%"><rect width="380" height="175" fill="#14221A"/><line x1="0" y1="87" x2="380" y2="87" stroke="#1A3020" stroke-width="10"/><line x1="190" y1="0" x2="190" y2="175" stroke="#1A3020" stroke-width="10"/><polyline points="85,135 85,87 225,87 225,122" stroke="#4ADE80" stroke-width="3" fill="none" stroke-dasharray="8,4"/><circle cx="225" cy="122" r="8" fill="#F87171"/><text x="225" y="137" fill="white" font-size="8" text-anchor="middle">Customer</text><circle cx="85" cy="135" r="8" fill="#4ADE80"/><text x="85" y="150" fill="white" font-size="8" text-anchor="middle">You</text></svg>
       </div>
-      <div style="background:var(--gn2);border:1px solid rgba(74,222,128,.2);border-radius:var(--r);padding:11px 13px;display:flex;gap:9px;align-items:center;margin-bottom:11px">
-        <div style="width:38px;height:38px;background:var(--gn);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0">↗</div>
-        <div><div style="font-size:13px;font-weight:600;font-family:var(--fh)">Turn right onto GS Road</div><div style="font-size:12px;color:var(--tx2);margin-top:2px">In 200 metres</div></div>
+      <div style="background:var(--gn2);border:1px solid rgba(74,222,128,.2);border-radius:var(--r);padding:10px 12px;display:flex;gap:8px;align-items:center;margin-bottom:10px">
+        <div style="width:36px;height:36px;background:var(--gn);border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">↗</div>
+        <div><div style="font-size:13px;font-weight:600;font-family:var(--fh)">Turn right onto GS Road</div><div style="font-size:11px;color:var(--tx2);margin-top:2px">In 200 metres</div></div>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:11px">
-        <div class="card" style="text-align:center;padding:11px"><div style="font-family:var(--fh);font-size:20px;font-weight:800">1.2</div><div style="font-size:10px;color:var(--tx3)">km left</div></div>
-        <div class="card" style="text-align:center;padding:11px"><div style="font-family:var(--fh);font-size:20px;font-weight:800;color:var(--gn)">4</div><div style="font-size:10px;color:var(--tx3)">min ETA</div></div>
-        <div class="card" style="text-align:center;padding:11px"><div style="font-family:var(--fh);font-size:20px;font-weight:800;color:var(--gn)">₹830</div><div style="font-size:10px;color:var(--tx3)">You earn</div></div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:10px">
+        <div class="card" style="text-align:center;padding:10px"><div style="font-family:var(--fh);font-size:19px;font-weight:800">1.2</div><div style="font-size:10px;color:var(--tx3)">km left</div></div>
+        <div class="card" style="text-align:center;padding:10px"><div style="font-family:var(--fh);font-size:19px;font-weight:800;color:var(--gn)">4</div><div style="font-size:10px;color:var(--tx3)">min ETA</div></div>
+        <div class="card" style="text-align:center;padding:10px"><div style="font-family:var(--fh);font-size:19px;font-weight:800;color:var(--gn)">₹830</div><div style="font-size:10px;color:var(--tx3)">You earn</div></div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:11px">
-        <div class="call-btn-gn" onclick="callCustomer()"><div style="font-size:22px;text-align:center">📞</div><div style="font-size:11px;color:var(--gn);text-align:center">Call customer</div></div>
-        <div style="background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);padding:10px;text-align:center;cursor:pointer"><div style="font-size:22px">💬</div><div style="font-size:11px;color:var(--tx2)">Chat</div></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;margin-bottom:10px">
+        <div style="background:var(--gn2);border:1px solid rgba(74,222,128,.3);border-radius:var(--r);padding:9px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer" onclick="callCustomer()"><div style="font-size:19px">📞</div><div style="font-size:10px;color:var(--gn)">Call</div></div>
+        <div style="background:var(--gn2);border:1px solid rgba(74,222,128,.3);border-radius:var(--r);padding:9px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer" onclick="openMechChat()"><div style="font-size:19px">💬</div><div style="font-size:10px;color:var(--gn)">Chat</div></div>
+        <div style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:9px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer" onclick="mechSOS()"><div style="font-size:19px">🆘</div><div style="font-size:10px;color:var(--rd)">SOS</div></div>
       </div>
-      <button class="btn b-gn" onclick="N('m-active')">▶ I have arrived</button>
+      <button class="btn b-gn" onclick="go('m-active')">▶ I have arrived</button>
     </div>
   </div>
 </div>
 
+<!-- CHAT — FIX i -->
+<div id="m-chat" class="scr" style="flex-direction:column">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Chat with customer</div><div class="sp"></div></div>
+  <div id="m-chat-box" style="flex:1;overflow-y:auto;padding:12px 13px;"></div>
+  <div style="flex-shrink:0;display:flex;gap:7px;padding:9px 13px;background:var(--bg2);border-top:1px solid var(--bdr2)">
+    <input id="m-chat-inp" type="text" placeholder="Type a message..." style="flex:1;background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:13px;padding:8px 11px;outline:none" onkeydown="if(event.key==='Enter')sendMechMsg()">
+    <button style="background:var(--gn);border:none;border-radius:var(--r);padding:0 13px;color:#060D08;font-family:var(--fh);font-size:13px;font-weight:700;cursor:pointer" onclick="sendMechMsg()">Send</button>
+  </div>
+</div>
+
 <!-- ACTIVE JOB -->
-<div id="m-active" class="screen">
-  <div class="topbar"><div class="back" onclick="B()">← Back</div><div class="pg-t">Active job</div><span class="bdg b-a">In progress</span></div>
+<div id="m-active" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Active job</div><span class="bdg b-a">In progress</span></div>
   <div class="sb">
     <div class="sec">
-      <div style="text-align:center;padding:13px 0"><div style="font-size:44px;margin-bottom:8px;animation:pulse 2s infinite">🔧</div><div style="font-family:var(--fh);font-size:17px;font-weight:700">Repairing vehicle</div></div>
-      <div class="status-bar">
-        <div class="sb-item"><div class="sb-dot"></div>🎥 Recording</div>
+      <div style="text-align:center;padding:12px 0"><div style="font-size:42px;margin-bottom:7px;animation:pp 2s infinite">🔧</div><div style="font-family:var(--fh);font-size:16px;font-weight:700">Repairing vehicle</div></div>
+      <div style="display:flex;gap:7px;margin-bottom:10px">
+        <div class="sb-item"><div class="sb-dot"></div>🎥 Recording live</div>
         <div class="sb-item"><div class="sb-dot"></div>📍 GPS tracking</div>
       </div>
-      <div class="card" style="padding:11px 13px;margin-bottom:10px">
-        <div class="er"><div class="el">Labour</div><div class="ev" style="color:var(--gn)">₹600–800</div></div>
-        <div class="er"><div class="el">Parts margin</div><div class="ev" style="color:var(--gn)">+₹80</div></div>
-        <div class="er"><div class="el">Surge bonus</div><div class="ev" style="color:var(--gn)">+₹150</div></div>
-        <div class="er"><div class="el" style="font-weight:700;color:var(--tx)">You earn</div><div class="ev" style="font-family:var(--fh);font-size:15px;color:var(--gn)">~₹830</div></div>
+      <div class="card" style="padding:10px 12px;margin-bottom:9px">
+        <div class="er"><div style="color:var(--tx2)">Labour</div><div style="font-weight:600;color:var(--gn)">₹600–800</div></div>
+        <div class="er"><div style="color:var(--tx2)">Parts margin</div><div style="font-weight:600;color:var(--gn)">+₹80</div></div>
+        <div class="er"><div style="color:var(--tx2)">Surge bonus</div><div style="font-weight:600;color:var(--gn)">+₹150</div></div>
+        <div class="er"><div style="font-weight:700">You earn</div><div style="font-family:var(--fh);font-size:14px;color:var(--gn)">~₹830</div></div>
       </div>
-      <div class="sec-l">Checklist</div>
-      <div class="card" style="padding:8px 13px;margin-bottom:10px">
-        <div class="cr" onclick="chk(this)"><div class="ck">⬜</div><div class="cl">Inspect and confirm fault</div></div>
-        <div class="cr" onclick="chk(this)"><div class="ck">⬜</div><div class="cl">Confirm part number with outlet</div></div>
-        <div class="cr" onclick="chk(this)"><div class="ck">⬜</div><div class="cl">Install new part</div></div>
-        <div class="cr" onclick="chk(this)" style="border-bottom:none"><div class="ck">⬜</div><div class="cl">Test and confirm repair complete</div></div>
+      <div class="sl">Checklist</div>
+      <div class="card" style="padding:7px 12px;margin-bottom:9px">
+        <div class="cr" onclick="chk(this)"><div style="font-size:16px;width:20px">⬜</div><div style="font-size:13px">Inspect and confirm fault</div></div>
+        <div class="cr" onclick="chk(this)"><div style="font-size:16px;width:20px">⬜</div><div style="font-size:13px">Confirm part number</div></div>
+        <div class="cr" onclick="chk(this)"><div style="font-size:16px;width:20px">⬜</div><div style="font-size:13px">Install new part</div></div>
+        <div class="cr" onclick="chk(this)" style="border-bottom:none"><div style="font-size:16px;width:20px">⬜</div><div style="font-size:13px">Test and confirm repair</div></div>
       </div>
       <button class="btn b-gn" onclick="completeJob()">✅ Mark job complete</button>
     </div>
   </div>
 </div>
 
-<!-- JOB DONE -->
-<div id="m-done" class="screen">
-  <div class="topbar"><div class="back" onclick="N('m-home')">← Home</div><div class="pg-t">Job done!</div><div class="sp"></div></div>
+<!-- DONE -->
+<div id="m-done" class="scr">
+  <div class="topbar"><div class="back" onclick="go('m-home')">← Home</div><div class="pgt">Job done!</div><div class="sp"></div></div>
   <div class="sb">
     <div class="sec">
-      <div style="text-align:center;padding:16px 0"><div style="font-size:56px;margin-bottom:10px">💰</div><div style="font-family:var(--fh);font-size:24px;font-weight:800;color:var(--gn)">+₹830 earned!</div><div style="font-size:12px;color:var(--tx2);margin-top:4px">Admin panel updated live ✓</div></div>
-      <div style="background:linear-gradient(135deg,rgba(74,222,128,.12),rgba(74,222,128,.04));border:1px solid rgba(74,222,128,.18);border-radius:var(--r2);padding:18px;text-align:center;margin-bottom:12px">
-        <div style="font-size:12px;color:var(--tx2);margin-bottom:4px">Today's total</div>
-        <div style="font-family:var(--fh);font-size:40px;font-weight:800;color:var(--gn)">₹4,200</div>
+      <div style="text-align:center;padding:14px 0"><div style="font-size:52px;margin-bottom:9px">💰</div><div style="font-family:var(--fh);font-size:22px;font-weight:800;color:var(--gn)">+₹830 earned!</div><div style="font-size:11px;color:var(--tx2);margin-top:3px">Admin panel updated live ✓</div></div>
+      <div style="background:linear-gradient(135deg,rgba(74,222,128,.12),rgba(74,222,128,.04));border:1px solid rgba(74,222,128,.18);border-radius:var(--r2);padding:16px;text-align:center;margin-bottom:11px">
+        <div style="font-size:11px;color:var(--tx2);margin-bottom:3px">Today total</div>
+        <div style="font-family:var(--fh);font-size:36px;font-weight:800;color:var(--gn)">₹4,200</div>
       </div>
-      <button class="btn b-gn" onclick="N('m-home')">🏠 Back to home</button>
+      <button class="btn b-gn" onclick="go('m-home')">🏠 Back to home</button>
     </div>
   </div>
 </div>
 
 <!-- EARNINGS -->
-<div id="m-earn" class="screen">
-  <div class="topbar"><div class="logo">Mech<em>Pro</em></div><span class="bdg b-g">Earnings</span></div>
+<div id="m-earn" class="scr">
+  <div class="topbar"><div class="lgo">Mech<em>Pro</em></div><span class="bdg b-g">Earnings</span></div>
   <div class="sb">
     <div class="sec">
-      <div style="background:linear-gradient(135deg,rgba(74,222,128,.12),rgba(74,222,128,.04));border:1px solid rgba(74,222,128,.18);border-radius:var(--r2);padding:18px;text-align:center;margin-bottom:12px">
-        <div style="font-size:12px;color:var(--tx2);margin-bottom:4px">This week</div>
-        <div style="font-family:var(--fh);font-size:40px;font-weight:800;color:var(--gn)">₹18,400</div>
-        <span class="bdg b-g" style="margin-top:7px">↑ +12% vs last week</span>
+      <div style="background:linear-gradient(135deg,rgba(74,222,128,.12),rgba(74,222,128,.04));border:1px solid rgba(74,222,128,.18);border-radius:var(--r2);padding:16px;text-align:center;margin-bottom:11px">
+        <div style="font-size:11px;color:var(--tx2);margin-bottom:3px">This week</div>
+        <div style="font-family:var(--fh);font-size:36px;font-weight:800;color:var(--gn)">₹18,400</div>
+        <span class="bdg b-g" style="margin-top:6px">↑ +12% vs last week</span>
       </div>
-    </div>
-    <div class="chart" id="echart"></div>
-    <div class="cd"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div>
-    <div class="sec" style="padding-top:4px">
-      <div class="card" style="padding:11px 13px">
-        <div class="er"><div class="el">Total gigs</div><div class="ev">28</div></div>
-        <div class="er"><div class="el">Labour earnings</div><div class="ev">₹12,800</div></div>
-        <div class="er"><div class="el">Surge bonuses</div><div class="ev" style="color:var(--gn)">+₹2,400</div></div>
-        <div class="er" style="border-bottom:none"><div class="el">Platform cut (8%)</div><div class="ev" style="color:var(--rd)">-₹1,472</div></div>
+      <div class="card" style="padding:10px 12px">
+        <div class="er"><div style="color:var(--tx2)">Total gigs</div><div style="font-weight:600">28</div></div>
+        <div class="er"><div style="color:var(--tx2)">Labour</div><div style="font-weight:600">₹12,800</div></div>
+        <div class="er"><div style="color:var(--tx2)">Surge bonuses</div><div style="font-weight:600;color:var(--gn)">+₹2,400</div></div>
+        <div class="er"><div style="color:var(--tx2)">Platform cut (8%)</div><div style="font-weight:600;color:var(--rd)">-₹1,472</div></div>
       </div>
     </div>
   </div>
   <div class="bnav">
-    <div class="bn" onclick="N('m-home')"><div class="bn-i">🏠</div><div class="bn-l">Home</div></div>
-    <div class="bn" onclick="N('m-gig')"><div class="bn-i">🔔</div><div class="bn-l">Gigs</div></div>
+    <div class="bn" onclick="go('m-home')"><div class="bn-i">🏠</div><div class="bn-l">Home</div></div>
+    <div class="bn" onclick="go('m-gig')"><div class="bn-i">🔔</div><div class="bn-l">Gigs</div></div>
     <div class="bn on"><div class="bn-i">💰</div><div class="bn-l">Earnings</div></div>
-    <div class="bn" onclick="N('m-profile')"><div class="bn-i">👤</div><div class="bn-l">Profile</div></div>
+    <div class="bn" onclick="go('m-profile')"><div class="bn-i">👤</div><div class="bn-l">Profile</div></div>
   </div>
 </div>
 
 <!-- PROFILE -->
-<div id="m-profile" class="screen">
-  <div class="sb" style="padding-bottom:80px">
+<div id="m-profile" class="scr">
+  <div class="sb" style="padding-bottom:76px">
     <div class="ph">
-      <div class="pav2" id="profile-av">AK</div>
-      <div class="pn" id="profile-name-p">Loading...</div>
-      <div class="ps" id="profile-sub-p">—</div>
+      <div class="p-avi" onclick="document.getElementById('m-pfp-up').click()">
+        <img class="m-pfp" src="" alt="" style="display:none">
+        <span class="m-ini" style="font-family:var(--fh);font-size:19px;font-weight:800;color:var(--gn)">AK</span>
+      </div>
+      <input type="file" id="m-pfp-up" accept="image/*" style="display:none" onchange="uploadMechPfp(this)">
+      <div style="font-family:var(--fh);font-size:16px;font-weight:700" class="m-name">Loading...</div>
+      <div style="font-size:11px;color:var(--tx2)" class="m-phone">—</div>
       <span class="bdg b-g">✅ Verified mechanic</span>
     </div>
     <div class="psts"><div class="pst"><div class="pstn">284</div><div class="pstl">Jobs</div></div><div class="pst"><div class="pstn" style="color:var(--am)">4.9⭐</div><div class="pstl">Rating</div></div><div class="pst"><div class="pstn" style="color:var(--gn)">₹2.4L</div><div class="pstl">Lifetime</div></div></div>
-    <div class="sw" id="skills-wrap"><span class="bdg b-g">CV joint</span><span class="bdg b-g">Suspension</span><span class="bdg b-b">Brakes</span></div>
-    <div class="mit"><div class="mii">📷</div><div class="mil">Bodycam settings</div><div class="mia">›</div></div>
-    <div class="mit"><div class="mii">📍</div><div class="mil">GPS & tracking</div><div class="mia">›</div></div>
-    <div class="mit"><div class="mii">🏦</div><div class="mil">Bank account</div><div class="mia">›</div></div>
-    <div class="mit" onclick="logoutMechanic()"><div class="mii">🚪</div><div class="mil">Sign out</div><div class="mia">›</div></div>
-    <div style="padding:14px;text-align:center;font-size:12px;color:var(--tx3)">MechPro v3.2 · Real GPS · Firebase Auth</div>
+    <div id="skills-wrap" class="sw2"></div>
+    <div class="mit"><span style="font-size:15px">📍</span><span style="flex:1">GPS & tracking</span><span style="color:var(--tx3)">›</span></div>
+    <div class="mit"><span style="font-size:15px">🏦</span><span style="flex:1">Bank account</span><span style="color:var(--tx3)">›</span></div>
+    <div class="mit" onclick="doLogout()"><span style="font-size:15px">🚪</span><span style="flex:1">Sign out</span><span style="color:var(--tx3)">›</span></div>
+    <div style="padding:13px;text-align:center;font-size:11px;color:var(--tx3)">MechPro v5 · All 16 bugs fixed · Real-time Firebase</div>
   </div>
   <div class="bnav">
-    <div class="bn" onclick="N('m-home')"><div class="bn-i">🏠</div><div class="bn-l">Home</div></div>
-    <div class="bn" onclick="N('m-gig')"><div class="bn-i">🔔</div><div class="bn-l">Gigs</div></div>
-    <div class="bn" onclick="N('m-earn')"><div class="bn-i">💰</div><div class="bn-l">Earnings</div></div>
+    <div class="bn" onclick="go('m-home')"><div class="bn-i">🏠</div><div class="bn-l">Home</div></div>
+    <div class="bn" onclick="go('m-gig')"><div class="bn-i">🔔</div><div class="bn-l">Gigs</div></div>
+    <div class="bn" onclick="go('m-earn')"><div class="bn-i">💰</div><div class="bn-l">Earnings</div></div>
     <div class="bn on"><div class="bn-i">👤</div><div class="bn-l">Profile</div></div>
   </div>
 </div>
 
 <script>
-var stk=['m-login'],cur='m-login',chartBuilt=false;
-function N(id){
-  var o=document.getElementById(cur),n=document.getElementById(id);
-  if(!n)return;
-  o.classList.remove('active');n.classList.add('active');
-  stk.push(id);cur=id;
-  var sb=n.querySelector('.sb');if(sb)sb.scrollTop=0;
-  if(id==='m-earn'&&!chartBuilt){buildChart();chartBuilt=true;}
-  if(id==='m-profile')loadProfile();
-  if(id==='m-pending')pollVerification();
-}
-function B(){if(stk.length<2)return;stk.pop();var p=stk[stk.length-1];document.getElementById(cur).classList.remove('active');document.getElementById(p).classList.add('active');cur=p;}
-function chk(r){var i=r.querySelector('.ck');if(i&&i.textContent.trim()==='⬜')i.textContent='✅';}
-var earD=[2400,1800,2200,3200,2600,2800,1400];
-function buildChart(){
-  var w=document.getElementById('echart');if(!w)return;w.innerHTML='';
-  var mx=Math.max.apply(null,earD);
-  earD.forEach(function(v,i){
-    var c=document.createElement('div');c.className='bc';
-    var b=document.createElement('div');b.className='bf'+(i===3?' today':'');
-    b.style.height='0';c.appendChild(b);w.appendChild(c);
-    setTimeout(function(){b.style.height=Math.round((v/mx)*60)+'px';},70+i*55);
-  });
-}
-function loadProfile(){
-  var p=window._mechProfile;if(!p)return;
-  var n=document.getElementById('profile-name-p');if(n)n.textContent=p.name;
-  var s=document.getElementById('profile-sub-p');if(s)s.textContent=p.phone+' · '+p.city;
-  var av=document.getElementById('profile-av');if(av)av.textContent=p.name.substr(0,2).toUpperCase();
-  if(p.skills){
-    var sw=document.getElementById('skills-wrap');
-    if(sw){sw.innerHTML='';p.skills.split(',').forEach(function(sk){var span=document.createElement('span');span.className='bdg b-g';span.textContent=sk.trim();sw.appendChild(span);});}
-  }
-}
-function setEl(id,val){var e=document.getElementById(id);if(e)e.textContent=val;}
-function pollVerification(){
-  if(!window._currentUser||window._verifyPoll)return;
-  window._verifyPoll=setInterval(function(){
-    if(!window._currentUser){clearInterval(window._verifyPoll);return;}
-    window._get(window._ref(window._db,'mechanics/'+window._currentUser.uid)).then(function(snap){
-      var p=snap.val();
-      if(p&&p.verified){
-        clearInterval(window._verifyPoll);window._verifyPoll=null;
-        window._mechProfile=p;
-        window._update(window._ref(window._db,'mechanics/'+window._currentUser.uid),{status:'online',gpsOn:true,bodycam:true});
-        N('m-home');
-        startListeners();
-      }
-    });
-  },10000);
-}
+var stk=['m-login'],cur='m-login';
+function go(id){var o=document.getElementById(cur),n=document.getElementById(id);if(!n)return;o.classList.remove('on');n.classList.add('on');stk.push(id);cur=id;var sb=n.querySelector('.sb');if(sb)sb.scrollTop=0;}
+function back(){if(stk.length<2)return;stk.pop();var p=stk[stk.length-1];document.getElementById(cur).classList.remove('on');document.getElementById(p).classList.add('on');cur=p;}
+function chk(r){var i=r.querySelector('[style*="width:20px"]');if(i&&i.textContent.trim()==='⬜')i.textContent='✅';}
+function ge(id){return document.getElementById(id);}
+function tx(id,v){var e=document.getElementById(id);if(e)e.textContent=v;}
 </script>
 </body>
 </html>

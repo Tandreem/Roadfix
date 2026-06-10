@@ -181,8 +181,8 @@ window.resolveAlert=id=>{update(ref(db,'alerts/'+id),{status:'resolved'});};
 // ── HELPERS ───────────────────────────────────────────
 function setEl(id,val){const e=document.getElementById(id);if(e)e.textContent=val;}
 function ago(ts){if(!ts)return'—';const s=Math.floor((Date.now()-ts)/1000);if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';if(s<86400)return Math.floor(s/3600)+'h';return Math.floor(s/86400)+'d';}
-function sLabel(s){return{pending:'Pending',searching_mechanic:'Searching',mechanic_assigned:'Assigned',enroute:'En route',fixing:'Fixing',done:'Done ✓',declined:'Declined'}[s]||s||'—';}
-function sBadge(s){return{done:'b-g',fixing:'b-b',enroute:'b-p',mechanic_assigned:'b-b',searching_mechanic:'b-o',pending:'b-y',declined:'b-off'}[s]||'b-y';}
+function sLabel(s){return{pending:'Posted — pending',searching_mechanic:'Searching mechanic',mechanic_assigned:'Mechanic accepted ✅',enroute:'En route to customer',fixing:'Fixing vehicle',done:'Done ✓',declined:'Declined'}[s]||s||'—';}
+function sBadge(s){return{done:'b-g',fixing:'b-b',enroute:'b-p',mechanic_assigned:'b-g',searching_mechanic:'b-o',pending:'b-y',declined:'b-off'}[s]||'b-y';}
 function pBadge(t){return t==='OEM'?'b-b':t==='ODM'?'b-g':'b-y';}
 function toast(msg){let t=document.getElementById('a-toast');if(!t){t=document.createElement('div');t.id='a-toast';t.style.cssText='position:fixed;bottom:18px;right:18px;background:var(--card);border:1px solid var(--bdr2);color:var(--tx);padding:9px 16px;border-radius:9px;font-size:13px;z-index:999;transition:opacity .3s';document.body.appendChild(t);}t.textContent=msg;t.style.opacity='1';clearTimeout(window._aT);window._aT=setTimeout(()=>{t.style.opacity='0';},2200);}
 setInterval(()=>{const e=document.getElementById('live-time');if(e)e.textContent=new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});},1000);

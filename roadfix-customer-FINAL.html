@@ -46,8 +46,24 @@ onAuthStateChanged(auth,user=>{
       tx('lf-jobs',String(active));
       Object.values(all).forEach(j=>{
         if(j.customerId===uid&&j.status!=='done'){
-          const L={pending:'Pending',searching_mechanic:'Searching...',mechanic_assigned:(j.mechanic||'?')+' assigned',enroute:'En route',fixing:'Being fixed',done:'Done'};
+          const L={pending:'Pending',searching_mechanic:'Searching...',mechanic_assigned:(j.mechanic||'?')+' accepted ✅',enroute:'Mechanic en route',fixing:'Being fixed',done:'Done'};
           tx('lf-status',L[j.status]||j.status);
+          // AUTO-ADVANCE: if mechanic accepted and we're on waiting screen, go to tracking
+          if((j.status==='mechanic_assigned'||j.status==='enroute')&&j.mechanic&&(cur==='s-waiting'||cur==='s-mechs')){
+            // Populate tracking screen with mechanic details
+            tx('track-mech',j.mechanic||'Mechanic');
+            bookedMechPhone=j.mechanicPhone||'';
+            bookedMechId=j.mechanicId||'';
+            if(j.mechanicId){
+              get(ref(db,'mechanics/'+j.mechanicId)).then(s=>{
+                const m=s.val();
+                if(m&&m.pfp){const img=ge('track-pfp');if(img){img.src=m.pfp;img.style.display='block';ge('track-ini').style.display='none';}}
+                else{tx('track-ini',(j.mechanic||'M').substr(0,2).toUpperCase());}
+              });
+            }
+            toast('✅ '+j.mechanic+' accepted your job!');
+            go('s-tracking');
+          }
         }
       });
     });
@@ -204,15 +220,12 @@ function buildMechList(all){
 // ── BOOK MECHANIC ────────────────────────────────────
 window.bookMech=(mechId,mechName,mechPhone)=>{
   if(!jobId){toast('Complete AI analysis first');return;}
+  // Customer just requests this mechanic — mechanic must ACCEPT before tracking starts
   bookedMechId=mechId;bookedMechPhone=mechPhone;
-  update(ref(db,'jobs/'+jobId),{mechanic:mechName,mechanicId:mechId,mechanicPhone:mechPhone,status:'mechanic_assigned',updatedAt:Date.now()});
-  tx('track-mech',mechName);
-  get(ref(db,'mechanics/'+mechId)).then(s=>{
-    const m=s.val();
-    if(m&&m.pfp){const img=ge('track-pfp');if(img){img.src=m.pfp;img.style.display='block';ge('track-ini').style.display='none';}}
-    else{tx('track-ini',(mechName||'M').substr(0,2).toUpperCase());}
-  });
-  go('s-tracking');
+  // Update job with preferred mechanic but keep status as searching — mechanic must accept
+  update(ref(db,'jobs/'+jobId),{preferredMechanic:mechName,preferredMechanicId:mechId,status:'searching_mechanic',updatedAt:Date.now()});
+  toast('Request sent to '+mechName+' — waiting for acceptance...');
+  go('s-waiting');
 };
 window.callMech=()=>{if(bookedMechPhone)window.location.href='tel:'+bookedMechPhone.replace(/\s/g,'');else toast('No phone number');};
 window.finishJob=()=>{if(jobId)update(ref(db,'jobs/'+jobId),{status:'done',finalPrice:1550,completedAt:Date.now()});jobId=null;go('s-home');};
@@ -245,7 +258,10 @@ window.sendMsg=()=>{
 const PDB={OEM:[{n:'CV Axle OEM',b:'Maruti Genuine',p:'₹1,200',d:'Original. Full warranty.'}],ODM:[{n:'CV Axle ODM',b:'Sona BLW',p:'₹780',d:'Tier-1, same specs.'}],Generic:[{n:'CV Axle Generic',b:'Local brand',p:'₹480',d:'Budget option.'}]};
 window.selPT2=t=>{selPT=t;['OEM','ODM','Generic'].forEach(x=>{const e=ge('pt-'+x);if(e)e.classList.toggle('on',x===t);});const c=ge('parts-list');if(c)c.innerHTML=(PDB[t]||[]).map(p=>`<div class="part-card sel"><div style="display:flex;justify-content:space-between;margin-bottom:2px"><div style="font-size:12px;font-weight:600">${p.n}</div><div style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--or)">${p.p}</div></div><div style="font-size:10px;color:var(--tx3)">${p.b}</div><div style="font-size:11px;color:var(--tx2)">${p.d}</div></div>`).join('');if(jobId)update(ref(db,'jobs/'+jobId),{partType:t});};
 window.selPD2=(i,name)=>{selPD=name;[0,1,2,3].forEach(j=>{const e=ge('pd'+j);if(e)e.classList.toggle('sel',j===i);});};
-window.submitJob=()=>{if(jobId)update(ref(db,'jobs/'+jobId),{status:'searching_mechanic',partType:selPT,delivery:selPD,updatedAt:Date.now()});go('s-mechs');};
+window.submitJob=()=>{
+  if(jobId)update(ref(db,'jobs/'+jobId),{status:'searching_mechanic',partType:selPT,delivery:selPD,updatedAt:Date.now()});
+  go('s-mechs');
+};
 window.togCat=(el,name)=>{el.classList.toggle('sel');if(el.classList.contains('sel')){if(!cats.includes(name))cats.push(name);}else{cats=cats.filter(c=>c!==name);}};
 window.selPM=(i)=>[0,1,2].forEach(j=>{const e=ge('pm'+j);if(e)e.classList.toggle('sel',j===i);});
 window.rateStar=(i)=>qsa('.star').forEach((s,j)=>s.classList.toggle('on',j<=i));
@@ -578,6 +594,25 @@ img#photo-prev{display:none;width:100%;border-radius:var(--r);margin-top:7px;max
     <div class="sec">
       <div class="abox a-g" style="margin-bottom:11px"><div style="font-size:16px;flex-shrink:0">📡</div><div><div style="font-size:12px;font-weight:700;color:var(--gn)">Job posted · mechanics notified</div><div style="font-size:11px;color:var(--tx2)">Only verified mechanics shown below</div></div></div>
       <div id="mech-list" class="mlist"><div style="text-align:center;padding:16px;color:var(--tx3);font-size:12px">Loading verified mechanics...</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- WAITING FOR MECHANIC ACCEPTANCE -->
+<div id="s-waiting" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Waiting for mechanic</div><div class="sp"></div></div>
+  <div class="sb">
+    <div class="sec" style="text-align:center;padding-top:40px">
+      <div style="font-size:56px;margin-bottom:16px;animation:pp 1.5s infinite">⏳</div>
+      <div style="font-family:var(--fh);font-size:20px;font-weight:800;color:var(--tx);margin-bottom:8px">Waiting for mechanic</div>
+      <div style="font-size:13px;color:var(--tx2);margin-bottom:24px;line-height:1.7">Your job request has been sent.<br>Waiting for the mechanic to accept.<br><strong style="color:var(--gn)">You'll be automatically redirected when they accept.</strong></div>
+      <div style="background:var(--card);border:1px solid rgba(34,197,94,.22);border-radius:var(--r2);padding:14px;margin-bottom:16px;text-align:left">
+        <div style="display:flex;align-items:center;gap:7px;margin-bottom:8px"><div style="width:8px;height:8px;border-radius:50%;background:var(--gn);animation:dd 1.2s infinite"></div><div style="font-family:var(--fh);font-size:11px;font-weight:700;color:var(--gn)">LIVE STATUS</div></div>
+        <div style="font-size:13px;color:var(--tx2)">Job posted to mechanic · waiting for acceptance</div>
+        <div style="font-size:12px;color:var(--tx3);margin-top:4px">This page updates automatically in real time</div>
+      </div>
+      <div class="abox a-y" style="text-align:left;margin-bottom:16px"><div style="font-size:16px;flex-shrink:0">ℹ️</div><div><div style="font-size:12px;font-weight:700;color:var(--yw);margin-bottom:2px">How it works</div><div style="font-size:11px;color:var(--tx2)">Mechanic opens their app → sees your gig → accepts → you see their details + live tracking automatically</div></div></div>
+      <button class="btn b-ghost" onclick="back()">← Choose different mechanic</button>
     </div>
   </div>
 </div>

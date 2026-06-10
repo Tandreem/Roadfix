@@ -158,10 +158,16 @@ window.acceptGig=()=>{
       back();return;
     }
     // Lock job to this mechanic
-    update(ref(db,'jobs/'+jobId),{status:'enroute',mechanic:p.name,mechanicId:uid,mechanicPhone:p.phone||'—',updatedAt:Date.now()});
-    update(ref(db,'mechanics/'+uid),{status:'enroute',activeJob:jobId,eta:4});
+    // Lock with mechanic_assigned first so customer waiting screen triggers
+    update(ref(db,'jobs/'+jobId),{status:'mechanic_assigned',mechanic:p.name,mechanicId:uid,mechanicPhone:p.phone||'—',updatedAt:Date.now()});
+    // Short delay then set enroute  
+    setTimeout(()=>{
+      update(ref(db,'mechanics/'+uid),{status:'enroute',activeJob:jobId,eta:4});
+      update(ref(db,'jobs/'+jobId),{status:'enroute'});
+    },1500);
     tx('active-job',currentJob?currentJob.issue:'Active job');
     const nb=ge('gig-badge');if(nb)nb.style.display='none';
+    toast('✅ Gig accepted! Navigate to customer.');
     go('m-nav');
   });
 };
@@ -586,7 +592,30 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 
 <script>
 var stk=['m-login'],cur='m-login';
-function go(id){var o=document.getElementById(cur),n=document.getElementById(id);if(!n)return;o.classList.remove('on');n.classList.add('on');stk.push(id);cur=id;var sb=n.querySelector('.sb');if(sb)sb.scrollTop=0;}
+function go(id){
+  var o=document.getElementById(cur),n=document.getElementById(id);
+  if(!n)return;
+  o.classList.remove('on');n.classList.add('on');
+  stk.push(id);cur=id;
+  var sb=n.querySelector('.sb');if(sb)sb.scrollTop=0;
+  // Re-populate gig detail every time gig screen opens (fixes Loading... bug)
+  if(id==='m-gig'&&typeof currentJob!=='undefined'&&currentJob){
+    repopulateGig();
+  }
+}
+function repopulateGig(){
+  if(!currentJob)return;
+  tx('gig-issue',currentJob.issue||'—');
+  tx('gig-loc','📍 '+(currentJob.location||'—'));
+  tx('gig-price','₹'+(currentJob.estimateLow||'—')+'–'+(currentJob.estimateHigh||'—'));
+  tx('gig-cust',currentJob.customerName||'—');
+  tx('gig-cph',currentJob.customerPhone||'—');
+  var vstr=currentJob.vehicle||((currentJob.vehicleMake||'')+' '+(currentJob.vehicleModel||'')+' '+(currentJob.vehicleYear||'')+' '+(currentJob.vehicleFuel||'')).trim();
+  tx('gig-veh',vstr||'Not specified');
+  tx('gig-parts',currentJob.partType||'OEM');
+  tx('gig-cats',currentJob.categories||'General');
+  tx('gig-ai',currentJob.aiConfidence?'AI: '+currentJob.aiConfidence:'—');
+}
 function back(){if(stk.length<2)return;stk.pop();var p=stk[stk.length-1];document.getElementById(cur).classList.remove('on');document.getElementById(p).classList.add('on');cur=p;}
 function chk(r){var i=r.querySelector('[style*="width:20px"]');if(i&&i.textContent.trim()==='⬜')i.textContent='✅';}
 function ge(id){return document.getElementById(id);}

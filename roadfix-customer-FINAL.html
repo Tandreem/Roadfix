@@ -127,7 +127,27 @@ function fIco(f){return{Petrol:'⛽',Diesel:'🛢️',CNG:'💚',Electric:'⚡',
 
 // ── PHOTO + VOICE ────────────────────────────────────
 window.doPhoto=()=>{const i=document.createElement('input');i.type='file';i.accept='image/*';i.capture='environment';i.onchange=async e=>{const f=e.target.files[0];if(!f)return;const d=await b64(f);window._photo=d;const pv=ge('photo-prev');if(pv){pv.src=d;pv.style.display='block';}const ta=ge('ptxt');if(ta&&!ta.value)ta.value='[Photo attached] ';toast('📷 Photo attached');};i.click();};
-window.doVoice=()=>{const SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR){toast('Voice not supported');return;}const sr=new SR();sr.lang='en-IN';sr.continuous=false;sr.interimResults=false;sr.onstart=()=>toast('🎙️ Listening...');sr.onresult=e=>{const ta=ge('ptxt');if(ta)ta.value=e.results[0][0].transcript;toast('🎙️ Done!');};sr.onerror=()=>toast('Could not hear, try again');sr.start();};
+window.doVoice=async()=>{
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){toast('🎙️ Voice not supported on this browser. Use Chrome.');return;}
+  // Request mic permission first
+  try{await navigator.mediaDevices.getUserMedia({audio:true});}catch(e){toast('🎙️ Mic permission denied. Allow in browser settings.');return;}
+  const sr=new SR();
+  sr.lang='en-IN';sr.continuous=false;sr.interimResults=false;
+  sr.onstart=()=>toast('🎙️ Listening... speak now');
+  sr.onresult=e=>{
+    const txt=e.results[0][0].transcript;
+    const ta=ge('ptxt');if(ta)ta.value=txt;
+    toast('🎙️ Got: '+txt.substr(0,30)+'...');
+  };
+  sr.onerror=err=>{
+    if(err.error==='not-allowed')toast('🎙️ Mic blocked. Allow mic in browser.');
+    else if(err.error==='no-speech')toast('🎙️ No speech detected. Try again.');
+    else toast('🎙️ Error: '+err.error+'. Use Chrome on HTTPS.');
+  };
+  sr.onend=()=>{};
+  try{sr.start();}catch(e){toast('🎙️ Could not start. Use Chrome browser.');}
+};
 
 // ── AI — FIX ix: requires vehicle first ───────────────
 window.startAI=()=>{
@@ -149,9 +169,16 @@ JSON format:
   try{
     const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=AQ.Ab8RN6KDQDgC0AeiJZ3BKc9I2Y866ZEdwV5ERLDZ_iScfuRtKA',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts:[{text:prompt}]}]})});
     const d=await r.json();
-    const txt=d.candidates&&d.candidates[0]?d.candidates[0].content.parts[0].text:'';
+    const rawTxt=d.candidates&&d.candidates[0]?d.candidates[0].content.parts[0].text:'';
+    // Strip markdown code blocks if Gemini wraps response
+    const txt=rawTxt.replace(/```json\n?/gi,'').replace(/```\n?/gi,'').trim();
     let a;try{a=JSON.parse(txt);}catch(e){a=null;}
-    a&&a.faults?showAI(a):showAIFallback();
+    if(a&&a.faults){showAI(a);}else{
+      // Try extracting JSON from inside the text
+      const match=txt.match(/\{[\s\S]*\}/);
+      if(match){try{const b=JSON.parse(match[0]);if(b&&b.faults){showAI(b);return;}}catch(e){}}
+      showAIFallback();
+    }
   }catch(e){showAIFallback();}
 }
 function showAIFallback(){showAI({faults:[{name:'CV joint wear',pct:87,desc:'Clunking on turns.',col:'bl'},{name:'Wheel bearing',pct:61,desc:'Humming at speed.',col:'yw'},{name:'Brake caliper',pct:44,desc:'Pulling to one side.',col:'rd'}],warn:'Unsafe at highway speed.',parts:'CV axle, boot grease, circlip',low:1200,high:1800,severity:'high'});}
@@ -653,7 +680,7 @@ img#photo-prev{display:none;width:100%;border-radius:var(--r);margin-top:7px;max
 </div>
 
 <!-- CHAT — FIX i: flex column layout so messages + bar work -->
-<div id="s-chat" class="scr" style="flex-direction:column">
+<div id="s-chat" class="scr" style="display:flex;flex-direction:column">
   <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Chat with mechanic</div><div class="sp"></div></div>
   <div id="chat-box" style="flex:1;overflow-y:auto;padding:12px 13px;"></div>
   <div style="flex-shrink:0;display:flex;gap:7px;padding:9px 13px;background:var(--bg2);border-top:1px solid var(--bdr2)">

@@ -85,16 +85,30 @@ function startListeners(){
   onValue(ref(db,'jobs'),snap=>{
     const all=snap.val()||{};
     Object.entries(all).forEach(([id,job])=>{
-      // FIX xiv: only show if status is searching AND no mechanicId locked yet
-      if(job.status==='searching_mechanic'&&!job.mechanicId&&!shownGig){
+      // FIX 4: Only show gig if truly available — searching, no mechanic, not done
+      if(job.status==='searching_mechanic'&&!job.mechanicId&&job.status!=='done'&&!shownGig){
         shownGig=true;jobId=id;currentJob=job;
         showGigAlert(id,job);
+        if(typeof cur!=='undefined'&&cur==='m-gig')repopulateGig();
       }
-      // If I'm assigned and job becomes done
-      if(job.mechanicId===uid&&job.status==='done'&&jobId===id){
-        tx('active-job','None');
+      // FIX 4: Hide gig banner if job is done or taken by someone else
+      if(id===jobId){
+        if(job.status==='done'||(job.mechanicId&&job.mechanicId!==uid)){
+          shownGig=false;jobId=null;currentJob=null;
+          const pv=ge('gig-prev');if(pv)pv.style.display='none';
+          const nb=ge('gig-badge');if(nb)nb.style.display='none';
+        }
+      }
+      // Clear active job label when done
+      if(job.mechanicId===uid&&job.status==='done'){
+        tx('active-job','None');shownGig=false;
       }
     });
+    // FIX 4: If no searching jobs exist anymore, hide gig banner
+    const anyOpen=Object.values(all).some(j=>j.status==='searching_mechanic'&&!j.mechanicId);
+    if(!anyOpen&&shownGig){
+      const pv=ge('gig-prev');if(pv)pv.style.display='none';
+    }
   });
   // Customer SOS alerts
   onValue(ref(db,'alerts'),snap=>{
@@ -203,7 +217,9 @@ window.callCustomer=()=>{const ph=(currentJob&&currentJob.customerPhone)||'';if(
 
 // ── CHAT (FIX i) ──────────────────────────────────────
 window.openMechChat=()=>{
-  if(!jobId){toast('No active job');return;}
+  if(!jobId){
+    toast('No active job — accept a gig first');return;
+  }
   go('m-chat');
   if(chatUnsub)chatUnsub();
   chatUnsub=onValue(ref(db,'chats/'+jobId),snap=>{
@@ -484,7 +500,7 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 </div>
 
 <!-- CHAT — FIX i -->
-<div id="m-chat" class="scr" style="flex-direction:column">
+<div id="m-chat" class="scr" style="display:flex;flex-direction:column">
   <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Chat with customer</div><div class="sp"></div></div>
   <div id="m-chat-box" style="flex:1;overflow-y:auto;padding:12px 13px;"></div>
   <div style="flex-shrink:0;display:flex;gap:7px;padding:9px 13px;background:var(--bg2);border-top:1px solid var(--bdr2)">

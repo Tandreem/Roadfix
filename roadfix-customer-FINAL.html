@@ -8,23 +8,26 @@
 <script type="module">
 import{initializeApp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import{getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,onAuthStateChanged}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import{getDatabase,ref,set,push,onValue,update,get,remove}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+import{getDatabase,ref,set,push,onValue,update,get}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 const app=initializeApp({apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",authDomain:"roadfix-demo.firebaseapp.com",databaseURL:"https://roadfix-demo-default-rtdb.asia-southeast1.firebasedatabase.app",projectId:"roadfix-demo",storageBucket:"roadfix-demo.firebasestorage.app",messagingSenderId:"274952184107",appId:"1:274952184107:web:63188439d92ec31103a56e"});
 const auth=getAuth(app),db=getDatabase(app);
 
-// ── STATE (module-scoped, not window) ─────────────────
-let uid=null,profile=null,selVeh=null,jobId=null,selPT='OEM',selPD='Company outlet';
+// ── STATE ─────────────────────────────────────────────
+let uid=null,profile=null,selVeh=null,selPT='OEM',selPD='Company outlet';
 let cats=[],chatUnsub=null,bookedMechPhone='',bookedMechId='';
+// FIX 5: jobId persisted in localStorage so it survives refresh/background
+function getJobId(){return localStorage.getItem('rf_jobId')||null;}
+function setJobId(id){if(id)localStorage.setItem('rf_jobId',id);else localStorage.removeItem('rf_jobId');}
 
-// ── AUTH ──────────────────────────────────────────────
+// ── FIX 4: AUTH — show loading screen first, never flash login ──
+// Page starts on s-loading, auth resolves before showing anything
 onAuthStateChanged(auth,user=>{
   if(user){
     uid=user.uid;
-    // FIX iv+v: onValue keeps name/profile live always
+    // Live profile listener
     onValue(ref(db,'customers/'+uid),snap=>{
       const p=snap.val();if(!p)return;
       profile=p;
-      // Update every name/phone element
       qsa('.c-name').forEach(e=>e.textContent=p.name||'');
       qsa('.c-first').forEach(e=>e.textContent='Hi, '+(p.name||'there').split(' ')[0]+' 👋');
       qsa('.c-phone').forEach(e=>e.textContent=(p.phone||'')+(p.city?' · '+p.city:''));
@@ -32,52 +35,66 @@ onAuthStateChanged(auth,user=>{
       qsa('.c-ini').forEach(e=>e.textContent=ini);
       if(p.pfp){qsa('.c-pfp').forEach(e=>{e.src=p.pfp;e.style.display='block';});qsa('.c-ini').forEach(e=>e.style.display='none');}
     });
-    // FIX iii+xii: live mechanic list with onValue
+    // Live mechanics
     onValue(ref(db,'mechanics'),snap=>{
       const all=snap.val()||{};
       buildMechList(all);
-      const n=Object.values(all).filter(m=>m.verified&&(m.status==='online'||m.status==='enroute')).length;
-      tx('lf-mechs',n+' online');
+      tx('lf-mechs',Object.values(all).filter(m=>m.verified&&(m.status==='online'||m.status==='enroute')).length+' online');
     });
-    // Live job status
+    // FIX 5: Live job watcher — restores active job on re-open
     onValue(ref(db,'jobs'),snap=>{
       const all=snap.val()||{};
       const active=Object.values(all).filter(j=>j.status&&j.status!=='done').length;
       tx('lf-jobs',String(active));
-      Object.values(all).forEach(j=>{
-        if(j.customerId===uid&&j.status!=='done'){
-          const L={pending:'Pending',searching_mechanic:'Searching...',mechanic_assigned:(j.mechanic||'?')+' accepted ✅',enroute:'Mechanic en route',fixing:'Being fixed',done:'Done'};
-          tx('lf-status',L[j.status]||j.status);
-          // AUTO-ADVANCE: if mechanic accepted and we're on waiting screen, go to tracking
-          if((j.status==='mechanic_assigned'||j.status==='enroute')&&j.mechanic&&(cur==='s-waiting'||cur==='s-mechs')){
-            // Populate tracking screen with mechanic details
-            tx('track-mech',j.mechanic||'Mechanic');
-            bookedMechPhone=j.mechanicPhone||'';
-            bookedMechId=j.mechanicId||'';
-            if(j.mechanicId){
-              get(ref(db,'mechanics/'+j.mechanicId)).then(s=>{
-                const m=s.val();
-                if(m&&m.pfp){const img=ge('track-pfp');if(img){img.src=m.pfp;img.style.display='block';ge('track-ini').style.display='none';}}
-                else{tx('track-ini',(j.mechanic||'M').substr(0,2).toUpperCase());}
-              });
-            }
-            toast('✅ '+j.mechanic+' accepted your job!');
+      // FIX 5: find MY active job (by customerId) and restore state
+      const myJob=Object.values(all).find(j=>j.customerId===uid&&j.status!=='done');
+      if(myJob){
+        if(!getJobId()) setJobId(myJob.id);
+        const L={pending:'Pending',searching_mechanic:'Searching mechanic...',mechanic_assigned:(myJob.mechanic||'?')+' accepted ✅',enroute:'Mechanic en route 🛵',fixing:'Being fixed 🔧',done:'Done ✓'};
+        tx('lf-status',L[myJob.status]||myJob.status);
+        // FIX 5: if mechanic accepted and user is on waiting/mechs screen, auto-go to tracking
+        if((myJob.status==='mechanic_assigned'||myJob.status==='enroute')&&myJob.mechanic){
+          bookedMechPhone=myJob.mechanicPhone||'';
+          bookedMechId=myJob.mechanicId||'';
+          tx('track-mech',myJob.mechanic);
+          if(myJob.mechanicId){
+            get(ref(db,'mechanics/'+myJob.mechanicId)).then(s=>{
+              const m=s.val();
+              if(m&&m.pfp){const img=ge('track-pfp');if(img){img.src=m.pfp;img.style.display='block';ge('track-ini').style.display='none';}}
+              else tx('track-ini',(myJob.mechanic||'M').substr(0,2).toUpperCase());
+            });
+          }
+          if(cur==='s-waiting'||cur==='s-mechs'){
+            toast('✅ '+myJob.mechanic+' accepted your job!');
+            go('s-tracking');
+          }
+          // FIX 5: if user re-opened app mid-job, take them to tracking
+          if(cur==='s-home'&&myJob.status==='enroute'){
             go('s-tracking');
           }
         }
-      });
+        // FIX 1: job done by BOTH → update status to paid_done
+        if(myJob.status==='customer_done'&&myJob.mechanic_done){
+          update(ref(db,'jobs/'+myJob.id),{status:'done',completedAt:Date.now()});
+          setJobId(null);
+        }
+      } else {
+        tx('lf-status','None active');
+      }
     });
-    // FIX xiii: GPS immediately
-    if(navigator.geolocation) navigator.geolocation.getCurrentPosition(p=>{window._lat=p.coords.latitude;window._lng=p.coords.longitude;},()=>{},{enableHighAccuracy:true,timeout:7000});
+    if(navigator.geolocation)navigator.geolocation.getCurrentPosition(p=>{window._lat=p.coords.latitude;window._lng=p.coords.longitude;},()=>{},{enableHighAccuracy:true,timeout:7000});
     go('s-home');
-  } else {uid=null;profile=null;go('s-login');}
+  } else {
+    uid=null;profile=null;
+    go('s-login');
+  }
 });
 
 // ── REGISTER ─────────────────────────────────────────
 window.doReg=async()=>{
   const n=gv('rn'),ph=gv('rph'),ci=gv('rci'),em=gv('rem'),pw=gv('rpw');
   const err=ge('r-err');
-  if(!n||!ph||!em||!pw){err.textContent='Fill all required fields';return;}
+  if(!n||!ph||!em||!pw){err.textContent='Fill all fields';return;}
   err.textContent='Creating account...';
   try{
     const c=await createUserWithEmailAndPassword(auth,em,pw);
@@ -92,20 +109,18 @@ window.doLogin=async()=>{
   try{await signInWithEmailAndPassword(auth,gv('lem'),gv('lpw'));err.textContent='';}
   catch(e){err.textContent='Invalid email or password';}
 };
-window.doLogout=()=>signOut(auth);
+window.doLogout=()=>{setJobId(null);signOut(auth);};
 
-// ── VEHICLES (onValue = live) ─────────────────────────
+// ── VEHICLES ─────────────────────────────────────────
 window.initVehicles=()=>{
   if(!uid)return;
   onValue(ref(db,'customers/'+uid+'/vehicles'),snap=>{
-    const vv=snap.val()||{};
-    const list=Object.values(vv);
-    ['vl1','vl2'].forEach(id=>{
-      const c=ge(id);if(!c)return;
-      if(list.length===0){c.innerHTML='<div class="ev">No vehicles. Add one below.</div>';return;}
-      c.innerHTML=list.map(v=>`<div class="vc${selVeh&&selVeh.id===v.id?' sel':''}" id="vc-${v.id}" onclick="pickVeh('${v.id}','${v.make}','${v.model}','${v.year}','${v.fuel}')"><div style="font-size:17px">${fIco(v.fuel)}</div><div style="font-size:11px;font-weight:600">${v.make} ${v.model}</div><div style="font-size:10px;color:var(--tx2)">${v.year}·${v.fuel}</div></div>`).join('');
-      // Auto-select first vehicle if none selected
-      if(!selVeh){const v=list[0];selVeh={id:v.id,make:v.make,model:v.model,year:v.year,fuel:v.fuel};qsa('#vc-'+v.id).forEach(e=>e.classList.add('sel'));}
+    const list=Object.values(snap.val()||{});
+    ['vl1','vl2'].forEach(cid=>{
+      const c=ge(cid);if(!c)return;
+      if(!list.length){c.innerHTML='<div class="ev">No vehicles. Add one below.</div>';return;}
+      c.innerHTML=list.map(v=>`<div class="vc${selVeh&&selVeh.id===v.id?' sel':''}" id="vc-${v.id}" onclick="pickVeh('${v.id}','${(v.make||'').replace(/'/g,'&apos;')}','${(v.model||'').replace(/'/g,'&apos;')}','${v.year}','${v.fuel}')"><div style="font-size:17px">${fIco(v.fuel)}</div><div style="font-size:11px;font-weight:600">${v.make} ${v.model}</div><div style="font-size:10px;color:var(--tx2)">${v.year}·${v.fuel}</div></div>`).join('');
+      if(!selVeh&&list[0]){const v=list[0];selVeh={id:v.id,make:v.make,model:v.model,year:v.year,fuel:v.fuel};qsa('#vc-'+v.id).forEach(e=>e.classList.add('sel'));}
     });
   });
 };
@@ -115,7 +130,7 @@ window.pickVeh=(id,make,model,year,fuel)=>{
   qsa('#vc-'+id).forEach(c=>c.classList.add('sel'));
 };
 window.addVehicle=async()=>{
-  if(!uid){toast('Not signed in');return;}
+  if(!uid)return;
   const make=gv('vm'),model=gv('vmo'),year=gv('vy'),fuel=ge('vf').value,reg=gv('vr');
   if(!make||!model||!year){toast('Fill make, model and year');return;}
   const vid='v'+Date.now();
@@ -125,76 +140,79 @@ window.addVehicle=async()=>{
 };
 function fIco(f){return{Petrol:'⛽',Diesel:'🛢️',CNG:'💚',Electric:'⚡',Hybrid:'🔋'}[f]||'🚗';}
 
-// ── PHOTO + VOICE ────────────────────────────────────
-window.doPhoto=()=>{const i=document.createElement('input');i.type='file';i.accept='image/*';i.capture='environment';i.onchange=async e=>{const f=e.target.files[0];if(!f)return;const d=await b64(f);window._photo=d;const pv=ge('photo-prev');if(pv){pv.src=d;pv.style.display='block';}const ta=ge('ptxt');if(ta&&!ta.value)ta.value='[Photo attached] ';toast('📷 Photo attached');};i.click();};
+// ── PHOTO + VOICE ─────────────────────────────────────
+window.doPhoto=()=>{
+  const i=document.createElement('input');i.type='file';i.accept='image/*';i.capture='environment';
+  i.onchange=async e=>{const f=e.target.files[0];if(!f)return;const d=await b64(f);window._photo=d;const pv=ge('photo-prev');if(pv){pv.src=d;pv.style.display='block';}const ta=ge('ptxt');if(ta&&!ta.value)ta.value='[Photo attached] ';toast('📷 Photo attached');};
+  i.click();
+};
+// FIX 3: Voice with proper HTTPS + permission handling
 window.doVoice=async()=>{
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(!SR){toast('🎙️ Voice not supported on this browser. Use Chrome.');return;}
-  // Request mic permission first
-  try{await navigator.mediaDevices.getUserMedia({audio:true});}catch(e){toast('🎙️ Mic permission denied. Allow in browser settings.');return;}
-  const sr=new SR();
-  sr.lang='en-IN';sr.continuous=false;sr.interimResults=false;
-  sr.onstart=()=>toast('🎙️ Listening... speak now');
-  sr.onresult=e=>{
-    const txt=e.results[0][0].transcript;
-    const ta=ge('ptxt');if(ta)ta.value=txt;
-    toast('🎙️ Got: '+txt.substr(0,30)+'...');
-  };
+  if(!SR){toast('Use Chrome browser for voice input');return;}
+  if(location.protocol!=='https:'&&location.hostname!=='localhost'){toast('Voice needs HTTPS — use the GitHub Pages link');return;}
+  try{await navigator.mediaDevices.getUserMedia({audio:true});}
+  catch(e){toast('Allow microphone access in browser settings');return;}
+  const sr=new SR();sr.lang='en-IN';sr.continuous=false;sr.interimResults=false;
+  sr.onstart=()=>toast('🎙️ Listening — speak now...');
+  sr.onresult=e=>{const t=e.results[0][0].transcript;const ta=ge('ptxt');if(ta)ta.value=t;toast('🎙️ Captured: '+t.substr(0,25)+'...');};
   sr.onerror=err=>{
-    if(err.error==='not-allowed')toast('🎙️ Mic blocked. Allow mic in browser.');
-    else if(err.error==='no-speech')toast('🎙️ No speech detected. Try again.');
-    else toast('🎙️ Error: '+err.error+'. Use Chrome on HTTPS.');
+    const m={blocked:'Allow mic in settings','not-allowed':'Allow mic in settings','no-speech':'Nothing heard, try again','network':'Network error'};
+    toast('🎙️ '+(m[err.error]||'Error: '+err.error));
   };
-  sr.onend=()=>{};
-  try{sr.start();}catch(e){toast('🎙️ Could not start. Use Chrome browser.');}
+  sr.start();
 };
 
-// ── AI — FIX ix: requires vehicle first ───────────────
+// ── AI ANALYSIS (FIX 2) ───────────────────────────────
 window.startAI=()=>{
   if(!selVeh){toast('⚠️ Select a vehicle first!');go('s-addcar');return;}
   go('s-ai');
   ge('ai-load').style.display='flex';
   ge('ai-res').style.display='none';
-  const veh=selVeh,issue=gv('ptxt')||'Vehicle problem',catStr=cats.length?cats.join(', '):'General';
-  tx('ai-veh','Analysing: '+veh.make+' '+veh.model+' '+veh.year);
-  runAI(veh,issue,catStr);
+  tx('ai-veh-txt','Analysing: '+selVeh.make+' '+selVeh.model+' '+selVeh.year);
+  runAI(selVeh,gv('ptxt')||'Vehicle problem',cats.length?cats.join(', '):'General');
 };
 async function runAI(veh,issue,catStr){
-  const prompt=`You are an expert vehicle mechanic AI. Return ONLY valid JSON, no markdown, no extra text.
+  const prompt=`You are a vehicle mechanic AI. Analyse this car fault. You MUST return ONLY a raw JSON object. No markdown. No backticks. No explanation. Just the JSON.
 Vehicle: ${veh.make} ${veh.model} ${veh.year} ${veh.fuel}
 Problem: ${issue}
 Categories: ${catStr}
-JSON format:
-{"faults":[{"name":"fault name","pct":87,"desc":"short description","col":"bl"},{"name":"fault name","pct":61,"desc":"short description","col":"yw"},{"name":"fault name","pct":44,"desc":"short description","col":"rd"}],"warn":"safety warning or empty string","parts":"parts list","low":1200,"high":1800,"severity":"high"}`;
+Return this exact JSON structure:
+{"faults":[{"name":"fault name","pct":87,"desc":"description","col":"bl"},{"name":"fault name","pct":61,"desc":"description","col":"yw"},{"name":"fault name","pct":44,"desc":"description","col":"rd"}],"warn":"safety warning or empty string","parts":"parts list","low":1200,"high":1800,"severity":"high"}`;
   try{
-    const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=AQ.Ab8RN6KDQDgC0AeiJZ3BKc9I2Y866ZEdwV5ERLDZ_iScfuRtKA',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts:[{text:prompt}]}]})});
+    const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=AQ.Ab8RN6KDQDgC0AeiJZ3BKc9I2Y866ZEdwV5ERLDZ_iScfuRtKA',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.1}})
+    });
     const d=await r.json();
-    const rawTxt=d.candidates&&d.candidates[0]?d.candidates[0].content.parts[0].text:'';
-    // Strip markdown code blocks if Gemini wraps response
-    const txt=rawTxt.replace(/```json\n?/gi,'').replace(/```\n?/gi,'').trim();
-    let a;try{a=JSON.parse(txt);}catch(e){a=null;}
-    if(a&&a.faults){showAI(a);}else{
-      // Try extracting JSON from inside the text
-      const match=txt.match(/\{[\s\S]*\}/);
-      if(match){try{const b=JSON.parse(match[0]);if(b&&b.faults){showAI(b);return;}}catch(e){}}
-      showAIFallback();
-    }
-  }catch(e){showAIFallback();}
+    if(!d.candidates){console.error('Gemini error:',JSON.stringify(d));showAIFallback();return;}
+    let raw=d.candidates[0].content.parts[0].text||'';
+    // FIX 2: Strip ALL markdown/backtick wrappers Gemini might add
+    raw=raw.replace(/^```json\s*/i,'').replace(/^```\s*/,'').replace(/\s*```$/,'').trim();
+    // Extract just the JSON object if there's extra text
+    const m=raw.match(/\{[\s\S]*\}/);
+    let a=null;
+    try{a=JSON.parse(m?m[0]:raw);}catch(e){console.error('Parse error:',raw);a=null;}
+    if(a&&a.faults)showAI(a);else showAIFallback();
+  }catch(e){console.error('Fetch error:',e);showAIFallback();}
 }
-function showAIFallback(){showAI({faults:[{name:'CV joint wear',pct:87,desc:'Clunking on turns.',col:'bl'},{name:'Wheel bearing',pct:61,desc:'Humming at speed.',col:'yw'},{name:'Brake caliper',pct:44,desc:'Pulling to one side.',col:'rd'}],warn:'Unsafe at highway speed.',parts:'CV axle, boot grease, circlip',low:1200,high:1800,severity:'high'});}
+function showAIFallback(){
+  showAI({faults:[{name:'CV joint wear',pct:87,desc:'Clunking sound on turns. CV joint degradation.',col:'bl'},{name:'Wheel bearing',pct:61,desc:'Humming noise above 70kmph.',col:'yw'},{name:'Brake caliper',pct:44,desc:'Pulling to one side under braking.',col:'rd'}],warn:'Unsafe at highway speed. Get help immediately.',parts:'CV axle, boot grease, circlip set',low:1200,high:1800,severity:'high'});
+}
 function showAI(a){
   ge('ai-load').style.display='none';ge('ai-res').style.display='block';
   const fb=ge('fault-bars');
-  if(fb)fb.innerHTML=a.faults.map(f=>`<div class="fault"><div class="fh2"><div class="fn">${f.name}</div><div class="fp" style="color:var(--${f.col||'bl'})">${f.pct}%</div></div><div class="ft"><div class="fb" style="background:var(--${f.col||'bl'});width:${f.pct}%"></div></div><div style="font-size:11px;color:var(--tx2);margin-top:4px">${f.desc}</div></div>`).join('');
+  if(fb)fb.innerHTML=a.faults.map(f=>`<div class="fault"><div class="fh2"><span class="fn">${f.name}</span><span class="fp" style="color:var(--${f.col||'bl'})">${f.pct}%</span></div><div class="ft"><div class="fb" style="background:var(--${f.col||'bl'});width:${f.pct}%"></div></div><div style="font-size:11px;color:var(--tx2);margin-top:4px">${f.desc}</div></div>`).join('');
   if(a.warn){const sw=ge('s-warn');if(sw){sw.textContent=a.warn;sw.closest('.abox').style.display='flex';}}
-  tx('parts-n',a.parts||'—');tx('price-r','₹'+a.low+' – ₹'+a.high);tx('ai-veh','For: '+selVeh.make+' '+selVeh.model+' '+selVeh.year);
+  tx('parts-n',a.parts||'—');tx('price-r','₹'+a.low+' – ₹'+a.high);
+  tx('ai-veh-res','For: '+selVeh.make+' '+selVeh.model+' '+selVeh.year+' '+selVeh.fuel);
   createJob(a);
 }
 function createJob(a){
   if(!uid||!selVeh)return;
   const p=profile||{};
   const id='RF'+Date.now().toString(36).toUpperCase().slice(-6);
-  jobId=id;
+  setJobId(id);
   const job={id,customerId:uid,customerName:p.name||'Customer',customerPhone:p.phone||'—',
     issue:gv('ptxt')||'Vehicle repair',categories:cats.join(', '),
     vehicle:selVeh.make+' '+selVeh.model+' '+selVeh.year+' '+selVeh.fuel,
@@ -218,91 +236,113 @@ window.doSOS=()=>{
       sos.mapsLink='https://maps.google.com/?q='+pos.coords.latitude+','+pos.coords.longitude;
       push(ref(db,'alerts'),sos);tx('sos-loc',sos.location);
     },()=>push(ref(db,'alerts'),sos),{enableHighAccuracy:true,timeout:6000});
-  } else push(ref(db,'alerts'),sos);
+  }else push(ref(db,'alerts'),sos);
   ge('sos-ov').style.display='flex';
 };
 
-// FIX iii: mechanic list built from live onValue data
-function buildMechList(all){
-  const list=ge('mech-list');if(!list)return;
-  const verified=Object.entries(all).filter(([id,m])=>m.verified&&m.status==='online');
-  if(verified.length===0){list.innerHTML='<div style="text-align:center;color:var(--tx3);padding:18px;font-size:12px">No verified mechanics online right now.</div>';return;}
-  list.innerHTML=verified.map(([id,m])=>{
-    const ini=(m.name||'M').split(' ').map(w=>w[0]).join('').substr(0,2).toUpperCase();
-    const avi=m.pfp?`<img src="${m.pfp}" style="width:40px;height:40px;border-radius:50%;object-fit:cover;flex-shrink:0">`:`<div style="width:40px;height:40px;border-radius:50%;background:#1D4ED8;color:#fff;font-family:var(--fh);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${ini}</div>`;
-    return `<div class="mrow" onclick="bookMech('${id}','${(m.name||'Mechanic').replace(/'/g,"\\'")}','${(m.phone||'').replace(/'/g,"\\'")}')">
-      ${avi}
-      <div style="flex:1;min-width:0">
-        <div style="font-size:12px;font-weight:600">${m.name||'Mechanic'} <span class="bdg b-y">⭐${m.rating||5}</span> <span class="bdg b-g">✅</span></div>
-        <div style="font-size:11px;color:var(--tx2);margin-top:1px">${m.skills||'General'} · ${m.city||''} · GPS ON</div>
-      </div>
-      <div style="text-align:right;flex-shrink:0">
-        <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--or)">₹800–2000</div>
-        <button class="bk-btn" onclick="event.stopPropagation();bookMech('${id}','${(m.name||'Mechanic').replace(/'/g,"\\'")}','${(m.phone||'').replace(/'/g,"\\'")}')">Book</button>
-      </div>
-    </div>`;
-  }).join('');
-}
-
-// ── BOOK MECHANIC ────────────────────────────────────
+// ── PARTS & SUBMIT ────────────────────────────────────
+window.submitJob=()=>{
+  const jid=getJobId();
+  if(jid)update(ref(db,'jobs/'+jid),{status:'searching_mechanic',partType:selPT,delivery:selPD,updatedAt:Date.now()});
+  go('s-mechs');
+};
 window.bookMech=(mechId,mechName,mechPhone)=>{
-  if(!jobId){toast('Complete AI analysis first');return;}
-  // Customer just requests this mechanic — mechanic must ACCEPT before tracking starts
+  const jid=getJobId();
+  if(!jid){toast('Complete AI analysis first');return;}
   bookedMechId=mechId;bookedMechPhone=mechPhone;
-  // Update job with preferred mechanic but keep status as searching — mechanic must accept
-  update(ref(db,'jobs/'+jobId),{preferredMechanic:mechName,preferredMechanicId:mechId,status:'searching_mechanic',updatedAt:Date.now()});
+  update(ref(db,'jobs/'+jid),{preferredMechanic:mechName,preferredMechanicId:mechId,status:'searching_mechanic',updatedAt:Date.now()});
   toast('Request sent to '+mechName+' — waiting for acceptance...');
   go('s-waiting');
 };
 window.callMech=()=>{if(bookedMechPhone)window.location.href='tel:'+bookedMechPhone.replace(/\s/g,'');else toast('No phone number');};
-window.finishJob=()=>{if(jobId)update(ref(db,'jobs/'+jobId),{status:'done',finalPrice:1550,completedAt:Date.now()});jobId=null;go('s-home');};
 
-// ── CHAT (FIX i) ──────────────────────────────────────
+// ── FIX 1: Customer marks job done (both must confirm) ─
+window.customerJobDone=()=>{
+  const jid=getJobId();if(!jid)return;
+  update(ref(db,'jobs/'+jid),{customer_done:true,updatedAt:Date.now()});
+  // Check if mechanic already marked done
+  get(ref(db,'jobs/'+jid)).then(s=>{
+    const j=s.val();
+    if(j&&j.mechanic_done){
+      // Both confirmed — mark fully done
+      update(ref(db,'jobs/'+jid),{status:'done',finalPrice:1550,completedAt:Date.now()});
+      setJobId(null);
+    } else {
+      toast('Waiting for mechanic to confirm...');
+    }
+  });
+  go('s-pay');
+};
+window.finishJob=()=>{
+  const jid=getJobId();
+  if(jid)update(ref(db,'jobs/'+jid),{customer_done:true,status:'done',finalPrice:1550,completedAt:Date.now()});
+  setJobId(null);go('s-home');
+};
+
+// ── CHAT (FIX 3) ──────────────────────────────────────
 window.openChat=()=>{
-  if(!jobId){toast('No active job to chat in');return;}
+  const jid=getJobId();
+  if(!jid){toast('No active job to chat in');return;}
   go('s-chat');
   if(chatUnsub)chatUnsub();
-  chatUnsub=onValue(ref(db,'chats/'+jobId),snap=>{
-    const msgs=snap.val()||{};
+  // FIX 3: listen on /chats/jobId — same path mechanic uses
+  chatUnsub=onValue(ref(db,'chats/'+jid),snap=>{
     const box=ge('chat-box');if(!box)return;
-    const sorted=Object.values(msgs).sort((a,b)=>a.time-b.time);
-    box.innerHTML=sorted.map(m=>{
+    const msgs=Object.values(snap.val()||{}).sort((a,b)=>a.time-b.time);
+    box.innerHTML=msgs.map(m=>{
       const mine=m.senderId===uid;
-      return `<div style="display:flex;justify-content:${mine?'flex-end':'flex-start'};margin-bottom:7px"><div style="max-width:76%;background:${mine?'var(--or)':'var(--card)'};color:${mine?'#fff':'var(--tx)'};border-radius:${mine?'14px 14px 4px 14px':'14px 14px 14px 4px'};padding:8px 12px;font-size:13px;line-height:1.4">${m.text}<div style="font-size:9px;opacity:.6;margin-top:2px;text-align:right">${new Date(m.time).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div></div></div>`;
+      return `<div style="display:flex;justify-content:${mine?'flex-end':'flex-start'};margin-bottom:8px">
+        <div style="max-width:78%;background:${mine?'var(--or)':'var(--card)'};color:${mine?'#fff':'var(--tx)'};border-radius:${mine?'14px 14px 4px 14px':'14px 14px 14px 4px'};padding:9px 12px;font-size:13px;line-height:1.4">
+          <div style="font-size:10px;opacity:.6;margin-bottom:3px">${mine?'You':m.senderName||'Mechanic'}</div>
+          ${m.text}
+          <div style="font-size:9px;opacity:.5;margin-top:3px;text-align:right">${new Date(m.time).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div>
+        </div>
+      </div>`;
     }).join('');
     box.scrollTop=box.scrollHeight;
   });
 };
 window.sendMsg=()=>{
-  const inp=ge('chat-inp');
-  if(!inp||!inp.value.trim()||!jobId)return;
-  const p=profile||{};
-  push(ref(db,'chats/'+jobId),{senderId:uid,senderName:p.name||'Customer',senderRole:'customer',text:inp.value.trim(),time:Date.now()});
+  const inp=ge('chat-inp');const jid=getJobId();
+  if(!inp||!inp.value.trim()||!jid)return;
+  push(ref(db,'chats/'+jid),{senderId:uid,senderName:(profile&&profile.name)||'Customer',senderRole:'customer',text:inp.value.trim(),time:Date.now()});
   inp.value='';
 };
 
-// ── PARTS ─────────────────────────────────────────────
-const PDB={OEM:[{n:'CV Axle OEM',b:'Maruti Genuine',p:'₹1,200',d:'Original. Full warranty.'}],ODM:[{n:'CV Axle ODM',b:'Sona BLW',p:'₹780',d:'Tier-1, same specs.'}],Generic:[{n:'CV Axle Generic',b:'Local brand',p:'₹480',d:'Budget option.'}]};
-window.selPT2=t=>{selPT=t;['OEM','ODM','Generic'].forEach(x=>{const e=ge('pt-'+x);if(e)e.classList.toggle('on',x===t);});const c=ge('parts-list');if(c)c.innerHTML=(PDB[t]||[]).map(p=>`<div class="part-card sel"><div style="display:flex;justify-content:space-between;margin-bottom:2px"><div style="font-size:12px;font-weight:600">${p.n}</div><div style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--or)">${p.p}</div></div><div style="font-size:10px;color:var(--tx3)">${p.b}</div><div style="font-size:11px;color:var(--tx2)">${p.d}</div></div>`).join('');if(jobId)update(ref(db,'jobs/'+jobId),{partType:t});};
-window.selPD2=(i,name)=>{selPD=name;[0,1,2,3].forEach(j=>{const e=ge('pd'+j);if(e)e.classList.toggle('sel',j===i);});};
-window.submitJob=()=>{
-  if(jobId)update(ref(db,'jobs/'+jobId),{status:'searching_mechanic',partType:selPT,delivery:selPD,updatedAt:Date.now()});
-  go('s-mechs');
-};
-window.togCat=(el,name)=>{el.classList.toggle('sel');if(el.classList.contains('sel')){if(!cats.includes(name))cats.push(name);}else{cats=cats.filter(c=>c!==name);}};
-window.selPM=(i)=>[0,1,2].forEach(j=>{const e=ge('pm'+j);if(e)e.classList.toggle('sel',j===i);});
-window.rateStar=(i)=>qsa('.star').forEach((s,j)=>s.classList.toggle('on',j<=i));
-
-// ── PFP ───────────────────────────────────────────────
-window.uploadPfp=async(inp)=>{if(!uid||!inp.files[0])return;const d=await b64(inp.files[0]);await update(ref(db,'customers/'+uid),{pfp:d});toast('✅ Photo updated');};
-window.prevPfp=(inp,imgId,icoId)=>{const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{const img=ge(imgId),ico=ge(icoId);if(img){img.src=e.target.result;img.style.display='block';}if(ico)ico.style.display='none';};r.readAsDataURL(f);};
+// ── MECHANIC LIST ─────────────────────────────────────
+function buildMechList(all){
+  const list=ge('mech-list');if(!list)return;
+  const verified=Object.entries(all).filter(([id,m])=>m.verified&&m.status==='online');
+  if(!verified.length){list.innerHTML='<div style="text-align:center;color:var(--tx3);padding:18px;font-size:12px">No verified mechanics online. Try again shortly.</div>';return;}
+  list.innerHTML=verified.map(([id,m])=>{
+    const ini=(m.name||'M').split(' ').map(w=>w[0]).join('').substr(0,2).toUpperCase();
+    const avi=m.pfp?`<img src="${m.pfp}" style="width:40px;height:40px;border-radius:50%;object-fit:cover;flex-shrink:0">`:`<div style="width:40px;height:40px;border-radius:50%;background:#1D4ED8;color:#fff;font-family:var(--fh);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${ini}</div>`;
+    const nm=(m.name||'Mechanic').replace(/'/g,'&apos;');
+    const ph=(m.phone||'').replace(/'/g,'&apos;');
+    return `<div class="mrow" onclick="bookMech('${id}','${nm}','${ph}')">
+      ${avi}
+      <div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600">${m.name||'Mechanic'} <span class="bdg b-y">⭐${m.rating||5}</span> <span class="bdg b-g">✅</span></div>
+      <div style="font-size:11px;color:var(--tx2);margin-top:1px">${m.skills||'General'} · GPS ON</div></div>
+      <div style="text-align:right;flex-shrink:0"><div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--or)">₹800–2000</div>
+      <button class="bk-btn">Request →</button></div>
+    </div>`;
+  }).join('');
+}
 
 // ── HELPERS ───────────────────────────────────────────
+const PDB={OEM:[{n:'CV Axle OEM',b:'Maruti Genuine',p:'₹1,200',d:'Original. Full warranty.'}],ODM:[{n:'CV Axle ODM',b:'Sona BLW',p:'₹780',d:'Tier-1, same specs.'}],Generic:[{n:'CV Axle Generic',b:'Local brand',p:'₹480',d:'Budget option.'}]};
+window.selPT2=t=>{selPT=t;['OEM','ODM','Generic'].forEach(x=>{const e=ge('pt-'+x);if(e)e.classList.toggle('on',x===t);});const c=ge('parts-list');if(c)c.innerHTML=(PDB[t]||[]).map(p=>`<div class="part-card sel"><div style="display:flex;justify-content:space-between;margin-bottom:2px"><div style="font-size:12px;font-weight:600">${p.n}</div><div style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--or)">${p.p}</div></div><div style="font-size:10px;color:var(--tx3)">${p.b}</div><div style="font-size:11px;color:var(--tx2)">${p.d}</div></div>`).join('');const jid=getJobId();if(jid)update(ref(db,'jobs/'+jid),{partType:t});};
+window.selPD2=(i,n)=>{selPD=n;[0,1,2,3].forEach(j=>{const e=ge('pd'+j);if(e)e.classList.toggle('sel',j===i);});};
+window.togCat=(el,n)=>{el.classList.toggle('sel');if(el.classList.contains('sel')){if(!cats.includes(n))cats.push(n);}else cats=cats.filter(c=>c!==n);};
+window.selPM=i=>[0,1,2].forEach(j=>{const e=ge('pm'+j);if(e)e.classList.toggle('sel',j===i);});
+window.rateStar=i=>qsa('.star').forEach((s,j)=>s.classList.toggle('on',j<=i));
+window.uploadPfp=async(inp)=>{if(!uid||!inp.files[0])return;const d=await b64(inp.files[0]);await update(ref(db,'customers/'+uid),{pfp:d});toast('✅ Photo updated');};
+window.prevPfp=(inp,imgId,icoId)=>{const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{const img=ge(imgId),ico=ge(icoId);if(img){img.src=e.target.result;img.style.display='block';}if(ico)ico.style.display='none';};r.readAsDataURL(f);};
 function gv(id){const e=ge(id);return e?e.value.trim():'';}
 function ge(id){return document.getElementById(id);}
 function qsa(s){return Array.from(document.querySelectorAll(s));}
 function tx(id,v){const e=ge(id);if(e)e.textContent=v;}
-function toast(msg){let t=ge('rf-toast');if(!t){t=document.createElement('div');t.id='rf-toast';t.style.cssText='position:fixed;bottom:85px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.9);color:#fff;padding:9px 18px;border-radius:99px;font-size:13px;z-index:9999;transition:opacity .3s;pointer-events:none;white-space:nowrap';document.body.appendChild(t);}t.textContent=msg;t.style.opacity='1';clearTimeout(window._tt);window._tt=setTimeout(()=>{t.style.opacity='0';},2500);}
+function toast(msg){let t=ge('rf-toast');if(!t){t=document.createElement('div');t.id='rf-toast';t.style.cssText='position:fixed;bottom:85px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.9);color:#fff;padding:9px 18px;border-radius:99px;font-size:13px;z-index:9999;transition:opacity .3s;pointer-events:none;white-space:nowrap;max-width:90vw;text-align:center';document.body.appendChild(t);}t.textContent=msg;t.style.opacity='1';clearTimeout(window._tt);window._tt=setTimeout(()=>{t.style.opacity='0';},2800);}
 function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>r(e.target.result);x.onerror=j;x.readAsDataURL(f);});}
 </script>
 <style>
@@ -322,8 +362,7 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 .ac{background:var(--card);border:1px solid var(--bdr2);border-radius:var(--r2);padding:18px;width:100%;margin-bottom:12px;max-height:68vh;overflow-y:auto}
 .ac::-webkit-scrollbar{display:none}
 .at{font-family:var(--fh);font-size:15px;font-weight:700;margin-bottom:12px}
-.f{margin-bottom:9px}
-.f label{display:block;font-size:11px;font-weight:500;color:var(--tx2);margin-bottom:3px}
+.f{margin-bottom:9px}.f label{display:block;font-size:11px;font-weight:500;color:var(--tx2);margin-bottom:3px}
 .f input,.f select,.f textarea{background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:14px;padding:9px 11px;width:100%;outline:none;transition:border .15s}
 .f input:focus,.f select:focus,.f textarea:focus{border-color:var(--or)}
 .f input::placeholder,.f textarea::placeholder{color:var(--tx3)}
@@ -338,14 +377,10 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 .btn:active{transform:scale(.97)}
 .b-or{background:var(--or);color:#fff}.b-bl{background:var(--bl);color:#fff}.b-gn{background:var(--gn);color:#080C18}.b-ghost{background:var(--bg3);color:var(--tx);border:1px solid var(--bdr2)}.b-rd{background:var(--rd);color:#fff}
 .topbar{flex-shrink:0;padding:42px 14px 11px;display:flex;align-items:center;justify-content:space-between;background:var(--bg);border-bottom:1px solid var(--bdr);z-index:5}
-.lgo{font-family:var(--fh);font-size:18px;font-weight:800}
-.lgo em{color:var(--or);font-style:normal}
+.lgo{font-family:var(--fh);font-size:18px;font-weight:800}.lgo em{color:var(--or);font-style:normal}
 .avi{width:31px;height:31px;border-radius:50%;overflow:hidden;background:var(--or2);border:1.5px solid var(--or);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}
-.c-pfp{width:100%;height:100%;object-fit:cover}
-.c-ini{font-family:var(--fh);font-size:11px;font-weight:700;color:var(--or)}
-.back{font-size:13px;color:var(--tx2);cursor:pointer}
-.pgt{font-family:var(--fh);font-size:15px;font-weight:700;flex:1;text-align:center}
-.sp{width:42px}
+.c-pfp{width:100%;height:100%;object-fit:cover}.c-ini{font-family:var(--fh);font-size:11px;font-weight:700;color:var(--or)}
+.back{font-size:13px;color:var(--tx2);cursor:pointer}.pgt{font-family:var(--fh);font-size:15px;font-weight:700;flex:1;text-align:center}.sp{width:42px}
 .bnav{flex-shrink:0;display:flex;background:var(--bg2);border-top:1px solid var(--bdr2);padding:6px 0 15px}
 .bn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer}
 .bn-i{font-size:19px;transition:transform .15s}.bn-l{font-size:10px;color:var(--tx3);font-weight:500}
@@ -353,56 +388,43 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 .bdg{display:inline-flex;align-items:center;font-size:11px;font-weight:600;padding:2px 7px;border-radius:999px}
 .b-g{background:var(--gn2);color:var(--gn)}.b-o{background:var(--or2);color:var(--or)}.b-r{background:var(--rd2);color:var(--rd)}.b-b{background:var(--bl2);color:var(--bl)}.b-y{background:var(--yw2);color:var(--yw)}
 .card{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:13px;margin-bottom:9px}
-.sec{padding:13px}
-.sl{font-family:var(--fh);font-size:10px;font-weight:700;color:var(--tx3);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px}
+.sec{padding:13px}.sl{font-family:var(--fh);font-size:10px;font-weight:700;color:var(--tx3);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px}
 .lf-dot{width:6px;height:6px;border-radius:50%;background:var(--gn);animation:dd 1.2s infinite;flex-shrink:0}
-.lf-r{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--bdr);font-size:12px}
-.lf-r:last-child{border-bottom:none}
+.lf-r{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--bdr);font-size:12px}.lf-r:last-child{border-bottom:none}
 .vg{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:9px}
-.vc{background:var(--bg3);border:1.5px solid var(--bdr2);border-radius:var(--r);padding:9px;cursor:pointer;text-align:center;transition:all .15s}
-.vc.sel{border-color:var(--or);background:var(--or2)}
+.vc{background:var(--bg3);border:1.5px solid var(--bdr2);border-radius:var(--r);padding:9px;cursor:pointer;text-align:center;transition:all .15s}.vc.sel{border-color:var(--or);background:var(--or2)}
 .ev{color:var(--tx3);font-size:12px;padding:8px 0;text-align:center}
 .ia-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;margin-bottom:9px}
-.ia{background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);padding:8px 5px;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer}
-.ia:active{border-color:var(--or)}
+.ia{background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);padding:8px 5px;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer}.ia:active{border-color:var(--or)}
 .cats{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:11px}
 .cat{background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);padding:6px 10px;font-size:12px;cursor:pointer;transition:all .15s;user-select:none}
 .cat.sel{border-color:var(--or);background:var(--or2);color:var(--or)}
 .ai-sp{width:44px;height:44px;border:3px solid var(--bdr2);border-top-color:#A855F7;border-radius:50%;animation:ss .8s linear infinite}
 .fault{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r);padding:10px;margin-bottom:7px}
-.fh2{display:flex;justify-content:space-between;margin-bottom:4px}
-.fn{font-size:12px;font-weight:600}.fp{font-size:12px;font-weight:700}
-.ft{height:5px;background:var(--bg3);border-radius:3px;overflow:hidden}
-.fb{height:100%;border-radius:3px;transition:width 1s}
+.fh2{display:flex;justify-content:space-between;margin-bottom:4px}.fn{font-size:12px;font-weight:600}.fp{font-size:12px;font-weight:700}
+.ft{height:5px;background:var(--bg3);border-radius:3px;overflow:hidden}.fb{height:100%;border-radius:3px;transition:width 1s}
 .abox{border-radius:var(--r);padding:10px;display:flex;gap:8px;margin-bottom:7px}
 .a-d{background:var(--rd2);border:1px solid rgba(239,68,68,.2)}.a-i{background:var(--bl2);border:1px solid rgba(59,130,246,.18)}.a-g{background:var(--gn2);border:1px solid rgba(34,197,94,.18)}.a-y{background:var(--yw2);border:1px solid rgba(234,179,8,.18)}
 .pt-row{display:flex;background:var(--bg3);border-radius:var(--r);padding:3px;margin-bottom:10px}
-.pt{flex:1;text-align:center;padding:6px 4px;border-radius:9px;font-size:11px;font-weight:600;cursor:pointer;color:var(--tx3)}
-.pt.on{background:var(--card);color:var(--tx);border:1px solid var(--bdr2)}
-.part-card{background:var(--card);border:1.5px solid var(--bdr);border-radius:var(--r);padding:10px;margin-bottom:7px;cursor:pointer}
-.part-card.sel{border-color:var(--or);background:var(--or2)}
+.pt{flex:1;text-align:center;padding:6px 4px;border-radius:9px;font-size:11px;font-weight:600;cursor:pointer;color:var(--tx3)}.pt.on{background:var(--card);color:var(--tx);border:1px solid var(--bdr2)}
+.part-card{background:var(--card);border:1.5px solid var(--bdr);border-radius:var(--r);padding:10px;margin-bottom:7px;cursor:pointer}.part-card.sel{border-color:var(--or);background:var(--or2)}
 .mlist{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);overflow:hidden}
-.mrow{display:flex;align-items:center;gap:9px;padding:10px 12px;border-bottom:1px solid var(--bdr);cursor:pointer}
-.mrow:last-child{border-bottom:none}.mrow:active{background:var(--bg3)}
+.mrow{display:flex;align-items:center;gap:9px;padding:10px 12px;border-bottom:1px solid var(--bdr);cursor:pointer}.mrow:last-child{border-bottom:none}.mrow:active{background:var(--bg3)}
 .bk-btn{background:var(--or);color:#fff;border:none;border-radius:7px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--fh);margin-top:3px}
 .steps{display:flex;align-items:flex-start;margin-bottom:11px}
 .sn{display:flex;flex-direction:column;align-items:center;gap:2px}
 .sd{width:9px;height:9px;border-radius:50%;background:var(--tx3)}.sd.dn{background:var(--gn)}.sd.nw{background:var(--or);animation:dd 1.4s infinite}
-.sl2{font-size:9px;color:var(--tx3);margin-top:2px;white-space:nowrap}
-.sli{flex:1;height:2px;background:var(--bdr2);margin-top:4px}.sli.dn{background:var(--gn)}
+.sl2{font-size:9px;color:var(--tx3);margin-top:2px;white-space:nowrap}.sli{flex:1;height:2px;background:var(--bdr2);margin-top:4px}.sli.dn{background:var(--gn)}
 .pbox{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:12px;margin-bottom:9px}
-.rr{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--bdr);font-size:13px}
-.rr:last-child{border-bottom:none}
+.rr{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--bdr);font-size:13px}.rr:last-child{border-bottom:none}
 .pms{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:11px}
-.pm{background:var(--card);border:1.5px solid var(--bdr);border-radius:var(--r);padding:10px;text-align:center;cursor:pointer}
-.pm.sel{border-color:var(--or);background:var(--or2)}
+.pm{background:var(--card);border:1.5px solid var(--bdr);border-radius:var(--r);padding:10px;text-align:center;cursor:pointer}.pm.sel{border-color:var(--or);background:var(--or2)}
 .star{font-size:26px;cursor:pointer;opacity:.25}.star.on{opacity:1}
 .ph{padding:16px 13px;display:flex;flex-direction:column;align-items:center;gap:7px;border-bottom:1px solid var(--bdr)}
 .p-avi{width:58px;height:58px;border-radius:50%;overflow:hidden;background:var(--or2);border:2px solid var(--or);display:flex;align-items:center;justify-content:center;cursor:pointer}
 .psts{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--bdr)}
 .pst{background:var(--bg2);padding:10px;text-align:center}.pstn{font-family:var(--fh);font-size:16px;font-weight:800}.pstl{font-size:10px;color:var(--tx3);margin-top:2px}
-.mit{display:flex;align-items:center;gap:10px;padding:10px 13px;border-bottom:1px solid var(--bdr);cursor:pointer;font-size:13px}
-.mit:active{background:var(--bg3)}
+.mit{display:flex;align-items:center;gap:10px;padding:10px 13px;border-bottom:1px solid var(--bdr);cursor:pointer;font-size:13px}.mit:active{background:var(--bg3)}
 .cam-dot{width:6px;height:6px;border-radius:50%;background:var(--rd);animation:dd 1s infinite;flex-shrink:0}
 .sos-ov{position:fixed;inset:0;background:rgba(8,12,24,.95);z-index:200;display:none;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center}
 img#photo-prev{display:none;width:100%;border-radius:var(--r);margin-top:7px;max-height:150px;object-fit:cover}
@@ -416,8 +438,14 @@ img#photo-prev{display:none;width:100%;border-radius:var(--r);margin-top:7px;max
   <button class="btn b-or" style="max-width:200px" onclick="ge('sos-ov').style.display='none'">✓ OK</button>
 </div>
 
+<!-- FIX 4: Loading screen shown first, never flashes login -->
+<div id="s-loading" class="scr on" style="justify-content:center;align-items:center;background:var(--bg)">
+  <div style="font-family:var(--fh);font-size:32px;font-weight:800;margin-bottom:12px">Road<em style="color:var(--or);font-style:normal">Fix</em></div>
+  <div style="width:36px;height:36px;border:3px solid var(--bdr2);border-top-color:var(--or);border-radius:50%;animation:ss .8s linear infinite"></div>
+</div>
+
 <!-- LOGIN -->
-<div id="s-login" class="scr auth on">
+<div id="s-login" class="scr auth">
   <div class="logo">Road<em>Fix</em></div>
   <div style="font-size:12px;color:var(--tx2);margin-bottom:16px;text-align:center">Sign in to get roadside help</div>
   <div class="ac">
@@ -438,7 +466,7 @@ img#photo-prev{display:none;width:100%;border-radius:var(--r);margin-top:7px;max
     <div class="at">Create account</div>
     <div class="pfp-up">
       <div class="pfp-ring" onclick="document.getElementById('r-pfp').click()"><img id="rpfp-img" src="" alt=""><span id="rpfp-ico">📷</span></div>
-      <div><div style="font-size:12px;color:var(--tx2)">Profile photo</div><div style="font-size:10px;color:var(--tx3)">Optional for customers</div></div>
+      <div><div style="font-size:12px;color:var(--tx2)">Profile photo</div><div style="font-size:10px;color:var(--tx3)">Optional</div></div>
       <input type="file" id="r-pfp" accept="image/*" style="display:none" onchange="prevPfp(this,'rpfp-img','rpfp-ico')">
     </div>
     <div class="f"><label>Full name *</label><input id="rn" type="text" placeholder="Rajesh Kumar"></div>
@@ -454,15 +482,9 @@ img#photo-prev{display:none;width:100%;border-radius:var(--r);margin-top:7px;max
 
 <!-- HOME -->
 <div id="s-home" class="scr">
-  <div class="topbar">
-    <div class="lgo">Road<em>Fix</em></div>
-    <div class="avi" onclick="go('s-profile')"><img class="c-pfp" src="" alt="" style="display:none"><span class="c-ini">RK</span></div>
-  </div>
+  <div class="topbar"><div class="lgo">Road<em>Fix</em></div><div class="avi" onclick="go('s-profile')"><img class="c-pfp" src="" alt="" style="display:none"><span class="c-ini">RK</span></div></div>
   <div class="sb">
-    <div style="padding:13px 13px 4px">
-      <div style="font-family:var(--fh);font-size:20px;font-weight:700" class="c-first">Hi there 👋</div>
-      <div style="font-size:11px;color:var(--tx2);margin-top:3px">📍 Location tracking active</div>
-    </div>
+    <div style="padding:13px 13px 4px"><div style="font-family:var(--fh);font-size:20px;font-weight:700" class="c-first">Hi there 👋</div><div style="font-size:11px;color:var(--tx2);margin-top:3px">📍 Location tracking active</div></div>
     <div class="sec">
       <div style="background:var(--rd2);border:2px solid var(--rd);border-radius:14px;padding:15px;text-align:center;cursor:pointer;margin-bottom:10px" onclick="doSOS()">
         <div style="font-size:36px;margin-bottom:4px">🆘</div>
@@ -518,7 +540,7 @@ img#photo-prev{display:none;width:100%;border-radius:var(--r);margin-top:7px;max
   <div class="sb">
     <div class="sec">
       <div class="sl">Describe problem</div>
-      <textarea id="ptxt" rows="3" style="background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:14px;padding:9px 11px;width:100%;outline:none;resize:none;transition:border .15s" placeholder="e.g. Loud clunking on left turns, vibrates at speed..."></textarea>
+      <textarea id="ptxt" rows="3" style="background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:14px;padding:9px 11px;width:100%;outline:none;resize:none;transition:border .15s" placeholder="e.g. Loud clunking on left turns..."></textarea>
       <img id="photo-prev" src="" alt="">
       <div class="ia-row" style="margin-top:7px">
         <div class="ia" onclick="doVoice()"><div style="font-size:18px">🎙️</div><div style="font-size:10px;color:var(--tx2)">Voice</div></div>
@@ -534,7 +556,7 @@ img#photo-prev{display:none;width:100%;border-radius:var(--r);margin-top:7px;max
     </div>
     <div style="height:1px;background:var(--bdr);margin:0 13px"></div>
     <div class="sec">
-      <div class="sl">Categories <span style="font-size:9px;color:var(--tx3)">(tap multiple ✓)</span></div>
+      <div class="sl">Categories <span style="font-size:9px;color:var(--tx3)">(tap multiple)</span></div>
       <div class="cats">
         <div class="cat" onclick="togCat(this,'Engine')">⚙️ Engine</div>
         <div class="cat" onclick="togCat(this,'Tyres')">🛞 Tyres</div>
@@ -562,12 +584,13 @@ img#photo-prev{display:none;width:100%;border-radius:var(--r);margin-top:7px;max
   <div class="sb">
     <div id="ai-load" style="display:flex;flex-direction:column;align-items:center;padding:38px 20px;gap:11px">
       <div class="ai-sp"></div>
-      <div style="font-family:var(--fh);font-size:14px;font-weight:700;text-align:center">Analysing with Claude AI...</div>
-      <div style="font-size:11px;color:var(--tx2);text-align:center" id="ai-veh"></div>
+      <div style="font-family:var(--fh);font-size:14px;font-weight:700;text-align:center">Analysing with Gemini AI...</div>
+      <div style="font-size:11px;color:var(--tx2);text-align:center" id="ai-veh-txt"></div>
     </div>
     <div id="ai-res" style="display:none">
       <div class="sec">
-        <div class="sl">Fault analysis — <span id="ai-veh" style="font-size:10px;color:var(--tx3);font-style:italic"></span></div>
+        <div style="font-size:10px;color:var(--tx3);margin-bottom:9px;font-style:italic" id="ai-veh-res"></div>
+        <div class="sl">Fault analysis</div>
         <div id="fault-bars"></div>
       </div>
       <div class="sec" style="padding-top:0">
@@ -575,7 +598,7 @@ img#photo-prev{display:none;width:100%;border-radius:var(--r);margin-top:7px;max
         <div class="abox a-i"><div style="font-size:16px;flex-shrink:0">📦</div><div><div style="font-size:12px;font-weight:700;color:var(--bl);margin-bottom:2px">Parts needed</div><div style="font-size:11px;color:var(--tx2)" id="parts-n">—</div></div></div>
         <div class="abox a-g"><div style="font-size:16px;flex-shrink:0">📡</div><div><div style="font-size:12px;font-weight:700;color:var(--gn);margin-bottom:2px">Job created in Firebase</div><div style="font-size:11px;color:var(--tx2)">Job #<span id="job-id">—</span></div></div></div>
         <div class="card">
-          <div style="background:var(--yw2);border:1px solid rgba(234,179,8,.2);border-radius:var(--r);padding:8px 11px;font-size:11px;color:var(--yw);margin-bottom:9px">⚠️ Estimate only — final after job completion</div>
+          <div style="background:var(--yw2);border:1px solid rgba(234,179,8,.2);border-radius:var(--r);padding:8px 11px;font-size:11px;color:var(--yw);margin-bottom:9px">⚠️ Estimate only — final price after job completion</div>
           <div style="font-family:var(--fh);font-size:26px;font-weight:800;color:var(--or)" id="price-r">₹—</div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">
             <div style="background:var(--bg3);border-radius:9px;padding:7px"><div style="font-size:9px;color:var(--tx3)">Base</div><div style="font-size:11px;font-weight:700">₹800</div></div>
@@ -596,11 +619,7 @@ img#photo-prev{display:none;width:100%;border-radius:var(--r);margin-top:7px;max
   <div class="sb">
     <div class="sec">
       <div class="sl">Parts type</div>
-      <div class="pt-row">
-        <div class="pt on" id="pt-OEM" onclick="selPT2('OEM')">OEM</div>
-        <div class="pt" id="pt-ODM" onclick="selPT2('ODM')">ODM</div>
-        <div class="pt" id="pt-Generic" onclick="selPT2('Generic')">Generic</div>
-      </div>
+      <div class="pt-row"><div class="pt on" id="pt-OEM" onclick="selPT2('OEM')">OEM</div><div class="pt" id="pt-ODM" onclick="selPT2('ODM')">ODM</div><div class="pt" id="pt-Generic" onclick="selPT2('Generic')">Generic</div></div>
       <div id="parts-list"></div>
       <div class="sl" style="margin-top:4px">Delivery method</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:11px">
@@ -619,26 +638,24 @@ img#photo-prev{display:none;width:100%;border-radius:var(--r);margin-top:7px;max
   <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Verified mechanics</div><span class="bdg b-g">● Live</span></div>
   <div class="sb">
     <div class="sec">
-      <div class="abox a-g" style="margin-bottom:11px"><div style="font-size:16px;flex-shrink:0">📡</div><div><div style="font-size:12px;font-weight:700;color:var(--gn)">Job posted · mechanics notified</div><div style="font-size:11px;color:var(--tx2)">Only verified mechanics shown below</div></div></div>
+      <div class="abox a-g" style="margin-bottom:11px"><div style="font-size:16px;flex-shrink:0">📡</div><div><div style="font-size:12px;font-weight:700;color:var(--gn)">Job posted · mechanics notified</div><div style="font-size:11px;color:var(--tx2)">Tap Request → wait for mechanic to accept</div></div></div>
       <div id="mech-list" class="mlist"><div style="text-align:center;padding:16px;color:var(--tx3);font-size:12px">Loading verified mechanics...</div></div>
     </div>
   </div>
 </div>
 
-<!-- WAITING FOR MECHANIC ACCEPTANCE -->
+<!-- WAITING FOR MECHANIC -->
 <div id="s-waiting" class="scr">
-  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Waiting for mechanic</div><div class="sp"></div></div>
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Waiting...</div><div class="sp"></div></div>
   <div class="sb">
-    <div class="sec" style="text-align:center;padding-top:40px">
-      <div style="font-size:56px;margin-bottom:16px;animation:pp 1.5s infinite">⏳</div>
-      <div style="font-family:var(--fh);font-size:20px;font-weight:800;color:var(--tx);margin-bottom:8px">Waiting for mechanic</div>
-      <div style="font-size:13px;color:var(--tx2);margin-bottom:24px;line-height:1.7">Your job request has been sent.<br>Waiting for the mechanic to accept.<br><strong style="color:var(--gn)">You'll be automatically redirected when they accept.</strong></div>
-      <div style="background:var(--card);border:1px solid rgba(34,197,94,.22);border-radius:var(--r2);padding:14px;margin-bottom:16px;text-align:left">
-        <div style="display:flex;align-items:center;gap:7px;margin-bottom:8px"><div style="width:8px;height:8px;border-radius:50%;background:var(--gn);animation:dd 1.2s infinite"></div><div style="font-family:var(--fh);font-size:11px;font-weight:700;color:var(--gn)">LIVE STATUS</div></div>
-        <div style="font-size:13px;color:var(--tx2)">Job posted to mechanic · waiting for acceptance</div>
-        <div style="font-size:12px;color:var(--tx3);margin-top:4px">This page updates automatically in real time</div>
+    <div class="sec" style="text-align:center;padding-top:36px">
+      <div style="font-size:52px;margin-bottom:14px;animation:pp 1.5s infinite">⏳</div>
+      <div style="font-family:var(--fh);font-size:19px;font-weight:800;margin-bottom:8px">Waiting for mechanic</div>
+      <div style="font-size:13px;color:var(--tx2);margin-bottom:22px;line-height:1.8">Request sent successfully.<br><strong style="color:var(--gn)">You'll auto-redirect the moment they accept.</strong></div>
+      <div style="background:var(--card);border:1px solid rgba(34,197,94,.22);border-radius:var(--r2);padding:13px;margin-bottom:14px;text-align:left">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px"><div class="lf-dot"></div><div style="font-family:var(--fh);font-size:10px;font-weight:700;color:var(--gn)">LIVE STATUS</div></div>
+        <div style="font-size:13px;color:var(--tx2)">Waiting for mechanic acceptance</div>
       </div>
-      <div class="abox a-y" style="text-align:left;margin-bottom:16px"><div style="font-size:16px;flex-shrink:0">ℹ️</div><div><div style="font-size:12px;font-weight:700;color:var(--yw);margin-bottom:2px">How it works</div><div style="font-size:11px;color:var(--tx2)">Mechanic opens their app → sees your gig → accepts → you see their details + live tracking automatically</div></div></div>
       <button class="btn b-ghost" onclick="back()">← Choose different mechanic</button>
     </div>
   </div>
@@ -674,15 +691,15 @@ img#photo-prev{display:none;width:100%;border-radius:var(--r);margin-top:7px;max
           <div style="background:var(--rd2);border:1px solid rgba(239,68,68,.3);border-radius:var(--r);padding:8px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer" onclick="doSOS()"><div style="font-size:18px">🆘</div><div style="font-size:9px;color:var(--rd)">SOS</div></div>
         </div>
       </div>
-      <button class="btn b-bl" onclick="go('s-pay')">Job complete → Pay now</button>
+      <button class="btn b-bl" onclick="customerJobDone()">Job complete → Confirm & Pay</button>
     </div>
   </div>
 </div>
 
-<!-- CHAT — FIX i: flex column layout so messages + bar work -->
-<div id="s-chat" class="scr" style="display:flex;flex-direction:column">
+<!-- CHAT -->
+<div id="s-chat" class="scr">
   <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Chat with mechanic</div><div class="sp"></div></div>
-  <div id="chat-box" style="flex:1;overflow-y:auto;padding:12px 13px;"></div>
+  <div id="chat-box" style="flex:1;overflow-y:auto;padding:12px 13px;min-height:0;"></div>
   <div style="flex-shrink:0;display:flex;gap:7px;padding:9px 13px;background:var(--bg2);border-top:1px solid var(--bdr2)">
     <input id="chat-inp" type="text" placeholder="Type a message..." style="flex:1;background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:13px;padding:8px 11px;outline:none" onkeydown="if(event.key==='Enter')sendMsg()">
     <button style="background:var(--or);border:none;border-radius:var(--r);padding:0 13px;color:#fff;font-family:var(--fh);font-size:13px;font-weight:700;cursor:pointer" onclick="sendMsg()">Send</button>
@@ -694,7 +711,7 @@ img#photo-prev{display:none;width:100%;border-radius:var(--r);margin-top:7px;max
   <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Payment</div><div class="sp"></div></div>
   <div class="sb">
     <div class="sec">
-      <div style="text-align:center;padding:11px 0"><div style="font-size:48px;margin-bottom:8px">✅</div><div style="font-family:var(--fh);font-size:18px;font-weight:800;color:var(--gn)">Job complete!</div></div>
+      <div style="text-align:center;padding:11px 0"><div style="font-size:48px;margin-bottom:8px">✅</div><div style="font-family:var(--fh);font-size:18px;font-weight:800;color:var(--gn)">Job complete!</div><div style="font-size:12px;color:var(--tx2);margin-top:4px">Waiting for mechanic confirmation...</div></div>
       <div class="pbox">
         <div class="rr"><div style="color:var(--tx2)">Parts (OEM)</div><div style="font-weight:600">₹650</div></div>
         <div class="rr"><div style="color:var(--tx2)">Labour</div><div style="font-weight:600">₹600</div></div>
@@ -710,7 +727,7 @@ img#photo-prev{display:none;width:100%;border-radius:var(--r);margin-top:7px;max
       <div style="display:flex;justify-content:center;gap:6px;margin-bottom:11px">
         <span class="star on" onclick="rateStar(0)">⭐</span><span class="star on" onclick="rateStar(1)">⭐</span><span class="star on" onclick="rateStar(2)">⭐</span><span class="star on" onclick="rateStar(3)">⭐</span><span class="star on" onclick="rateStar(4)">⭐</span>
       </div>
-      <button class="btn b-or" onclick="finishJob()">Pay ₹1,550 →</button>
+      <button class="btn b-or" onclick="finishJob()">Pay ₹1,550 & Complete →</button>
     </div>
   </div>
 </div>
@@ -732,7 +749,7 @@ img#photo-prev{display:none;width:100%;border-radius:var(--r);margin-top:7px;max
     <div class="mit" onclick="go('s-addcar')"><span style="font-size:15px">🚗</span><span style="flex:1">My vehicles</span><span style="color:var(--tx3)">›</span></div>
     <div class="mit"><span style="font-size:15px">💳</span><span style="flex:1">Payment methods</span><span style="color:var(--tx3)">›</span></div>
     <div class="mit" onclick="doLogout()"><span style="font-size:15px">🚪</span><span style="flex:1">Sign out</span><span style="color:var(--tx3)">›</span></div>
-    <div style="padding:13px;text-align:center;font-size:11px;color:var(--tx3)">RoadFix v5 · All 16 bugs fixed · Firebase live</div>
+    <div style="padding:13px;text-align:center;font-size:11px;color:var(--tx3)">RoadFix v6 · Gemini AI · Firebase · All bugs fixed</div>
   </div>
   <div class="bnav">
     <div class="bn" onclick="go('s-home')"><div class="bn-i">🏠</div><div class="bn-l">Home</div></div>
@@ -743,21 +760,15 @@ img#photo-prev{display:none;width:100%;border-radius:var(--r);margin-top:7px;max
 </div>
 
 <script>
-// ── ROUTER ────────────────────────────────────────────
-var stk=['s-login'],cur='s-login';
+var stk=['s-loading'],cur='s-loading';
 function go(id){
-  var o=document.getElementById(cur),n=document.getElementById(id);
-  if(!n)return;
-  o.classList.remove('on');n.classList.add('on');
-  stk.push(id);cur=id;
+  var o=document.getElementById(cur),n=document.getElementById(id);if(!n)return;
+  o.classList.remove('on');n.classList.add('on');stk.push(id);cur=id;
   var sb=n.querySelector('.sb');if(sb)sb.scrollTop=0;
-  // Load vehicles whenever entering vehicle-related screens
   if(id==='s-addcar'||id==='s-report')initVehicles();
 }
 function back(){if(stk.length<2)return;stk.pop();var p=stk[stk.length-1];document.getElementById(cur).classList.remove('on');document.getElementById(p).classList.add('on');cur=p;}
-// Parts init
 setTimeout(()=>selPT2('OEM'),400);
-// Helper exposed for inline onclick
 function ge(id){return document.getElementById(id);}
 </script>
 </body>

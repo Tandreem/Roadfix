@@ -13,44 +13,44 @@ const app=initializeApp({apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",authDo
 const auth=getAuth(app),db=getDatabase(app);
 
 // ── STATE ─────────────────────────────────────────────
-let uid=null,profile=null,jobId=null,currentJob=null,shownGig=false,chatUnsub=null;
+let uid=null,profile=null,shownGig=false,chatUnsub=null;
+// FIX 5: persist jobId across refreshes
+function getJobId(){return localStorage.getItem('mrf_jobId')||null;}
+function setJobId(id){if(id)localStorage.setItem('mrf_jobId',id);else localStorage.removeItem('mrf_jobId');}
+function getCurrentJob(){try{return JSON.parse(localStorage.getItem('mrf_job')||'null');}catch(e){return null;}}
+function setCurrentJob(j){if(j)localStorage.setItem('mrf_job',JSON.stringify(j));else localStorage.removeItem('mrf_job');}
 
-// ── AUTH (FIX x: onValue = instant verification redirect) ─
+// FIX 4: start on loading screen
 onAuthStateChanged(auth,user=>{
   if(user){
     uid=user.uid;
-    // FIX x + iv + viii: realtime listener on mechanic profile
-    // This fires immediately AND whenever verified flag changes — no refresh needed
+    // FIX 4+8: realtime profile listener — handles verification redirect instantly
     onValue(ref(db,'mechanics/'+uid),snap=>{
       const p=snap.val();if(!p)return;
-      profile=p;
-      applyProfile(p);
+      profile=p;applyProfile(p);
       if(!p.verified){
-        // Hard block — stay on pending screen
         if(cur!=='m-pending')go('m-pending');
       } else {
-        // VERIFIED — auto-redirect without refresh
-        if(cur==='m-pending'||cur==='m-login'||cur==='m-register'){
+        if(cur==='m-pending'||cur==='m-login'||cur==='m-register'||cur==='m-loading'){
           update(ref(db,'mechanics/'+uid),{status:'online',gpsOn:true,bodycam:true,lastSeen:Date.now()});
           go('m-home');
           startListeners();
-          toast('✅ Verified! Welcome to MechPro.');
-        } else if(cur==='m-home') {
-          // Already on home, just update profile display
+          if(cur==='m-pending')toast('✅ Verified! Welcome to MechPro.');
         }
       }
     });
-  } else {uid=null;profile=null;go('m-login');}
+  } else {
+    uid=null;profile=null;go('m-login');
+  }
 });
 
-// FIX iv+viii: apply ALL profile fields everywhere
 function applyProfile(p){
   const ini=(p.name||'M').split(' ').map(w=>w[0]).join('').substr(0,2).toUpperCase();
   qsa('.m-ini').forEach(e=>e.textContent=ini);
   qsa('.m-name').forEach(e=>e.textContent=p.name||'Mechanic');
   qsa('.m-phone').forEach(e=>e.textContent=(p.phone||'')+(p.city?' · '+p.city:''));
   if(p.pfp){qsa('.m-pfp').forEach(e=>{e.src=p.pfp;e.style.display='block';});qsa('.m-ini').forEach(e=>e.style.display='none');}
-  if(p.skills){const sw=document.getElementById('skills-wrap');if(sw)sw.innerHTML=p.skills.split(',').map(s=>`<span class="bdg b-g">${s.trim()}</span>`).join('');}
+  if(p.skills){const sw=ge('skills-wrap');if(sw)sw.innerHTML=p.skills.split(',').map(s=>`<span class="bdg b-g">${s.trim()}</span>`).join('');}
 }
 
 // ── REGISTER ─────────────────────────────────────────
@@ -58,18 +58,14 @@ window.doReg=async()=>{
   const n=gv('mn'),ph=gv('mph'),ci=gv('mci'),sk=gv('msk'),em=gv('mem'),pw=gv('mpw');
   const err=ge('mr-err');
   if(!n||!ph||!em||!pw){err.textContent='Fill all required fields';return;}
-  // FIX vi: pfp REQUIRED for mechanics
   const pfpF=ge('m-pfp-inp').files[0];
-  if(!pfpF){err.textContent='Profile photo is required for mechanics ✱';return;}
+  if(!pfpF){err.textContent='Profile photo is required ✱';return;}
   err.textContent='Creating account...';
   try{
     const c=await createUserWithEmailAndPassword(auth,em,pw);
     const pfp=await b64(pfpF);
-    const p={name:n,phone:ph,city:ci||'',skills:sk||'General',email:em,role:'mechanic',
-      status:'online',gpsOn:true,bodycam:true,rating:5.0,verified:false,createdAt:Date.now(),pfp};
-    await set(ref(db,'mechanics/'+c.user.uid),p);
+    await set(ref(db,'mechanics/'+c.user.uid),{name:n,phone:ph,city:ci||'',skills:sk||'General',email:em,role:'mechanic',status:'online',gpsOn:true,bodycam:true,rating:5.0,verified:false,createdAt:Date.now(),pfp});
     err.textContent='';
-    // onAuthStateChanged will fire and redirect to pending
   }catch(e){err.textContent=e.message.replace('Firebase: ','').replace(/\(.*\)/,'');}
 };
 window.doLogin=async()=>{
@@ -77,129 +73,150 @@ window.doLogin=async()=>{
   try{await signInWithEmailAndPassword(auth,gv('mlem'),gv('mlpw'));err.textContent='';}
   catch(e){err.textContent='Invalid email or password';}
 };
-window.doLogout=async()=>{if(uid)await update(ref(db,'mechanics/'+uid),{status:'offline'});await signOut(auth);};
+window.doLogout=async()=>{if(uid)await update(ref(db,'mechanics/'+uid),{status:'offline'});setJobId(null);setCurrentJob(null);await signOut(auth);};
 
-// ── LIVE LISTENERS ────────────────────────────────────
+// ── LISTENERS ─────────────────────────────────────────
 function startListeners(){
-  // FIX xiv: job listener with atomic lock
   onValue(ref(db,'jobs'),snap=>{
     const all=snap.val()||{};
-    Object.entries(all).forEach(([id,job])=>{
-      // FIX 4: Only show gig if truly available — searching, no mechanic, not done
-      if(job.status==='searching_mechanic'&&!job.mechanicId&&job.status!=='done'&&!shownGig){
-        shownGig=true;jobId=id;currentJob=job;
-        showGigAlert(id,job);
-        if(typeof cur!=='undefined'&&cur==='m-gig')repopulateGig();
+    // FIX 5: restore active job from Firebase if we have a stored jobId
+    const storedId=getJobId();
+    if(storedId&&all[storedId]){
+      const j=all[storedId];
+      setCurrentJob(j);
+      tx('active-job',j.issue||'Active job');
+      // If we're on home and job is active, show relevant screen
+      if(cur==='m-home'&&(j.status==='enroute'||j.status==='fixing')){
+        populateGig(storedId,j);
       }
-      // FIX 4: Hide gig banner if job is done or taken by someone else
-      if(id===jobId){
-        if(job.status==='done'||(job.mechanicId&&job.mechanicId!==uid)){
-          shownGig=false;jobId=null;currentJob=null;
-          const pv=ge('gig-prev');if(pv)pv.style.display='none';
-          const nb=ge('gig-badge');if(nb)nb.style.display='none';
+    }
+    Object.entries(all).forEach(([id,job])=>{
+      // FIX 4 (gig banner): only show if truly searching, no mechanic, not done
+      if(job.status==='searching_mechanic'&&!job.mechanicId&&!shownGig){
+        shownGig=true;
+        populateGig(id,job);
+        showGigBanner(id,job);
+      }
+      // FIX 4: hide banner when job taken or done
+      if(getJobId()===id){
+        if(job.status==='done'){
+          shownGig=false;setJobId(null);setCurrentJob(null);
+          hideGigBanner();tx('active-job','None');
         }
       }
-      // Clear active job label when done
-      if(job.mechanicId===uid&&job.status==='done'){
-        tx('active-job','None');shownGig=false;
+      // Hide banner if this job was taken by someone else
+      if(!getJobId()&&job.status!=='searching_mechanic'&&shownGig){
+        hideGigBanner();shownGig=false;
       }
     });
-    // FIX 4: If no searching jobs exist anymore, hide gig banner
+    // If no searching jobs at all, hide banner
     const anyOpen=Object.values(all).some(j=>j.status==='searching_mechanic'&&!j.mechanicId);
-    if(!anyOpen&&shownGig){
-      const pv=ge('gig-prev');if(pv)pv.style.display='none';
-    }
+    if(!anyOpen&&shownGig&&!getJobId()){hideGigBanner();shownGig=false;}
   });
+
   // Customer SOS alerts
   onValue(ref(db,'alerts'),snap=>{
-    const all=snap.val()||{};
-    const active=Object.values(all).filter(a=>a.status==='active'&&a.type==='customer_sos');
-    const bar=ge('sos-bar');
-    if(bar){
-      bar.style.display=active.length>0?'flex':'none';
-      if(active.length>0){const l=active[active.length-1];tx('sos-bar-txt','🆘 '+l.name+' · '+l.location);}
-    }
+    const active=Object.values(snap.val()||{}).filter(a=>a.status==='active'&&a.type==='customer_sos');
+    const bar=ge('sos-bar');if(!bar)return;
+    if(active.length){bar.style.display='flex';tx('sos-bar-txt','🆘 '+active[active.length-1].name+' · '+active[active.length-1].location);}
+    else bar.style.display='none';
   });
-  // FIX xii+xiii: GPS immediately + update Firebase online status
-  update(ref(db,'mechanics/'+uid),{status:'online',gpsOn:true,bodycam:true,lastSeen:Date.now()});
+
+  // GPS immediately + every 30s
   if(navigator.geolocation){
-    navigator.geolocation.getCurrentPosition(p=>{
-      update(ref(db,'mechanics/'+uid),{lat:p.coords.latitude,lng:p.coords.longitude,gpsOn:true});
+    const getGPS=()=>navigator.geolocation.getCurrentPosition(p=>{
+      if(!uid)return;
+      update(ref(db,'mechanics/'+uid),{lat:p.coords.latitude,lng:p.coords.longitude,gpsOn:true,lastGPS:Date.now()});
       tx('gps-stat','📍 GPS: '+p.coords.latitude.toFixed(4)+'°N');
     },()=>tx('gps-stat','📍 GPS: Active'),{enableHighAccuracy:true,timeout:7000});
-    // Update every 30s
-    setInterval(()=>{
-      if(!uid)return;
-      navigator.geolocation.getCurrentPosition(p=>{
-        update(ref(db,'mechanics/'+uid),{lat:p.coords.latitude,lng:p.coords.longitude,lastGPS:Date.now()});
-        tx('gps-stat','📍 GPS: '+p.coords.latitude.toFixed(4)+'°N');
-      },()=>{},{enableHighAccuracy:true,timeout:5000});
-    },30000);
+    getGPS();setInterval(getGPS,30000);
   }
 }
 
-function showGigAlert(id,job){
+function showGigBanner(id,job){
   const pv=ge('gig-prev');if(pv)pv.style.display='block';
   tx('gig-prev-title','🔔 New job — '+(job.issue||'Repair'));
   tx('gig-prev-price','₹'+(job.estimateLow||'—')+'–'+(job.estimateHigh||'—'));
   const nb=ge('gig-badge');if(nb)nb.style.display='block';
-  // Populate gig detail
+}
+function hideGigBanner(){
+  const pv=ge('gig-prev');if(pv)pv.style.display='none';
+  const nb=ge('gig-badge');if(nb)nb.style.display='none';
+}
+function populateGig(id,job){
   tx('gig-issue',job.issue||'—');
   tx('gig-loc','📍 '+(job.location||'—'));
   tx('gig-price','₹'+(job.estimateLow||'—')+'–'+(job.estimateHigh||'—'));
   tx('gig-cust',job.customerName||'—');
   tx('gig-cph',job.customerPhone||'—');
-  // Full vehicle info
-  const vstr=job.vehicle||((job.vehicleMake||'')+' '+(job.vehicleModel||'')+' '+(job.vehicleYear||'')+' '+(job.vehicleFuel||'')).trim();
-  tx('gig-veh',vstr||'Not specified');
+  const vs=(job.vehicle||((job.vehicleMake||'')+' '+(job.vehicleModel||'')+' '+(job.vehicleYear||'')+' '+(job.vehicleFuel||'')).trim());
+  tx('gig-veh',vs||'Not specified');
   tx('gig-parts',job.partType||'OEM');
   tx('gig-cats',job.categories||'General');
   tx('gig-ai',job.aiConfidence?'AI: '+job.aiConfidence:'—');
 }
 
-// FIX xiv: atomic lock — check before accepting
+// ── ACCEPT GIG (atomic lock) ──────────────────────────
 window.acceptGig=()=>{
-  if(!jobId||!uid){toast('No active gig');return;}
-  const p=profile||{};
-  get(ref(db,'jobs/'+jobId)).then(snap=>{
-    const job=snap.val();
-    if(!job){toast('Job no longer available');shownGig=false;return;}
-    // FIX xiv: if another mechanic already locked it, reject
-    if(job.mechanicId&&job.mechanicId!==uid){
-      toast('⚠️ Job already taken by another mechanic');
-      shownGig=false;
-      const pv=ge('gig-prev');if(pv)pv.style.display='none';
-      back();return;
-    }
-    // Lock job to this mechanic
-    // Lock with mechanic_assigned first so customer waiting screen triggers
-    update(ref(db,'jobs/'+jobId),{status:'mechanic_assigned',mechanic:p.name,mechanicId:uid,mechanicPhone:p.phone||'—',updatedAt:Date.now()});
-    // Short delay then set enroute  
-    setTimeout(()=>{
-      update(ref(db,'mechanics/'+uid),{status:'enroute',activeJob:jobId,eta:4});
-      update(ref(db,'jobs/'+jobId),{status:'enroute'});
-    },1500);
-    tx('active-job',currentJob?currentJob.issue:'Active job');
-    const nb=ge('gig-badge');if(nb)nb.style.display='none';
+  const jid=getJobId()||Object.keys(JSON.parse(localStorage.getItem('mrf_job')||'{}')).find(k=>k==='id');
+  // Get jobId from banner data
+  const banner=ge('gig-prev');
+  if(!banner||banner.style.display==='none'){toast('No gig available');return;}
+  // Find current searching job
+  get(ref(db,'jobs')).then(snap=>{
+    const all=snap.val()||{};
+    const entry=Object.entries(all).find(([id,j])=>j.status==='searching_mechanic'&&!j.mechanicId);
+    if(!entry){toast('Job no longer available');hideGigBanner();shownGig=false;return;}
+    const [id,job]=entry;
+    const p=profile||{};
+    // Lock it
+    update(ref(db,'jobs/'+id),{status:'mechanic_assigned',mechanic:p.name,mechanicId:uid,mechanicPhone:p.phone||'—',updatedAt:Date.now()});
+    setTimeout(()=>update(ref(db,'jobs/'+id),{status:'enroute'}),1500);
+    update(ref(db,'mechanics/'+uid),{status:'enroute',activeJob:id,eta:4});
+    setJobId(id);setCurrentJob(job);
+    tx('active-job',job.issue||'Active job');
+    hideGigBanner();
     toast('✅ Gig accepted! Navigate to customer.');
     go('m-nav');
   });
 };
-window.declineGig=()=>{shownGig=false;const pv=ge('gig-prev');if(pv)pv.style.display='none';back();};
+window.declineGig=()=>{shownGig=false;hideGigBanner();back();};
+
+// FIX 1: mechanic marks done — both must confirm
+window.mechMarkDone=()=>{
+  const jid=getJobId();if(!jid)return;
+  update(ref(db,'jobs/'+jid),{mechanic_done:true,updatedAt:Date.now()});
+  get(ref(db,'jobs/'+jid)).then(s=>{
+    const j=s.val();
+    if(j&&j.customer_done){
+      update(ref(db,'jobs/'+jid),{status:'done',finalPrice:1550,completedAt:Date.now()});
+      update(ref(db,'mechanics/'+uid),{status:'online',activeJob:null});
+      setJobId(null);setCurrentJob(null);shownGig=false;
+      go('m-done');
+    } else {
+      toast('Marked done — waiting for customer confirmation');
+      go('m-done');
+    }
+  });
+};
 window.completeJob=()=>{
-  if(jobId&&uid){update(ref(db,'jobs/'+jobId),{status:'done',finalPrice:1550,completedAt:Date.now()});update(ref(db,'mechanics/'+uid),{status:'online',activeJob:null,eta:null});shownGig=false;jobId=null;}
-  go('m-done');
+  const jid=getJobId();
+  if(jid){
+    update(ref(db,'jobs/'+jid),{mechanic_done:true,status:'done',finalPrice:1550,completedAt:Date.now()});
+    update(ref(db,'mechanics/'+uid),{status:'online',activeJob:null});
+  }
+  setJobId(null);setCurrentJob(null);shownGig=false;go('m-done');
 };
 
 // ── ONLINE TOGGLE ─────────────────────────────────────
 window.toggleOnline=()=>{
   if(!uid)return;
-  const tt=ge('tt'),isOn=tt.classList.contains('on');
-  tt.classList.toggle('on',!isOn);
-  tx('tlbl',!isOn?'You are online':'You are offline');
-  tx('tsub',!isOn?'Accepting gig requests':'Not receiving gigs');
-  const bdg=ge('tbdg');if(bdg){bdg.className='bdg '+(!isOn?'b-g':'b-off');bdg.textContent=!isOn?'● Active':'○ Offline';}
-  update(ref(db,'mechanics/'+uid),{status:!isOn?'online':'offline'});
+  const tt=ge('tt'),on=tt.classList.contains('on');
+  tt.classList.toggle('on',!on);
+  tx('tlbl',!on?'You are online':'You are offline');
+  tx('tsub',!on?'Accepting gig requests':'Not receiving gigs');
+  const b=ge('tbdg');if(b){b.className='bdg '+(!on?'b-g':'b-off');b.textContent=!on?'● Active':'○ Offline';}
+  update(ref(db,'mechanics/'+uid),{status:!on?'online':'offline'});
 };
 
 // ── SOS ───────────────────────────────────────────────
@@ -208,35 +225,42 @@ window.mechSOS=()=>{
   if(!uid)return;
   const p=profile||{};
   const sos={type:'mechanic_sos',uid,name:p.name||'Mechanic',phone:p.phone||'—',location:'Getting GPS...',time:Date.now(),status:'active',app:'mechanic'};
-  if(navigator.geolocation)navigator.geolocation.getCurrentPosition(pos=>{sos.location=pos.coords.latitude.toFixed(5)+'°N, '+pos.coords.longitude.toFixed(5)+'°E';sos.lat=pos.coords.latitude;sos.lng=pos.coords.longitude;sos.mapsLink='https://maps.google.com/?q='+pos.coords.latitude+','+pos.coords.longitude;push(ref(db,'alerts'),sos);},()=>push(ref(db,'alerts'),sos),{enableHighAccuracy:true});
+  if(navigator.geolocation)navigator.geolocation.getCurrentPosition(pos=>{
+    sos.location=pos.coords.latitude.toFixed(5)+'°N, '+pos.coords.longitude.toFixed(5)+'°E';
+    sos.lat=pos.coords.latitude;sos.lng=pos.coords.longitude;
+    sos.mapsLink='https://maps.google.com/?q='+pos.coords.latitude+','+pos.coords.longitude;
+    push(ref(db,'alerts'),sos);
+  },()=>push(ref(db,'alerts'),sos),{enableHighAccuracy:true});
   else push(ref(db,'alerts'),sos);
 };
+window.callCustomer=()=>{const j=getCurrentJob();const ph=(j&&j.customerPhone)||'';if(ph)window.location.href='tel:'+ph.replace(/\s/g,'');else toast('No customer phone');};
 
-// ── CALL CUSTOMER ─────────────────────────────────────
-window.callCustomer=()=>{const ph=(currentJob&&currentJob.customerPhone)||'';if(ph)window.location.href='tel:'+ph.replace(/\s/g,'');else toast('No customer phone');};
-
-// ── CHAT (FIX i) ──────────────────────────────────────
+// FIX 3: CHAT — use shared /chats/jobId path
 window.openMechChat=()=>{
-  if(!jobId){
-    toast('No active job — accept a gig first');return;
-  }
+  const jid=getJobId();
+  if(!jid){toast('No active job');return;}
   go('m-chat');
   if(chatUnsub)chatUnsub();
-  chatUnsub=onValue(ref(db,'chats/'+jobId),snap=>{
-    const msgs=snap.val()||{};
+  chatUnsub=onValue(ref(db,'chats/'+jid),snap=>{
     const box=ge('m-chat-box');if(!box)return;
-    const sorted=Object.values(msgs).sort((a,b)=>a.time-b.time);
-    box.innerHTML=sorted.map(m=>{
+    const msgs=Object.values(snap.val()||{}).sort((a,b)=>a.time-b.time);
+    box.innerHTML=msgs.map(m=>{
       const mine=m.senderId===uid;
-      return `<div style="display:flex;justify-content:${mine?'flex-end':'flex-start'};margin-bottom:7px"><div style="max-width:76%;background:${mine?'var(--gn)':'var(--card)'};color:${mine?'#060D08':'var(--tx)'};border-radius:${mine?'14px 14px 4px 14px':'14px 14px 14px 4px'};padding:8px 12px;font-size:13px;line-height:1.4">${m.text}<div style="font-size:9px;opacity:.6;margin-top:2px;text-align:right">${new Date(m.time).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div></div></div>`;
+      return `<div style="display:flex;justify-content:${mine?'flex-end':'flex-start'};margin-bottom:8px">
+        <div style="max-width:78%;background:${mine?'var(--gn)':'var(--card)'};color:${mine?'#060D08':'var(--tx)'};border-radius:${mine?'14px 14px 4px 14px':'14px 14px 14px 4px'};padding:9px 12px;font-size:13px;line-height:1.4">
+          <div style="font-size:10px;opacity:.6;margin-bottom:3px">${mine?'You':m.senderName||'Customer'}</div>
+          ${m.text}
+          <div style="font-size:9px;opacity:.5;margin-top:3px;text-align:right">${new Date(m.time).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div>
+        </div>
+      </div>`;
     }).join('');
     box.scrollTop=box.scrollHeight;
   });
 };
 window.sendMechMsg=()=>{
-  const inp=ge('m-chat-inp');if(!inp||!inp.value.trim()||!jobId)return;
-  const p=profile||{};
-  push(ref(db,'chats/'+jobId),{senderId:uid,senderName:p.name||'Mechanic',senderRole:'mechanic',text:inp.value.trim(),time:Date.now()});
+  const inp=ge('m-chat-inp'),jid=getJobId();
+  if(!inp||!inp.value.trim()||!jid)return;
+  push(ref(db,'chats/'+jid),{senderId:uid,senderName:(profile&&profile.name)||'Mechanic',senderRole:'mechanic',text:inp.value.trim(),time:Date.now()});
   inp.value='';
 };
 
@@ -249,7 +273,7 @@ function gv(id){const e=ge(id);return e?e.value.trim():'';}
 function ge(id){return document.getElementById(id);}
 function qsa(s){return Array.from(document.querySelectorAll(s));}
 function tx(id,v){const e=ge(id);if(e)e.textContent=v;}
-function toast(msg){let t=ge('m-toast');if(!t){t=document.createElement('div');t.id='m-toast';t.style.cssText='position:fixed;bottom:85px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.9);color:#fff;padding:9px 18px;border-radius:99px;font-size:13px;z-index:9999;transition:opacity .3s;pointer-events:none;white-space:nowrap';document.body.appendChild(t);}t.textContent=msg;t.style.opacity='1';clearTimeout(window._mt);window._mt=setTimeout(()=>{t.style.opacity='0';},2500);}
+function toast(msg){let t=ge('m-toast');if(!t){t=document.createElement('div');t.id='m-toast';t.style.cssText='position:fixed;bottom:85px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.9);color:#fff;padding:9px 18px;border-radius:99px;font-size:13px;z-index:9999;transition:opacity .3s;pointer-events:none;white-space:nowrap;max-width:90vw;text-align:center';document.body.appendChild(t);}t.textContent=msg;t.style.opacity='1';clearTimeout(window._mt);window._mt=setTimeout(()=>{t.style.opacity='0';},2800);}
 function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>r(e.target.result);x.onerror=j;x.readAsDataURL(f);});}
 </script>
 <style>
@@ -265,20 +289,15 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 @keyframes bi{0%,100%{opacity:1}40%{opacity:.3}}
 @keyframes si{from{transform:translateY(-10px);opacity:0}to{transform:translateY(0);opacity:1}}
 .auth{justify-content:center;align-items:center;padding:24px 20px;background:radial-gradient(ellipse at 50% 0%,rgba(74,222,128,.07),transparent 70%),var(--bg)}
-.logo{font-family:var(--fh);font-size:28px;font-weight:800;text-align:center;margin-bottom:4px}
-.logo em{color:var(--gn);font-style:normal}
+.logo{font-family:var(--fh);font-size:28px;font-weight:800;text-align:center;margin-bottom:4px}.logo em{color:var(--gn);font-style:normal}
 .ac{background:var(--card);border:1px solid var(--bdr2);border-radius:var(--r2);padding:18px;width:100%;margin-bottom:12px;max-height:68vh;overflow-y:auto}
 .ac::-webkit-scrollbar{display:none}
 .at{font-family:var(--fh);font-size:15px;font-weight:700;margin-bottom:12px}
-.f{margin-bottom:9px}
-.f label{display:block;font-size:11px;font-weight:500;color:var(--tx2);margin-bottom:3px}
+.f{margin-bottom:9px}.f label{display:block;font-size:11px;font-weight:500;color:var(--tx2);margin-bottom:3px}
 .f input,.f select{background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:14px;padding:9px 11px;width:100%;outline:none;transition:border .15s}
-.f input:focus{border-color:var(--gn)}
-.f input::placeholder{color:var(--tx3)}
-.f select option{background:var(--bg3)}
+.f input:focus{border-color:var(--gn)}.f input::placeholder{color:var(--tx3)}.f select option{background:var(--bg3)}
 .err{font-size:11px;color:var(--rd);min-height:14px;text-align:center;margin-bottom:7px}
-.sw{font-size:13px;color:var(--tx2);text-align:center;cursor:pointer;margin-top:4px}
-.sw span{color:var(--gn);font-weight:600}
+.sw{font-size:13px;color:var(--tx2);text-align:center;cursor:pointer;margin-top:4px}.sw span{color:var(--gn);font-weight:600}
 .pfp-up{display:flex;align-items:center;gap:10px;margin-bottom:10px}
 .pfp-ring{width:52px;height:52px;border-radius:50%;background:var(--bg3);border:2px dashed var(--gn);overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:22px;cursor:pointer;flex-shrink:0}
 .pfp-ring img{width:100%;height:100%;object-fit:cover;display:none}
@@ -287,14 +306,10 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 .b-gn{background:var(--gn);color:#060D08}.b-ghost{background:var(--bg3);color:var(--tx);border:1px solid var(--bdr2)}.b-rd{background:var(--rd);color:#fff}.b-bl{background:var(--bl);color:#060D08}
 .pending{justify-content:center;align-items:center;padding:28px 22px;text-align:center;background:var(--bg)}
 .topbar{flex-shrink:0;padding:42px 14px 11px;display:flex;align-items:center;justify-content:space-between;background:var(--bg);border-bottom:1px solid var(--bdr);z-index:5}
-.lgo{font-family:var(--fh);font-size:18px;font-weight:800}
-.lgo em{color:var(--gn);font-style:normal}
+.lgo{font-family:var(--fh);font-size:18px;font-weight:800}.lgo em{color:var(--gn);font-style:normal}
 .m-avi-wrap{width:31px;height:31px;border-radius:50%;overflow:hidden;background:var(--gn2);border:1.5px solid var(--gn);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}
-.m-pfp{width:100%;height:100%;object-fit:cover}
-.m-ini{font-family:var(--fh);font-size:11px;font-weight:700;color:var(--gn)}
-.back{font-size:13px;color:var(--tx2);cursor:pointer}
-.pgt{font-family:var(--fh);font-size:15px;font-weight:700;flex:1;text-align:center}
-.sp{width:42px}
+.m-pfp{width:100%;height:100%;object-fit:cover}.m-ini{font-family:var(--fh);font-size:11px;font-weight:700;color:var(--gn)}
+.back{font-size:13px;color:var(--tx2);cursor:pointer}.pgt{font-family:var(--fh);font-size:15px;font-weight:700;flex:1;text-align:center}.sp{width:42px}
 .bnav{flex-shrink:0;display:flex;background:var(--bg2);border-top:1px solid var(--bdr2);padding:6px 0 15px}
 .bn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;position:relative}
 .bn-i{font-size:19px;transition:transform .15s}.bn-l{font-size:10px;color:var(--tx3);font-weight:500}
@@ -303,30 +318,24 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 .bdg{display:inline-flex;align-items:center;font-size:11px;font-weight:600;padding:2px 7px;border-radius:999px}
 .b-g{background:var(--gn2);color:var(--gn)}.b-a{background:var(--am2);color:var(--am)}.b-r{background:var(--rd2);color:var(--rd)}.b-b{background:var(--bl2);color:var(--bl)}.b-off{background:rgba(255,255,255,.06);color:var(--tx2)}
 .card{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:13px;margin-bottom:9px}
-.sec{padding:13px}
-.sl{font-family:var(--fh);font-size:10px;font-weight:700;color:var(--tx3);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px}
+.sec{padding:13px}.sl{font-family:var(--fh);font-size:10px;font-weight:700;color:var(--tx3);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px}
 .sb-item{flex:1;border-radius:var(--r);padding:7px 9px;display:flex;align-items:center;gap:6px;font-size:11px;font-weight:500;background:var(--gn2);border:1px solid rgba(74,222,128,.2);color:var(--gn)}
 .sb-dot{width:6px;height:6px;border-radius:50%;background:var(--gn);animation:dd 1.2s infinite;flex-shrink:0}
 .onl-tog{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:12px;display:flex;align-items:center;gap:9px;margin-bottom:11px;cursor:pointer}
 .tt{width:44px;height:23px;border-radius:12px;background:var(--bg3);border:1px solid var(--bdr2);position:relative;transition:background .3s;flex-shrink:0}
-.tt.on{background:var(--gn)}.tth{width:17px;height:17px;border-radius:50%;background:#fff;position:absolute;top:2px;left:2px;transition:left .25s}
-.tt.on .tth{left:25px}
+.tt.on{background:var(--gn)}.tth{width:17px;height:17px;border-radius:50%;background:#fff;position:absolute;top:2px;left:2px;transition:left .25s}.tt.on .tth{left:25px}
 .gig-prev{background:linear-gradient(135deg,rgba(74,222,128,.14),rgba(74,222,128,.04));border:1.5px solid rgba(74,222,128,.3);border-radius:var(--r2);padding:12px;margin-bottom:10px;cursor:pointer;display:none;animation:si .3s ease}
 .veh-box{background:var(--am2);border:1px solid rgba(251,191,36,.25);border-radius:var(--r);padding:11px;margin-bottom:9px}
-.veh-row{display:flex;justify-content:space-between;font-size:12px;padding:3px 0}
-.veh-row .vl{color:var(--tx2)}.veh-row .vv{font-weight:600}
+.veh-row{display:flex;justify-content:space-between;font-size:12px;padding:3px 0}.veh-row .vl{color:var(--tx2)}.veh-row .vv{font-weight:600}
+.er{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--bdr);font-size:13px}.er:last-child{border-bottom:none}
+.cr{display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--bdr);cursor:pointer}.cr:last-child{border-bottom:none}
 .ph{padding:16px 13px;display:flex;flex-direction:column;align-items:center;gap:7px;border-bottom:1px solid var(--bdr)}
 .p-avi{width:60px;height:60px;border-radius:50%;overflow:hidden;background:var(--gn2);border:2px solid var(--gn);display:flex;align-items:center;justify-content:center;cursor:pointer}
 .p-avi img{width:100%;height:100%;object-fit:cover}
 .psts{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--bdr)}
 .pst{background:var(--bg2);padding:10px;text-align:center}.pstn{font-family:var(--fh);font-size:16px;font-weight:800}.pstl{font-size:10px;color:var(--tx3);margin-top:2px}
 .sw2{display:flex;flex-wrap:wrap;gap:5px;padding:10px 13px;border-bottom:1px solid var(--bdr)}
-.mit{display:flex;align-items:center;gap:10px;padding:10px 13px;border-bottom:1px solid var(--bdr);cursor:pointer;font-size:13px}
-.mit:active{background:var(--bg3)}
-.er{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--bdr);font-size:13px}
-.er:last-child{border-bottom:none}
-.cr{display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--bdr);cursor:pointer}
-.cr:last-child{border-bottom:none}
+.mit{display:flex;align-items:center;gap:10px;padding:10px 13px;border-bottom:1px solid var(--bdr);cursor:pointer;font-size:13px}.mit:active{background:var(--bg3)}
 .msos-ov{position:fixed;inset:0;background:rgba(6,13,8,.95);z-index:200;display:none;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center}
 </style>
 </head>
@@ -334,12 +343,19 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 <div class="msos-ov" id="msos-ov">
   <div style="font-size:64px;margin-bottom:11px;animation:pp 1s infinite">🆘</div>
   <div style="font-family:var(--fh);font-size:21px;font-weight:800;color:var(--rd);margin-bottom:7px">SOS Sent Live!</div>
-  <div style="font-size:12px;color:var(--tx2);margin-bottom:18px;line-height:1.8">✅ GPS captured · ✅ Admin alerted · ✅ Emergency team notified</div>
+  <div style="font-size:12px;color:var(--tx2);margin-bottom:18px;line-height:1.8">✅ GPS · ✅ Admin alerted · ✅ Emergency team</div>
   <button class="btn b-rd" style="max-width:200px" onclick="ge('msos-ov').style.display='none'">✓ OK</button>
 </div>
 
+<!-- LOADING -->
+<div id="m-loading" class="scr on" style="justify-content:center;align-items:center;background:var(--bg)">
+  <div style="font-family:var(--fh);font-size:32px;font-weight:800;margin-bottom:12px">Mech<em style="color:var(--gn);font-style:normal">Pro</em></div>
+  <div style="width:36px;height:36px;border:3px solid var(--bdr2);border-top-color:var(--gn);border-radius:50%;animation:pp 0s,si 0s;animation-name:unset;border-top-color:var(--gn);animation:spin 0.8s linear infinite"></div>
+  <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+</div>
+
 <!-- LOGIN -->
-<div id="m-login" class="scr auth on">
+<div id="m-login" class="scr auth">
   <div class="logo">Mech<em>Pro</em></div>
   <div style="font-size:12px;color:var(--tx2);margin-bottom:16px;text-align:center">Mechanic sign in</div>
   <div class="ac">
@@ -370,19 +386,19 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
     <div class="f"><label>Email ✱</label><input id="mem" type="email" placeholder="your@email.com"></div>
     <div class="f"><label>Password ✱</label><input id="mpw" type="password" placeholder="Min 6 characters"></div>
     <div class="err" id="mr-err"></div>
-    <button class="btn b-gn" onclick="doReg()">Register & start earning →</button>
+    <button class="btn b-gn" onclick="doReg()">Register →</button>
   </div>
   <div class="sw">Already registered? <span onclick="go('m-login')">Sign in</span></div>
 </div>
 
-<!-- PENDING — onValue auto-redirects when admin verifies -->
+<!-- PENDING -->
 <div id="m-pending" class="scr pending">
   <div style="font-size:60px;margin-bottom:14px;animation:pp 2s infinite">⏳</div>
   <div style="font-family:var(--fh);font-size:20px;font-weight:800;color:var(--am);margin-bottom:7px">Verification Pending</div>
-  <div style="font-size:12px;color:var(--tx2);margin-bottom:22px;line-height:1.8;max-width:280px">Your account is created.<br><strong style="color:var(--gn)">You will automatically enter the app the moment admin verifies you — no refresh needed.</strong></div>
+  <div style="font-size:12px;color:var(--tx2);margin-bottom:22px;line-height:1.8;max-width:280px">Your account is created.<br><strong style="color:var(--gn)">You'll automatically enter the app the moment admin verifies you — no refresh needed.</strong></div>
   <div style="background:var(--am2);border:1px solid rgba(251,191,36,.25);border-radius:var(--r2);padding:13px;width:100%;max-width:290px;text-align:center;margin-bottom:18px">
     <div style="font-size:10px;color:var(--am);font-weight:700;margin-bottom:4px">HOW IT WORKS</div>
-    <div style="font-size:11px;color:var(--tx2);line-height:1.6">Admin opens their panel → Mechanics tab → clicks Verify → you auto-redirect here instantly</div>
+    <div style="font-size:11px;color:var(--tx2);line-height:1.6">Admin opens panel → Mechanics tab → Verify → you auto-redirect instantly</div>
   </div>
   <button class="btn b-ghost" style="max-width:240px" onclick="doLogout()">Sign out</button>
 </div>
@@ -400,7 +416,7 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
     <div class="sec">
       <div id="sos-bar" style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:8px 11px;display:none;align-items:center;gap:7px;margin-bottom:10px;animation:bi 1.5s 5;cursor:pointer" onclick="go('m-gig')">
         <div style="width:7px;height:7px;border-radius:50%;background:var(--rd);animation:dd 1s infinite;flex-shrink:0"></div>
-        <div style="font-size:12px;font-weight:700;color:var(--rd);flex:1" id="sos-bar-txt">Customer SOS active</div>
+        <div style="font-size:12px;font-weight:700;color:var(--rd);flex:1" id="sos-bar-txt">Customer SOS</div>
         <span style="font-size:11px;color:var(--rd)">View →</span>
       </div>
       <div style="display:flex;gap:7px;margin-bottom:10px">
@@ -419,7 +435,7 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
         </div>
       </div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:11px">
-        <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r);padding:10px 7px;text-align:center"><div style="font-family:var(--fh);font-size:19px;font-weight:800">6</div><div style="font-size:10px;color:var(--tx3);margin-top:2px">Today gigs</div></div>
+        <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r);padding:10px 7px;text-align:center"><div style="font-family:var(--fh);font-size:19px;font-weight:800">6</div><div style="font-size:10px;color:var(--tx3);margin-top:2px">Today</div></div>
         <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r);padding:10px 7px;text-align:center"><div style="font-family:var(--fh);font-size:19px;font-weight:800;color:var(--gn)">₹4.2k</div><div style="font-size:10px;color:var(--tx3);margin-top:2px">Earned</div></div>
         <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r);padding:10px 7px;text-align:center"><div style="font-family:var(--fh);font-size:19px;font-weight:800;color:var(--am)">4.9⭐</div><div style="font-size:10px;color:var(--tx3);margin-top:2px">Rating</div></div>
       </div>
@@ -443,14 +459,13 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
       <div style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:8px 11px;display:flex;align-items:center;gap:7px;margin-bottom:11px;animation:bi 1.5s 3"><span style="font-size:17px">🚨</span><span style="font-size:12px;font-weight:700;color:var(--rd);font-family:var(--fh)">New job — respond quickly!</span></div>
       <div style="background:linear-gradient(135deg,rgba(96,165,250,.1),rgba(96,165,250,.03));border:1.5px solid rgba(96,165,250,.28);border-radius:var(--r2);padding:15px;margin-bottom:10px">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:11px">
-          <div><div style="font-family:var(--fh);font-size:14px;font-weight:700" id="gig-issue">Loading...</div><div style="font-size:11px;color:var(--tx2);margin-top:2px" id="gig-loc">—</div></div>
-          <div style="text-align:right"><div style="font-family:var(--fh);font-size:22px;font-weight:800;color:var(--gn)" id="gig-price">₹—</div><div style="font-size:10px;color:var(--tx3)">Est. value</div></div>
+          <div><div style="font-family:var(--fh);font-size:14px;font-weight:700" id="gig-issue">—</div><div style="font-size:11px;color:var(--tx2);margin-top:2px" id="gig-loc">—</div></div>
+          <div style="text-align:right"><div style="font-family:var(--fh);font-size:22px;font-weight:800;color:var(--gn)" id="gig-price">₹—</div><div style="font-size:10px;color:var(--tx3)">Est.</div></div>
         </div>
-        <!-- Full vehicle info for mechanic -->
         <div class="veh-box">
           <div style="font-family:var(--fh);font-size:11px;font-weight:700;color:var(--am);margin-bottom:5px">🚗 Vehicle details</div>
           <div class="veh-row"><span class="vl">Vehicle</span><span class="vv" id="gig-veh">—</span></div>
-          <div class="veh-row"><span class="vl">Parts chosen</span><span class="vv" id="gig-parts">—</span></div>
+          <div class="veh-row"><span class="vl">Parts</span><span class="vv" id="gig-parts">—</span></div>
           <div class="veh-row"><span class="vl">Categories</span><span class="vv" id="gig-cats">—</span></div>
           <div class="veh-row"><span class="vl">AI confidence</span><span class="vv" id="gig-ai">—</span></div>
         </div>
@@ -499,10 +514,10 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
   </div>
 </div>
 
-<!-- CHAT — FIX i -->
-<div id="m-chat" class="scr" style="display:flex;flex-direction:column">
+<!-- CHAT -->
+<div id="m-chat" class="scr">
   <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Chat with customer</div><div class="sp"></div></div>
-  <div id="m-chat-box" style="flex:1;overflow-y:auto;padding:12px 13px;"></div>
+  <div id="m-chat-box" style="flex:1;overflow-y:auto;padding:12px 13px;min-height:0;"></div>
   <div style="flex-shrink:0;display:flex;gap:7px;padding:9px 13px;background:var(--bg2);border-top:1px solid var(--bdr2)">
     <input id="m-chat-inp" type="text" placeholder="Type a message..." style="flex:1;background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:13px;padding:8px 11px;outline:none" onkeydown="if(event.key==='Enter')sendMechMsg()">
     <button style="background:var(--gn);border:none;border-radius:var(--r);padding:0 13px;color:#060D08;font-family:var(--fh);font-size:13px;font-weight:700;cursor:pointer" onclick="sendMechMsg()">Send</button>
@@ -516,7 +531,7 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
     <div class="sec">
       <div style="text-align:center;padding:12px 0"><div style="font-size:42px;margin-bottom:7px;animation:pp 2s infinite">🔧</div><div style="font-family:var(--fh);font-size:16px;font-weight:700">Repairing vehicle</div></div>
       <div style="display:flex;gap:7px;margin-bottom:10px">
-        <div class="sb-item"><div class="sb-dot"></div>🎥 Recording live</div>
+        <div class="sb-item"><div class="sb-dot"></div>🎥 Recording</div>
         <div class="sb-item"><div class="sb-dot"></div>📍 GPS tracking</div>
       </div>
       <div class="card" style="padding:10px 12px;margin-bottom:9px">
@@ -532,6 +547,7 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
         <div class="cr" onclick="chk(this)"><div style="font-size:16px;width:20px">⬜</div><div style="font-size:13px">Install new part</div></div>
         <div class="cr" onclick="chk(this)" style="border-bottom:none"><div style="font-size:16px;width:20px">⬜</div><div style="font-size:13px">Test and confirm repair</div></div>
       </div>
+      <!-- FIX 1: mechanic marks done — admin shows done only when both confirm -->
       <button class="btn b-gn" onclick="completeJob()">✅ Mark job complete</button>
     </div>
   </div>
@@ -542,7 +558,7 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
   <div class="topbar"><div class="back" onclick="go('m-home')">← Home</div><div class="pgt">Job done!</div><div class="sp"></div></div>
   <div class="sb">
     <div class="sec">
-      <div style="text-align:center;padding:14px 0"><div style="font-size:52px;margin-bottom:9px">💰</div><div style="font-family:var(--fh);font-size:22px;font-weight:800;color:var(--gn)">+₹830 earned!</div><div style="font-size:11px;color:var(--tx2);margin-top:3px">Admin panel updated live ✓</div></div>
+      <div style="text-align:center;padding:14px 0"><div style="font-size:52px;margin-bottom:9px">💰</div><div style="font-family:var(--fh);font-size:22px;font-weight:800;color:var(--gn)">+₹830 earned!</div><div style="font-size:11px;color:var(--tx2);margin-top:3px">Admin panel updated ✓</div></div>
       <div style="background:linear-gradient(135deg,rgba(74,222,128,.12),rgba(74,222,128,.04));border:1px solid rgba(74,222,128,.18);border-radius:var(--r2);padding:16px;text-align:center;margin-bottom:11px">
         <div style="font-size:11px;color:var(--tx2);margin-bottom:3px">Today total</div>
         <div style="font-family:var(--fh);font-size:36px;font-weight:800;color:var(--gn)">₹4,200</div>
@@ -596,7 +612,7 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
     <div class="mit"><span style="font-size:15px">📍</span><span style="flex:1">GPS & tracking</span><span style="color:var(--tx3)">›</span></div>
     <div class="mit"><span style="font-size:15px">🏦</span><span style="flex:1">Bank account</span><span style="color:var(--tx3)">›</span></div>
     <div class="mit" onclick="doLogout()"><span style="font-size:15px">🚪</span><span style="flex:1">Sign out</span><span style="color:var(--tx3)">›</span></div>
-    <div style="padding:13px;text-align:center;font-size:11px;color:var(--tx3)">MechPro v5 · All 16 bugs fixed · Real-time Firebase</div>
+    <div style="padding:13px;text-align:center;font-size:11px;color:var(--tx3)">MechPro v6 · All bugs fixed · Firebase live</div>
   </div>
   <div class="bnav">
     <div class="bn" onclick="go('m-home')"><div class="bn-i">🏠</div><div class="bn-l">Home</div></div>
@@ -607,31 +623,8 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 </div>
 
 <script>
-var stk=['m-login'],cur='m-login';
-function go(id){
-  var o=document.getElementById(cur),n=document.getElementById(id);
-  if(!n)return;
-  o.classList.remove('on');n.classList.add('on');
-  stk.push(id);cur=id;
-  var sb=n.querySelector('.sb');if(sb)sb.scrollTop=0;
-  // Re-populate gig detail every time gig screen opens (fixes Loading... bug)
-  if(id==='m-gig'&&typeof currentJob!=='undefined'&&currentJob){
-    repopulateGig();
-  }
-}
-function repopulateGig(){
-  if(!currentJob)return;
-  tx('gig-issue',currentJob.issue||'—');
-  tx('gig-loc','📍 '+(currentJob.location||'—'));
-  tx('gig-price','₹'+(currentJob.estimateLow||'—')+'–'+(currentJob.estimateHigh||'—'));
-  tx('gig-cust',currentJob.customerName||'—');
-  tx('gig-cph',currentJob.customerPhone||'—');
-  var vstr=currentJob.vehicle||((currentJob.vehicleMake||'')+' '+(currentJob.vehicleModel||'')+' '+(currentJob.vehicleYear||'')+' '+(currentJob.vehicleFuel||'')).trim();
-  tx('gig-veh',vstr||'Not specified');
-  tx('gig-parts',currentJob.partType||'OEM');
-  tx('gig-cats',currentJob.categories||'General');
-  tx('gig-ai',currentJob.aiConfidence?'AI: '+currentJob.aiConfidence:'—');
-}
+var stk=['m-loading'],cur='m-loading';
+function go(id){var o=document.getElementById(cur),n=document.getElementById(id);if(!n)return;o.classList.remove('on');n.classList.add('on');stk.push(id);cur=id;var sb=n.querySelector('.sb');if(sb)sb.scrollTop=0;if(id==='m-gig'){const j=getCurrentJob();if(j)populateGig(getJobId()||'',j);}}
 function back(){if(stk.length<2)return;stk.pop();var p=stk[stk.length-1];document.getElementById(cur).classList.remove('on');document.getElementById(p).classList.add('on');cur=p;}
 function chk(r){var i=r.querySelector('[style*="width:20px"]');if(i&&i.textContent.trim()==='⬜')i.textContent='✅';}
 function ge(id){return document.getElementById(id);}

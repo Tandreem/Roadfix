@@ -21,7 +21,7 @@ function getCurrentJob(){try{return JSON.parse(localStorage.getItem('mrf_job')||
 function setCurrentJob(j){if(j)localStorage.setItem('mrf_job',JSON.stringify(j));else localStorage.removeItem('mrf_job');}
 
 // FIX 4: start on loading screen
-onAuthStateChanged(auth,user=>{
+/*onAuthStateChanged(auth,user=>{
   if(user){
     uid=user.uid;
     // FIX 4+8: realtime profile listener — handles verification redirect instantly
@@ -43,7 +43,8 @@ onAuthStateChanged(auth,user=>{
     uid=null;profile=null;go('m-login');
   }
 });
-
+*/
+  go('m-home');
 function applyProfile(p){
   const ini=(p.name||'M').split(' ').map(w=>w[0]).join('').substr(0,2).toUpperCase();
   qsa('.m-ini').forEach(e=>e.textContent=ini);

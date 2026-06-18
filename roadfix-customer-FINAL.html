@@ -21,6 +21,10 @@ function setJobId(id){if(id)localStorage.setItem('rf_jobId',id);else localStorag
 
 // ── FIX 4: AUTH — show loading screen first, never flash login ──
 // Page starts on s-loading, auth resolves before showing anything
+// Load saved Gemini key
+window._geminiKey = localStorage.getItem('rf_gemini_key')||'';
+setTimeout(()=>{const inp=document.getElementById('gemini-key-inp');if(inp&&window._geminiKey)inp.value=window._geminiKey;},1000);
+
 onAuthStateChanged(auth,user=>{
   if(user){
     uid=user.uid;
@@ -173,28 +177,57 @@ window.startAI=()=>{
   runAI(selVeh,gv('ptxt')||'Vehicle problem',cats.length?cats.join(', '):'General');
 };
 async function runAI(veh,issue,catStr){
-  const prompt=`You are a vehicle mechanic AI. Analyse this car fault. You MUST return ONLY a raw JSON object. No markdown. No backticks. No explanation. Just the JSON.
+  const GEMINI_KEY = window._geminiKey || '';
+  const prompt=`You are a vehicle mechanic AI. Return ONLY a raw JSON object, no markdown, no backticks.
 Vehicle: ${veh.make} ${veh.model} ${veh.year} ${veh.fuel}
 Problem: ${issue}
 Categories: ${catStr}
-Return this exact JSON structure:
-{"faults":[{"name":"fault name","pct":87,"desc":"description","col":"bl"},{"name":"fault name","pct":61,"desc":"description","col":"yw"},{"name":"fault name","pct":44,"desc":"description","col":"rd"}],"warn":"safety warning or empty string","parts":"parts list","low":1200,"high":1800,"severity":"high"}`;
+JSON only:
+{"faults":[{"name":"fault name","pct":87,"desc":"one line description","col":"bl"},{"name":"fault name","pct":61,"desc":"one line description","col":"yw"},{"name":"fault name","pct":44,"desc":"one line description","col":"rd"}],"warn":"safety warning or empty","parts":"parts list","low":1200,"high":1800,"severity":"high"}`;
+
+  if(!GEMINI_KEY||GEMINI_KEY.length<10){
+    console.warn('No valid Gemini key — using smart fallback');
+    showAISmartFallback(veh,issue,catStr);return;
+  }
+
   try{
-    const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=AQ.Ab8RN6KDQDgC0AeiJZ3BKc9I2Y866ZEdwV5ERLDZ_iScfuRtKA',{
+    const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key='+GEMINI_KEY,{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.1}})
+      body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.1,maxOutputTokens:400}})
     });
+    if(!r.ok){console.error('Gemini HTTP error:',r.status);showAISmartFallback(veh,issue,catStr);return;}
     const d=await r.json();
-    if(!d.candidates){console.error('Gemini error:',JSON.stringify(d));showAIFallback();return;}
+    if(!d.candidates||!d.candidates[0]){console.error('No candidates:',JSON.stringify(d));showAISmartFallback(veh,issue,catStr);return;}
     let raw=d.candidates[0].content.parts[0].text||'';
-    // FIX 2: Strip ALL markdown/backtick wrappers Gemini might add
-    raw=raw.replace(/^```json\s*/i,'').replace(/^```\s*/,'').replace(/\s*```$/,'').trim();
-    // Extract just the JSON object if there's extra text
+    raw=raw.replace(/```json\n?/gi,'').replace(/```\n?/gi,'').trim();
     const m=raw.match(/\{[\s\S]*\}/);
     let a=null;
-    try{a=JSON.parse(m?m[0]:raw);}catch(e){console.error('Parse error:',raw);a=null;}
-    if(a&&a.faults)showAI(a);else showAIFallback();
-  }catch(e){console.error('Fetch error:',e);showAIFallback();}
+    try{a=JSON.parse(m?m[0]:raw);}catch(e){a=null;}
+    if(a&&a.faults)showAI(a);else showAISmartFallback(veh,issue,catStr);
+  }catch(e){console.error('Gemini fetch error:',e);showAISmartFallback(veh,issue,catStr);}
+}
+
+// Smart fallback that uses vehicle + issue to give relevant diagnosis
+function showAISmartFallback(veh,issue,catStr){
+  const issLow=(issue||'').toLowerCase();
+  let faults,parts,warn='';
+  if(issLow.includes('brake')||issLow.includes('stop')||(catStr||'').includes('Brakes')){
+    faults=[{name:'Brake pad worn',pct:91,desc:'Grinding/squealing sound. Pads need replacement.',col:'rd'},{name:'Brake disc damage',pct:67,desc:'Vibration under braking. Disc warping.',col:'yw'},{name:'Brake fluid low',pct:42,desc:'Soft brake pedal. Fluid level check needed.',col:'bl'}];
+    parts='Brake pads, brake disc, brake fluid';warn='Unsafe to drive. Stop immediately and get help.';
+  }else if(issLow.includes('battery')||issLow.includes('start')||issLow.includes('crank')||(catStr||'').includes('Battery')){
+    faults=[{name:'Battery dead/weak',pct:89,desc:'Car not starting. Battery charge depleted.',col:'rd'},{name:'Alternator fault',pct:58,desc:'Battery not charging while driving.',col:'yw'},{name:'Starter motor',pct:38,desc:'Clicking sound when starting.',col:'bl'}];
+    parts='Battery, jumper cables, alternator belt';warn='';
+  }else if(issLow.includes('tyre')||issLow.includes('tire')||issLow.includes('flat')||(catStr||'').includes('Tyres')){
+    faults=[{name:'Puncture/flat tyre',pct:94,desc:'Loss of air pressure. Nail or sharp object.',col:'rd'},{name:'Tyre sidewall damage',pct:52,desc:'Bulge visible on tyre sidewall.',col:'yw'},{name:'Valve stem leak',pct:35,desc:'Slow leak from valve.',col:'bl'}];
+    parts='Spare tyre, puncture repair kit, tyre inflator';warn='Do not drive on a flat tyre. Risk of rim damage.';
+  }else if(issLow.includes('engine')||issLow.includes('overheat')||issLow.includes('smoke')){
+    faults=[{name:'Coolant leak',pct:82,desc:'Engine overheating. Coolant level low.',col:'rd'},{name:'Radiator blockage',pct:61,desc:'Coolant not circulating properly.',col:'yw'},{name:'Head gasket issue',pct:44,desc:'White smoke from exhaust.',col:'bl'}];
+    parts='Coolant, radiator hose, thermostat';warn='Stop engine immediately. Risk of serious damage.';
+  }else{
+    faults=[{name:'CV joint wear',pct:79,desc:'Clunking on turns. CV boot may be torn.',col:'bl'},{name:'Wheel bearing',pct:58,desc:'Humming noise at speed, changes on turns.',col:'yw'},{name:'Suspension component',pct:41,desc:'Knocking over bumps. Check ball joints.',col:'rd'}];
+    parts='CV axle, wheel bearing, suspension kit';warn='Check at low speed only. Unsafe for highway.';
+  }
+  showAI({faults,warn,parts,low:800,high:2200,severity:'high'});
 }
 function showAIFallback(){
   showAI({faults:[{name:'CV joint wear',pct:87,desc:'Clunking sound on turns. CV joint degradation.',col:'bl'},{name:'Wheel bearing',pct:61,desc:'Humming noise above 70kmph.',col:'yw'},{name:'Brake caliper',pct:44,desc:'Pulling to one side under braking.',col:'rd'}],warn:'Unsafe at highway speed. Get help immediately.',parts:'CV axle, boot grease, circlip set',low:1200,high:1800,severity:'high'});
@@ -568,6 +601,10 @@ img#photo-prev{display:none;width:100%;border-radius:var(--r);margin-top:7px;max
         <div class="cat" onclick="togCat(this,'Fuel')">⛽ Fuel</div>
       </div>
       <button class="btn b-or" onclick="startAI()">🤖 AI Analysis →</button>
+      <div style="margin-top:8px;background:var(--bg3);border-radius:var(--r);padding:8px 11px;display:flex;gap:7px;align-items:center">
+        <div style="font-size:11px;color:var(--tx3);white-space:nowrap">Gemini key:</div>
+        <input id="gemini-key-inp" type="text" placeholder="AIzaSy... (paste your key)" style="flex:1;background:transparent;border:none;color:var(--tx);font-size:11px;outline:none;font-family:monospace" onchange="window._geminiKey=this.value.trim();localStorage.setItem('rf_gemini_key',this.value.trim());toast('✅ Key saved')">
+      </div>
     </div>
   </div>
   <div class="bnav">

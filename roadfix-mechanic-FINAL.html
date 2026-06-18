@@ -21,7 +21,7 @@ function getCurrentJob(){try{return JSON.parse(localStorage.getItem('mrf_job')||
 function setCurrentJob(j){if(j)localStorage.setItem('mrf_job',JSON.stringify(j));else localStorage.removeItem('mrf_job');}
 
 // FIX 4: start on loading screen
-/*onAuthStateChanged(auth,user=>{
+onAuthStateChanged(auth,user=>{
   if(user){
     uid=user.uid;
     // FIX 4+8: realtime profile listener — handles verification redirect instantly
@@ -43,8 +43,7 @@ function setCurrentJob(j){if(j)localStorage.setItem('mrf_job',JSON.stringify(j))
     uid=null;profile=null;go('m-login');
   }
 });
-*/
-  go('m-home');
+
 function applyProfile(p){
   const ini=(p.name||'M').split(' ').map(w=>w[0]).join('').substr(0,2).toUpperCase();
   qsa('.m-ini').forEach(e=>e.textContent=ini);
@@ -135,12 +134,15 @@ function startListeners(){
 }
 
 function showGigBanner(id,job){
+  // Store pending gig ID so acceptGig can find it
+  localStorage.setItem('mrf_pendingGigId', id);
   const pv=ge('gig-prev');if(pv)pv.style.display='block';
   tx('gig-prev-title','🔔 New job — '+(job.issue||'Repair'));
   tx('gig-prev-price','₹'+(job.estimateLow||'—')+'–'+(job.estimateHigh||'—'));
   const nb=ge('gig-badge');if(nb)nb.style.display='block';
 }
 function hideGigBanner(){
+  localStorage.removeItem('mrf_pendingGigId');
   const pv=ge('gig-prev');if(pv)pv.style.display='none';
   const nb=ge('gig-badge');if(nb)nb.style.display='none';
 }
@@ -159,24 +161,38 @@ function populateGig(id,job){
 
 // ── ACCEPT GIG (atomic lock) ──────────────────────────
 window.acceptGig=()=>{
-  const jid=getJobId()||Object.keys(JSON.parse(localStorage.getItem('mrf_job')||'{}')).find(k=>k==='id');
-  // Get jobId from banner data
-  const banner=ge('gig-prev');
-  if(!banner||banner.style.display==='none'){toast('No gig available');return;}
-  // Find current searching job
-  get(ref(db,'jobs')).then(snap=>{
-    const all=snap.val()||{};
-    const entry=Object.entries(all).find(([id,j])=>j.status==='searching_mechanic'&&!j.mechanicId);
-    if(!entry){toast('Job no longer available');hideGigBanner();shownGig=false;return;}
-    const [id,job]=entry;
-    const p=profile||{};
-    // Lock it
-    update(ref(db,'jobs/'+id),{status:'mechanic_assigned',mechanic:p.name,mechanicId:uid,mechanicPhone:p.phone||'—',updatedAt:Date.now()});
-    setTimeout(()=>update(ref(db,'jobs/'+id),{status:'enroute'}),1500);
-    update(ref(db,'mechanics/'+uid),{status:'enroute',activeJob:id,eta:4});
-    setJobId(id);setCurrentJob(job);
+  // Get the pending gig ID stored when banner was shown
+  const pendingId = localStorage.getItem('mrf_pendingGigId');
+  if(!pendingId){toast('No gig available');return;}
+  const p=profile||{};
+  if(!p.name){toast('Profile not loaded yet, try again');return;}
+  // Atomic lock — read first, then write
+  get(ref(db,'jobs/'+pendingId)).then(snap=>{
+    const job=snap.val();
+    if(!job){toast('Job no longer exists');hideGigBanner();shownGig=false;localStorage.removeItem('mrf_pendingGigId');return;}
+    if(job.status!=='searching_mechanic'||job.mechanicId){
+      toast('⚠️ Job already taken by another mechanic');
+      hideGigBanner();shownGig=false;localStorage.removeItem('mrf_pendingGigId');return;
+    }
+    // Lock to this mechanic
+    update(ref(db,'jobs/'+pendingId),{
+      status:'mechanic_assigned',
+      mechanic:p.name,
+      mechanicId:uid,
+      mechanicPhone:p.phone||'—',
+      updatedAt:Date.now()
+    });
+    // Set enroute after brief delay
+    setTimeout(()=>{
+      update(ref(db,'jobs/'+pendingId),{status:'enroute'});
+      update(ref(db,'mechanics/'+uid),{status:'enroute',activeJob:pendingId,eta:4});
+    },500);
+    setJobId(pendingId);
+    setCurrentJob(job);
+    localStorage.removeItem('mrf_pendingGigId');
     tx('active-job',job.issue||'Active job');
     hideGigBanner();
+    shownGig=false;
     toast('✅ Gig accepted! Navigate to customer.');
     go('m-nav');
   });
@@ -625,7 +641,25 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 
 <script>
 var stk=['m-loading'],cur='m-loading';
-function go(id){var o=document.getElementById(cur),n=document.getElementById(id);if(!n)return;o.classList.remove('on');n.classList.add('on');stk.push(id);cur=id;var sb=n.querySelector('.sb');if(sb)sb.scrollTop=0;if(id==='m-gig'){const j=getCurrentJob();if(j)populateGig(getJobId()||'',j);}}
+function go(id){
+  var o=document.getElementById(cur),n=document.getElementById(id);
+  if(!n)return;
+  o.classList.remove('on');n.classList.add('on');
+  stk.push(id);cur=id;
+  var sb=n.querySelector('.sb');if(sb)sb.scrollTop=0;
+  if(id==='m-gig'){
+    // Repopulate gig detail from Firebase when screen opens
+    const pendingId=localStorage.getItem('mrf_pendingGigId');
+    const activeId=getJobId();
+    const useId=pendingId||activeId;
+    if(useId){
+      get(ref(db,'jobs/'+useId)).then(snap=>{
+        const j=snap.val();
+        if(j)populateGig(useId,j);
+      });
+    }
+  }
+}
 function back(){if(stk.length<2)return;stk.pop();var p=stk[stk.length-1];document.getElementById(cur).classList.remove('on');document.getElementById(p).classList.add('on');cur=p;}
 function chk(r){var i=r.querySelector('[style*="width:20px"]');if(i&&i.textContent.trim()==='⬜')i.textContent='✅';}
 function ge(id){return document.getElementById(id);}

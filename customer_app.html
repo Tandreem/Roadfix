@@ -1,0 +1,1093 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>RoadFix — Customer</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
+<script src="config.js"></script>
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<script type="module">
+import{initializeApp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import{getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,onAuthStateChanged}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import{getDatabase,ref,set,push,onValue,update,get}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+import{getFunctions,httpsCallable}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-functions.js";
+import{getAppCheck,ReCaptchaV3Provider}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app-check.js";
+import{getStorage,ref as sref,uploadString,getDownloadURL}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
+// FIX #1: config is injected by the build step (see /config.js loaded before this
+// script, generated from environment variables) — never hardcode keys here.
+const app=initializeApp(window.__RF_FIREBASE_CONFIG__);
+const auth=getAuth(app),db=getDatabase(app),fns=getFunctions(app),storage=getStorage(app);
+// FIX #1: App Check so the DB rejects requests without a valid attested client.
+if(window.__RF_RECAPTCHA_SITE_KEY__){
+  try{getAppCheck(app,{provider:new ReCaptchaV3Provider(window.__RF_RECAPTCHA_SITE_KEY__),isTokenAutoRefreshEnabled:true});}catch(e){console.warn('AppCheck init failed',e);}
+}
+const diagnoseVehicleFn=httpsCallable(fns,'diagnoseVehicle');
+
+// FIX #37: connection-status banner — shows when Firebase realtime
+// listeners disconnect, so the user isn't silently looking at stale data.
+onValue(ref(db,'.info/connected'),snap=>{
+  const connected=snap.val()===true;
+  let bar=document.getElementById('rf-offline-bar');
+  if(!bar){
+    bar=document.createElement('div');
+    bar.id='rf-offline-bar';
+    bar.style.cssText='position:fixed;top:0;left:0;right:0;z-index:10000;background:var(--rd);color:#fff;text-align:center;font-size:12px;font-weight:600;padding:6px 10px;display:none;max-width:430px;margin:0 auto';
+    bar.textContent='⚠️ Reconnecting… some info may be out of date';
+    document.body.appendChild(bar);
+  }
+  bar.style.display=connected?'none':'block';
+});
+
+// ── STATE ─────────────────────────────────────────────
+let uid=null,profile=null,selVeh=null,selPT='OEM',selPD='Company outlet';
+let cats=[],chatUnsub=null,bookedMechPhone='',bookedMechId='';
+// FIX 5: jobId persisted in localStorage so it survives refresh/background
+function getJobId(){return localStorage.getItem('rf_jobId')||null;}
+function setJobId(id){if(id)localStorage.setItem('rf_jobId',id);else localStorage.removeItem('rf_jobId');}
+
+// ── FIX 4: AUTH — show loading screen first, never flash login ──
+// Page starts on s-loading, auth resolves before showing anything
+// Load saved Gemini key
+// FIX #3: no client-side Gemini key anymore — AI calls go through diagnoseVehicleFn
+
+onAuthStateChanged(auth,user=>{
+  if(user){
+    uid=user.uid;
+    // Live profile listener
+    onValue(ref(db,'customers/'+uid),snap=>{
+      const p=snap.val();if(!p)return;
+      profile=p;
+      qsa('.c-name').forEach(e=>e.textContent=p.name||'');
+      qsa('.c-first').forEach(e=>e.textContent='Hi, '+(p.name||'there').split(' ')[0]+' 👋');
+      qsa('.c-phone').forEach(e=>e.textContent=(p.phone||'')+(p.city?' · '+p.city:''));
+      const ini=(p.name||'C').split(' ').map(w=>w[0]).join('').substr(0,2).toUpperCase();
+      qsa('.c-ini').forEach(e=>e.textContent=ini);
+      if(p.pfp){qsa('.c-pfp').forEach(e=>{e.src=p.pfp;e.style.display='block';});qsa('.c-ini').forEach(e=>e.style.display='none');}
+    });
+    // Live mechanics
+    onValue(ref(db,'mechanics'),snap=>{
+      const all=snap.val()||{};
+      buildMechList(all);
+      tx('lf-mechs',Object.values(all).filter(m=>m.verified&&(m.status==='online'||m.status==='enroute')).length+' online');
+    });
+    // FIX 5: Live job watcher — restores active job on re-open
+    onValue(ref(db,'jobs'),snap=>{
+      const all=snap.val()||{};
+      const active=Object.values(all).filter(j=>j.status&&j.status!=='done').length;
+      tx('lf-jobs',String(active));
+      // FIX 5: find MY active job (by customerId) and restore state
+      const myJob=Object.values(all).find(j=>j.customerId===uid&&j.status!=='done'&&j.status!=='cancelled');
+      if(myJob){
+        if(!getJobId()) setJobId(myJob.id);
+        const L={pending:'Pending',searching_mechanic:'Searching mechanic...',mechanic_assigned:(myJob.mechanic||'?')+' accepted ✅',enroute:'Mechanic en route 🛵',fixing:'Being fixed 🔧',cancelled:'Cancelled',done:'Done ✓'};
+        tx('lf-status',L[myJob.status]||myJob.status);
+        // FIX 5: if mechanic accepted and user is on waiting/mechs screen, auto-go to tracking
+        if((myJob.status==='mechanic_assigned'||myJob.status==='enroute')&&myJob.mechanic){
+          bookedMechPhone=myJob.mechanicPhone||'';
+          bookedMechId=myJob.mechanicId||'';
+          tx('track-mech',myJob.mechanic);
+          updateCallButtonState();
+          watchUnreadChat(myJob.id);
+          if(myJob.mechanicId){
+            get(ref(db,'mechanics/'+myJob.mechanicId)).then(s=>{
+              const m=s.val();
+              if(m&&m.pfp){const img=ge('track-pfp');if(img){img.src=m.pfp;img.style.display='block';ge('track-ini').style.display='none';}}
+              else tx('track-ini',(myJob.mechanic||'M').substr(0,2).toUpperCase());
+            });
+          }
+          if(cur==='s-waiting'||cur==='s-mechs'){
+            toast('✅ '+myJob.mechanic+' accepted your job!');
+            go('s-tracking');
+          }
+          // FIX 5: if user re-opened app mid-job, take them to tracking
+          if(cur==='s-home'&&myJob.status==='enroute'){
+            go('s-tracking');
+          }
+          renderTrackingMap(myJob);
+        }
+        // FIX #7/#9/#18: job completion + pricing is handled exclusively by
+        // the finalizeJobIfComplete Cloud Function once both customer_done
+        // and mechanic_done are true. The client must NOT set status:'done'
+        // itself — doing so here would let a customer skip payment entirely
+        // by marking done before the s-pay screen runs.
+      } else {
+        tx('lf-status','None active');
+      }
+    });
+    if(navigator.geolocation)navigator.geolocation.getCurrentPosition(p=>{window._lat=p.coords.latitude;window._lng=p.coords.longitude;},()=>{},{enableHighAccuracy:true,timeout:7000});
+    go('s-home');
+  } else {
+    uid=null;profile=null;
+    go('s-login');
+  }
+});
+
+// ── REGISTER ─────────────────────────────────────────
+function isValidEmail(e){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);}
+function isValidPhone(p){return /^[0-9+()\-\s]{7,15}$/.test(p);}
+const FRIENDLY_AUTH_ERRORS={
+  'auth/email-already-in-use':'An account with this email already exists. Try logging in instead.',
+  'auth/invalid-email':'That email address looks invalid.',
+  'auth/weak-password':'Password is too weak — use at least 6 characters.',
+  'auth/user-not-found':'No account found with that email.',
+  'auth/wrong-password':'Incorrect password.',
+  'auth/invalid-credential':'Invalid email or password.',
+  'auth/too-many-requests':'Too many attempts. Please wait a moment and try again.',
+  'auth/network-request-failed':'Network error — check your connection.'
+};
+function friendlyAuthError(e){
+  const code=(e&&e.code)||'';
+  return FRIENDLY_AUTH_ERRORS[code]||'Something went wrong. Please try again.';
+}
+window.doReg=async()=>{
+  const n=gv('rn'),ph=gv('rph'),ci=gv('rci'),em=gv('rem'),pw=gv('rpw');
+  const err=ge('r-err');
+  if(!n||!ph||!em||!pw){err.textContent='Fill all fields';return;}
+  if(!isValidEmail(em)){err.textContent='Please enter a valid email address';return;}
+  if(!isValidPhone(ph)){err.textContent='Please enter a valid phone number';return;}
+  if(pw.length<6){err.textContent='Password must be at least 6 characters';return;}
+  err.textContent='Creating account...';
+  try{
+    const c=await createUserWithEmailAndPassword(auth,em,pw);
+    const pfpF=ge('r-pfp').files[0];
+    let pfp='';
+    if(pfpF){
+      const path='customers/'+c.user.uid+'/profile.jpg';
+      const b64data=await b64(pfpF);
+      await uploadString(sref(storage,path),b64data,'data_url');
+      pfp=await getDownloadURL(sref(storage,path));
+    }
+    await set(ref(db,'customers/'+c.user.uid),{name:n,phone:ph,city:ci||'',email:em,role:'customer',createdAt:Date.now(),pfp});
+    err.textContent='';
+  }catch(e){err.textContent=friendlyAuthError(e);}
+};
+window.doLogin=async()=>{
+  const em=gv('lem'),pw=gv('lpw');
+  const err=ge('l-err');
+  if(!em||!pw){err.textContent='Enter email and password';return;}
+  if(!isValidEmail(em)){err.textContent='Please enter a valid email address';return;}
+  err.textContent='Signing in...';
+  try{await signInWithEmailAndPassword(auth,em,pw);err.textContent='';}
+  catch(e){err.textContent=friendlyAuthError(e);}
+};
+window.doLogout=()=>{setJobId(null);signOut(auth);};
+
+// ── VEHICLES ─────────────────────────────────────────
+window.initVehicles=()=>{
+  if(!uid)return;
+  onValue(ref(db,'customers/'+uid+'/vehicles'),snap=>{
+    const list=Object.values(snap.val()||{});
+    ['vl1','vl2'].forEach(cid=>{
+      const c=ge(cid);if(!c)return;
+      if(!list.length){c.innerHTML='<div class="ev">No vehicles. Add one below.</div>';return;}
+      c.innerHTML=list.map(v=>`<div class="vc${selVeh&&selVeh.id===v.id?' sel':''}" id="vc-${esc(v.id)}" onclick="pickVeh('${esc(v.id)}','${esc((v.make||'').replace(/'/g,'&apos;'))}','${esc((v.model||'').replace(/'/g,'&apos;'))}','${esc(v.year)}','${esc(v.fuel)}')"><div style="font-size:17px">${fIco(v.fuel)}</div><div style="font-size:11px;font-weight:600">${esc(v.make)} ${esc(v.model)}</div><div style="font-size:10px;color:var(--tx2)">${esc(v.year)}·${esc(v.fuel)}</div></div>`).join('');
+      if(!selVeh&&list[0]){const v=list[0];selVeh={id:v.id,make:v.make,model:v.model,year:v.year,fuel:v.fuel};qsa('#vc-'+v.id).forEach(e=>e.classList.add('sel'));}
+    });
+  });
+};
+window.pickVeh=(id,make,model,year,fuel)=>{
+  selVeh={id,make,model,year,fuel};
+  qsa('.vc').forEach(c=>c.classList.remove('sel'));
+  qsa('#vc-'+id).forEach(c=>c.classList.add('sel'));
+};
+window.addVehicle=async()=>{
+  if(!uid)return;
+  const make=gv('vm'),model=gv('vmo'),year=gv('vy'),fuel=ge('vf').value,reg=gv('vr');
+  if(!make||!model||!year){toast('Fill make, model and year');return;}
+  const yearNum=parseInt(year,10);
+  const currentYear=new Date().getFullYear();
+  if(isNaN(yearNum)||yearNum<1980||yearNum>currentYear+1){toast('Enter a valid vehicle year (1980–'+(currentYear+1)+')');return;}
+  if(reg&&!/^[A-Za-z0-9\- ]{4,12}$/.test(reg)){toast('Enter a valid registration plate');return;}
+  const vid=push(ref(db,'customers/'+uid+'/vehicles')).key;
+  await set(ref(db,'customers/'+uid+'/vehicles/'+vid),{id:vid,make,model,year:yearNum,fuel,reg});
+  toast('✅ Vehicle added');
+  ge('vm').value='';ge('vmo').value='';ge('vy').value='';ge('vr').value='';
+};
+function fIco(f){return{Petrol:'⛽',Diesel:'🛢️',CNG:'💚',Electric:'⚡',Hybrid:'🔋'}[f]||'🚗';}
+
+// ── PHOTO + VOICE ─────────────────────────────────────
+window.doPhoto=()=>{
+  const i=document.createElement('input');i.type='file';i.accept='image/*';i.capture='environment';
+  i.onchange=async e=>{const f=e.target.files[0];if(!f)return;const d=await b64(f);window._photo=d;const pv=ge('photo-prev');if(pv){pv.src=d;pv.style.display='block';}const ta=ge('ptxt');if(ta&&!ta.value)ta.value='[Photo attached] ';toast('📷 Photo attached');};
+  i.click();
+};
+// FIX 3: Voice with proper HTTPS + permission handling
+window.doVoice=async()=>{
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){toast('Use Chrome browser for voice input');return;}
+  if(location.protocol!=='https:'&&location.hostname!=='localhost'){toast('Voice needs HTTPS — use the GitHub Pages link');return;}
+  try{await navigator.mediaDevices.getUserMedia({audio:true});}
+  catch(e){toast('Allow microphone access in browser settings');return;}
+  const sr=new SR();sr.lang='en-IN';sr.continuous=false;sr.interimResults=false;
+  sr.onstart=()=>toast('🎙️ Listening — speak now...');
+  sr.onresult=e=>{const t=e.results[0][0].transcript;const ta=ge('ptxt');if(ta)ta.value=t;toast('🎙️ Captured: '+t.substr(0,25)+'...');};
+  sr.onerror=err=>{
+    const m={blocked:'Allow mic in settings','not-allowed':'Allow mic in settings','no-speech':'Nothing heard, try again','network':'Network error'};
+    toast('🎙️ '+(m[err.error]||'Error: '+err.error));
+  };
+  sr.start();
+};
+
+// ── AI ANALYSIS (FIX 2) ───────────────────────────────
+window.startAI=()=>{
+  if(!selVeh){toast('⚠️ Select a vehicle first!');go('s-addcar');return;}
+  go('s-ai');
+  ge('ai-load').style.display='flex';
+  ge('ai-res').style.display='none';
+  tx('ai-veh-txt','Analysing: '+selVeh.make+' '+selVeh.model+' '+selVeh.year);
+  runAI(selVeh,gv('ptxt')||'Vehicle problem',cats.length?cats.join(', '):'General');
+};
+async function runAI(veh,issue,catStr){
+  try{
+    const res=await diagnoseVehicleFn({vehicle:veh,issue,categories:catStr});
+    const r=res.data;
+    if(r&&r.ok&&r.data&&r.data.faults){showAI(r.data,false);return;}
+    console.warn('AI proxy returned no usable result, reason:',r&&r.reason);
+  }catch(e){
+    console.error('diagnoseVehicle call failed:',e);
+  }
+  showAISmartFallback(veh,issue,catStr);
+}
+
+// Smart fallback that uses vehicle + issue to give relevant diagnosis
+function showAISmartFallback(veh,issue,catStr){
+  const issLow=(issue||'').toLowerCase();
+  let faults,parts,warn='';
+  if(issLow.includes('brake')||issLow.includes('stop')||(catStr||'').includes('Brakes')){
+    faults=[{name:'Brake pad worn',pct:91,desc:'Grinding/squealing sound. Pads need replacement.',col:'rd'},{name:'Brake disc damage',pct:67,desc:'Vibration under braking. Disc warping.',col:'yw'},{name:'Brake fluid low',pct:42,desc:'Soft brake pedal. Fluid level check needed.',col:'bl'}];
+    parts='Brake pads, brake disc, brake fluid';warn='Unsafe to drive. Stop immediately and get help.';
+  }else if(issLow.includes('battery')||issLow.includes('start')||issLow.includes('crank')||(catStr||'').includes('Battery')){
+    faults=[{name:'Battery dead/weak',pct:89,desc:'Car not starting. Battery charge depleted.',col:'rd'},{name:'Alternator fault',pct:58,desc:'Battery not charging while driving.',col:'yw'},{name:'Starter motor',pct:38,desc:'Clicking sound when starting.',col:'bl'}];
+    parts='Battery, jumper cables, alternator belt';warn='';
+  }else if(issLow.includes('tyre')||issLow.includes('tire')||issLow.includes('flat')||(catStr||'').includes('Tyres')){
+    faults=[{name:'Puncture/flat tyre',pct:94,desc:'Loss of air pressure. Nail or sharp object.',col:'rd'},{name:'Tyre sidewall damage',pct:52,desc:'Bulge visible on tyre sidewall.',col:'yw'},{name:'Valve stem leak',pct:35,desc:'Slow leak from valve.',col:'bl'}];
+    parts='Spare tyre, puncture repair kit, tyre inflator';warn='Do not drive on a flat tyre. Risk of rim damage.';
+  }else if(issLow.includes('engine')||issLow.includes('overheat')||issLow.includes('smoke')){
+    faults=[{name:'Coolant leak',pct:82,desc:'Engine overheating. Coolant level low.',col:'rd'},{name:'Radiator blockage',pct:61,desc:'Coolant not circulating properly.',col:'yw'},{name:'Head gasket issue',pct:44,desc:'White smoke from exhaust.',col:'bl'}];
+    parts='Coolant, radiator hose, thermostat';warn='Stop engine immediately. Risk of serious damage.';
+  }else{
+    faults=[{name:'CV joint wear',pct:79,desc:'Clunking on turns. CV boot may be torn.',col:'bl'},{name:'Wheel bearing',pct:58,desc:'Humming noise at speed, changes on turns.',col:'yw'},{name:'Suspension component',pct:41,desc:'Knocking over bumps. Check ball joints.',col:'rd'}];
+    parts='CV axle, wheel bearing, suspension kit';warn='Check at low speed only. Unsafe for highway.';
+  }
+  showAI({faults,warn,parts,low:800,high:2200,severity:'high'},true);
+}
+function showAIFallback(){
+  showAI({faults:[{name:'CV joint wear',pct:87,desc:'Clunking sound on turns. CV joint degradation.',col:'bl'},{name:'Wheel bearing',pct:61,desc:'Humming noise above 70kmph.',col:'yw'},{name:'Brake caliper',pct:44,desc:'Pulling to one side under braking.',col:'rd'}],warn:'Unsafe at highway speed. Get help immediately.',parts:'CV axle, boot grease, circlip set',low:1200,high:1800,severity:'high'},true);
+}
+function showAI(a,isFallback){
+  ge('ai-load').style.display='none';ge('ai-res').style.display='block';
+  const fbBadge=ge('ai-fallback-badge');
+  if(fbBadge)fbBadge.style.display=isFallback?'flex':'none';
+  // FIX #39: derive fault category from the diagnosis so the parts catalog
+  // shows real, relevant parts instead of always "CV Axle".
+  selFaultCategory=detectFaultCategory(cats.join(', '),gv('ptxt'));
+  const fb=ge('fault-bars');
+  if(fb)fb.innerHTML=a.faults.map(f=>`<div class="fault"><div class="fh2"><span class="fn">${f.name}</span><span class="fp" style="color:var(--${f.col||'bl'})">${f.pct}%</span></div><div class="ft"><div class="fb" style="background:var(--${f.col||'bl'});width:${f.pct}%"></div></div><div style="font-size:11px;color:var(--tx2);margin-top:4px">${f.desc}</div></div>`).join('');
+  if(a.warn){const sw=ge('s-warn');if(sw){sw.textContent=a.warn;sw.closest('.abox').style.display='flex';}}
+  tx('parts-n',a.parts||'—');tx('price-r','₹'+a.low+' – ₹'+a.high);
+  tx('ai-veh-res','For: '+selVeh.make+' '+selVeh.model+' '+selVeh.year+' '+selVeh.fuel);
+  createJob(a);
+}
+function createJob(a){
+  if(!uid){toast('⚠️ You must be signed in to create a job');return;}
+  if(!selVeh){toast('⚠️ Select a vehicle first');go('s-addcar');return;}
+  const p=profile||{};
+  const id=push(ref(db,'jobs')).key;
+  setJobId(id);
+  const job={id,customerId:uid,customerName:p.name||'Customer',customerPhone:p.phone||'—',
+    issue:gv('ptxt')||'Vehicle repair',categories:cats.join(', '),
+    vehicle:selVeh.make+' '+selVeh.model+' '+selVeh.year+' '+selVeh.fuel,
+    vehicleMake:selVeh.make,vehicleModel:selVeh.model,vehicleYear:selVeh.year,vehicleFuel:selVeh.fuel,
+    estimateLow:a.low,estimateHigh:a.high,status:'pending',mechanic:null,mechanicId:null,
+    partType:selPT,createdAt:Date.now(),location:p.city||''};
+  if(window._lat){job.lat=window._lat;job.lng=window._lng;}
+  window._lastEstimate={low:a.low,high:a.high};
+  set(ref(db,'jobs/'+id),job);
+  tx('job-id',id);
+}
+
+// ── SOS ───────────────────────────────────────────────
+window.doSOS=()=>{
+  if(!uid){toast('Sign in first');return;}
+  const p=profile||{};
+  const sos={type:'customer_sos',uid,name:p.name||'Customer',phone:p.phone||'—',location:'Getting GPS...',time:Date.now(),status:'active',app:'customer'};
+  if(navigator.geolocation){
+    navigator.geolocation.getCurrentPosition(pos=>{
+      sos.location=pos.coords.latitude.toFixed(5)+'°N, '+pos.coords.longitude.toFixed(5)+'°E';
+      sos.lat=pos.coords.latitude;sos.lng=pos.coords.longitude;
+      sos.mapsLink='https://maps.google.com/?q='+pos.coords.latitude+','+pos.coords.longitude;
+      push(ref(db,'alerts'),sos);tx('sos-loc',sos.location);
+    },()=>push(ref(db,'alerts'),sos),{enableHighAccuracy:true,timeout:6000});
+  }else push(ref(db,'alerts'),sos);
+  ge('sos-ov').style.display='flex';
+};
+
+// ── PARTS & SUBMIT ────────────────────────────────────
+window.submitJob=()=>{
+  const jid=getJobId();
+  if(jid)update(ref(db,'jobs/'+jid),{status:'searching_mechanic',partType:selPT,delivery:selPD,updatedAt:Date.now()});
+  go('s-mechs');
+};
+// FIX #14: RoadFix uses a broadcast model — submitJob() posts the job to ALL
+// verified online mechanics, and whichever one accepts first (via the atomic
+// acceptGig transaction) gets it. Tapping a specific mechanic in the list
+// is a "preferred" nudge only — it does NOT lock the job to that mechanic,
+// since locking would conflict with the broadcast queue. We just record who
+// was nudged for analytics; any mechanic can still accept the job.
+window.bookMech=(mechId,mechName,mechPhone)=>{
+  const jid=getJobId();
+  if(!jid){toast('Complete AI analysis first');return;}
+  bookedMechId=mechId;bookedMechPhone=mechPhone;
+  update(ref(db,'jobs/'+jid),{nudgedMechanic:mechName,nudgedMechanicId:mechId,updatedAt:Date.now()});
+  toast('Request sent to '+mechName+' — first available mechanic will accept...');
+  go('s-waiting');
+};
+let lastSeenChatTime=Number(localStorage.getItem('rf_lastSeenChat')||0);
+let chatUnreadUnsub=null;
+function updateCallButtonState(){
+  const btn=ge('track-call-btn');if(!btn)return;
+  const enabled=!!bookedMechPhone;
+  btn.style.opacity=enabled?'1':'.4';
+  btn.style.pointerEvents=enabled?'auto':'none';
+}
+// FIX #34: unread-message badge — watches the active job's chat and shows
+// a count of messages from the mechanic received after the user last
+// opened the chat screen.
+function watchUnreadChat(jid){
+  if(chatUnreadUnsub)chatUnreadUnsub();
+  if(!jid)return;
+  chatUnreadUnsub=onValue(ref(db,'chats/'+jid),snap=>{
+    const msgs=Object.values(snap.val()||{});
+    const unread=msgs.filter(m=>m.senderId!==uid&&m.time>lastSeenChatTime).length;
+    const badge=ge('chat-unread-badge');
+    if(badge){
+      if(unread>0){badge.textContent=unread>9?'9+':String(unread);badge.style.display='flex';}
+      else badge.style.display='none';
+    }
+  });
+}
+// FIX #33: Call button is disabled (greyed, unclickable) until a mechanic
+// phone number is actually known, instead of being clickable and producing
+// a dead-end "No phone number" toast.
+window.callMech=()=>{if(bookedMechPhone)window.location.href='tel:'+bookedMechPhone.replace(/\s/g,'');else toast('Waiting for mechanic details…');};
+
+// FIX #30: customer can cancel a job that's still searching for a mechanic.
+// This sets status:'cancelled' so the mechanic app's listener stops showing
+// it as an open gig, instead of leaving it stuck in 'searching_mechanic'.
+window.cancelJobRequest=async()=>{
+  const jid=getJobId();
+  if(!jid){toast('No active request to cancel');go('s-home');return;}
+  await update(ref(db,'jobs/'+jid),{status:'cancelled',cancelledAt:Date.now(),cancelledBy:'customer'});
+  setJobId(null);
+  toast('Request cancelled');
+  go('s-home');
+};
+
+// FIX #20: live ETA + map using real customer and mechanic coordinates.
+// Requires window.__RF_MAPS_EMBED_KEY__ (a Google Maps Embed API key,
+// injected via config.js like the Firebase config).
+function renderTrackingMap(job){
+  if(!job.mechanicId)return;
+  get(ref(db,'mechanics/'+job.mechanicId)).then(s=>{
+    const m=s.val();if(!m||!m.lat||!m.lng)return;
+    const custLat=window._lat,custLng=window._lng;
+    if(custLat&&custLng){
+      // Haversine distance (km) -> rough ETA at 25km/h average urban speed
+      const R=6371;
+      const dLat=(custLat-m.lat)*Math.PI/180,dLng=(custLng-m.lng)*Math.PI/180;
+      const a=Math.sin(dLat/2)**2+Math.cos(m.lat*Math.PI/180)*Math.cos(custLat*Math.PI/180)*Math.sin(dLng/2)**2;
+      const distKm=R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+      const etaMin=Math.max(1,Math.round((distKm/25)*60));
+      tx('track-eta',String(etaMin));
+      const frame=ge('track-map-frame');
+      const key=window.__RF_MAPS_EMBED_KEY__;
+      if(frame&&key){
+        frame.src=`https://www.google.com/maps/embed/v1/directions?key=${key}&origin=${m.lat},${m.lng}&destination=${custLat},${custLng}&mode=driving`;
+      }
+    }
+  });
+}
+
+// ── FIX 1: Customer marks job done (both must confirm) ─
+// FIX #7/#18: client no longer computes or writes finalPrice, and no longer
+// races to set status:'done' — the onJobWritten Cloud Function is the single
+// source of truth once both customer_done and mechanic_done are true.
+window.customerJobDone=()=>{
+  const jid=getJobId();if(!jid)return;
+  update(ref(db,'jobs/'+jid),{customer_done:true,updatedAt:Date.now()});
+  get(ref(db,'jobs/'+jid)).then(s=>{
+    const j=s.val();
+    if(!(j&&j.mechanic_done)){
+      toast('Waiting for mechanic to confirm...');
+    }
+  });
+  go('s-pay');
+};
+window.finishJob=()=>{
+  // Payment must succeed before this fires — see processPayment()
+  const jid=getJobId();
+  if(jid)update(ref(db,'jobs/'+jid),{customer_done:true,updatedAt:Date.now()});
+  setJobId(null);go('s-home');
+};
+
+// FIX #9: real payment flow. Requires a backend endpoint that creates a
+// Razorpay order server-side (never create orders client-side, since the
+// amount must be trusted). Add a Cloud Function `createPaymentOrder` that
+// takes {jobId} and returns {orderId, amount, currency, keyId}.
+window.processPayment=async()=>{
+  const jid=getJobId();
+  if(!jid){toast('No active job');return;}
+  const amount=window._payAmount;
+  if(!amount){toast('Price still loading, try again');return;}
+  const btn=ge('pay-btn');if(btn){btn.disabled=true;btn.textContent='Processing payment...';}
+  try{
+    const createOrderFn=httpsCallable(fns,'createPaymentOrder');
+    const orderRes=await createOrderFn({jobId:jid});
+    const order=orderRes.data;
+    if(!order||!order.orderId){throw new Error('Could not create payment order');}
+
+    const options={
+      key:order.keyId,
+      amount:order.amount,
+      currency:order.currency||'INR',
+      order_id:order.orderId,
+      name:'RoadFix',
+      description:'Repair job '+jid,
+      handler:async function(response){
+        // Verify payment server-side before marking the job paid/done.
+        const verifyFn=httpsCallable(fns,'verifyPayment');
+        const verifyRes=await verifyFn({jobId:jid,...response});
+        if(verifyRes.data&&verifyRes.data.ok){
+          finishJob();
+        }else{
+          toast('Payment could not be verified. Contact support.');
+          if(btn){btn.disabled=false;btn.textContent='Retry payment';}
+        }
+      },
+      modal:{ondismiss:function(){if(btn){btn.disabled=false;btn.textContent='Pay ₹'+amount.toLocaleString('en-IN')+' & Complete →';}}}
+    };
+    if(!window.Razorpay){toast('Payment SDK not loaded — check your network');if(btn)btn.disabled=false;return;}
+    const rzp=new window.Razorpay(options);
+    rzp.open();
+  }catch(e){
+    console.error('Payment error:',e);
+    toast('Payment failed to start. Please try again.');
+    if(btn){btn.disabled=false;btn.textContent='Pay ₹'+amount.toLocaleString('en-IN')+' & Complete →';}
+  }
+};
+
+// ── CHAT (FIX 3) ──────────────────────────────────────
+window.openChat=()=>{
+  const jid=getJobId();
+  if(!jid){toast('No active job to chat in');return;}
+  go('s-chat');
+  lastSeenChatTime=Date.now();
+  localStorage.setItem('rf_lastSeenChat',String(lastSeenChatTime));
+  const badge=ge('chat-unread-badge');if(badge)badge.style.display='none';
+  if(chatUnsub)chatUnsub();
+  // FIX 3: listen on /chats/jobId — same path mechanic uses
+  chatUnsub=onValue(ref(db,'chats/'+jid),snap=>{
+    const box=ge('chat-box');if(!box)return;
+    const msgs=Object.values(snap.val()||{}).sort((a,b)=>a.time-b.time);
+    box.innerHTML=msgs.map(m=>{
+      const mine=m.senderId===uid;
+      return `<div style="display:flex;justify-content:${mine?'flex-end':'flex-start'};margin-bottom:8px">
+        <div style="max-width:78%;background:${mine?'var(--or)':'var(--card)'};color:${mine?'#fff':'var(--tx)'};border-radius:${mine?'14px 14px 4px 14px':'14px 14px 14px 4px'};padding:9px 12px;font-size:13px;line-height:1.4">
+          <div style="font-size:10px;opacity:.6;margin-bottom:3px">${mine?'You':esc(m.senderName||'Mechanic')}</div>
+          ${esc(m.text)}
+          <div style="font-size:9px;opacity:.5;margin-top:3px;text-align:right">${new Date(m.time).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div>
+        </div>
+      </div>`;
+    }).join('');
+    box.scrollTop=box.scrollHeight;
+  });
+};
+window.sendMsg=()=>{
+  const inp=ge('chat-inp');const jid=getJobId();
+  if(!inp||!inp.value.trim()||!jid)return;
+  push(ref(db,'chats/'+jid),{senderId:uid,senderName:(profile&&profile.name)||'Customer',senderRole:'customer',text:inp.value.trim(),time:Date.now()});
+  inp.value='';
+};
+
+// ── MECHANIC LIST ─────────────────────────────────────
+// FIX #38: sort/show mechanics by actual distance from the customer's
+// current GPS location instead of arbitrary object order.
+function haversineKm(lat1,lng1,lat2,lng2){
+  const R=6371;
+  const dLat=(lat2-lat1)*Math.PI/180,dLng=(lng2-lng1)*Math.PI/180;
+  const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+function buildMechList(all){
+  const list=ge('mech-list');if(!list)return;
+  let verified;
+  if(window._lat&&window._lng){
+    verified=Object.entries(all).filter(([id,m])=>m.verified&&m.status==='online')
+      .map(([id,m])=>({id,m,dist:(m.lat&&m.lng)?haversineKm(window._lat,window._lng,m.lat,m.lng):Infinity}))
+      .sort((a,b)=>a.dist-b.dist);
+  }else{
+    verified=Object.entries(all).filter(([id,m])=>m.verified&&m.status==='online').map(([id,m])=>({id,m,dist:null}));
+  }
+  if(!verified.length){list.innerHTML='<div style="text-align:center;color:var(--tx3);padding:18px;font-size:12px">No verified mechanics online. Try again shortly.</div>';return;}
+  list.innerHTML=verified.map(({id,m,dist})=>{
+    const ini=(m.name||'M').split(' ').map(w=>w[0]).join('').substr(0,2).toUpperCase();
+    const avi=m.pfp?`<img src="${esc(m.pfp)}" style="width:40px;height:40px;border-radius:50%;object-fit:cover;flex-shrink:0">`:`<div style="width:40px;height:40px;border-radius:50%;background:#1D4ED8;color:#fff;font-family:var(--fh);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${esc(ini)}</div>`;
+    const nm=(m.name||'Mechanic').replace(/'/g,'&apos;');
+    const ph=(m.phone||'').replace(/'/g,'&apos;');
+    const distLabel=(dist!=null&&isFinite(dist))?dist.toFixed(1)+' km away':'GPS ON';
+    const est=window._lastEstimate;
+    const priceLabel=est?('₹'+est.low.toLocaleString('en-IN')+'–'+est.high.toLocaleString('en-IN')):'—';
+    return `<div class="mrow" onclick="bookMech('${esc(id)}','${esc(nm)}','${esc(ph)}')">
+      ${avi}
+      <div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600">${esc(m.name||'Mechanic')} <span class="bdg b-y">⭐${esc(m.rating||5)}</span> <span class="bdg b-g">✅</span></div>
+      <div style="font-size:11px;color:var(--tx2);margin-top:1px">${esc(m.skills||'General')} · ${esc(distLabel)}</div></div>
+      <div style="text-align:right;flex-shrink:0"><div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--or)">${priceLabel}</div>
+      <button class="bk-btn">Request →</button></div>
+    </div>`;
+  }).join('');
+}
+
+// ── HELPERS ───────────────────────────────────────────
+// FIX #39: parts catalog now keyed by fault category (set from the AI
+// diagnosis result), not hardcoded to always show "CV Axle".
+const PARTS_CATALOG={
+  Brakes:{OEM:[{n:'Brake pads OEM',b:'Maruti Genuine',p:1200,d:'Original. Full warranty.'},{n:'Brake disc OEM',b:'Maruti Genuine',p:1800,d:'Original rotor.'}],ODM:[{n:'Brake pads ODM',b:'Brembo aftermarket',p:780,d:'Tier-1, same specs.'}],Generic:[{n:'Brake pads Generic',b:'Local brand',p:420,d:'Budget option.'}]},
+  Battery:{OEM:[{n:'Battery OEM',b:'Exide Genuine',p:5500,d:'Original. 2yr warranty.'}],ODM:[{n:'Battery ODM',b:'Amaron',p:4200,d:'Tier-1 equivalent.'}],Generic:[{n:'Battery Generic',b:'Local brand',p:3000,d:'Budget option.'}]},
+  Tyres:{OEM:[{n:'Tyre OEM',b:'MRF Genuine',p:3500,d:'Original spec.'}],ODM:[{n:'Tyre ODM',b:'CEAT',p:2600,d:'Tier-1 equivalent.'}],Generic:[{n:'Tyre Generic',b:'Local brand',p:1800,d:'Budget option.'}]},
+  Engine:{OEM:[{n:'Coolant + hose OEM',b:'Maruti Genuine',p:1500,d:'Original parts.'}],ODM:[{n:'Coolant + hose ODM',b:'Gates',p:950,d:'Tier-1 equivalent.'}],Generic:[{n:'Coolant + hose Generic',b:'Local brand',p:500,d:'Budget option.'}]},
+  General:{OEM:[{n:'CV Axle OEM',b:'Maruti Genuine',p:1200,d:'Original. Full warranty.'}],ODM:[{n:'CV Axle ODM',b:'Sona BLW',p:780,d:'Tier-1, same specs.'}],Generic:[{n:'CV Axle Generic',b:'Local brand',p:480,d:'Budget option.'}]}
+};
+let selFaultCategory='General';
+const DELIVERY_FEES={'Company outlet':0,'Rapido Parcel':120,'Mechanic own':0,'24x7 shop':80};
+function detectFaultCategory(catStr,issue){
+  const s=((catStr||'')+' '+(issue||'')).toLowerCase();
+  if(s.includes('brake'))return'Brakes';
+  if(s.includes('batt')||s.includes('start')||s.includes('crank'))return'Battery';
+  if(s.includes('tyre')||s.includes('tire')||s.includes('flat'))return'Tyres';
+  if(s.includes('engine')||s.includes('overheat')||s.includes('coolant'))return'Engine';
+  return'General';
+}
+window.selPT2=t=>{
+  selPT=t;
+  ['OEM','ODM','Generic'].forEach(x=>{const e=ge('pt-'+x);if(e)e.classList.toggle('on',x===t);});
+  const c=ge('parts-list');
+  const opts=(PARTS_CATALOG[selFaultCategory]||PARTS_CATALOG.General)[t]||[];
+  if(c)c.innerHTML=opts.map((p,i)=>`<div class="part-card${i===0?' sel':''}" onclick="selPart(${i})" data-price="${p.p}"><div style="display:flex;justify-content:space-between;margin-bottom:2px"><div style="font-size:12px;font-weight:600">${esc(p.n)}</div><div style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--or)">₹${p.p.toLocaleString('en-IN')}</div></div><div style="font-size:10px;color:var(--tx3)">${esc(p.b)}</div><div style="font-size:11px;color:var(--tx2)">${esc(p.d)}</div></div>`).join('');
+  window._selectedPartPrice=opts[0]?opts[0].p:0;
+  const jid=getJobId();if(jid)update(ref(db,'jobs/'+jid),{partType:t,partsPrice:window._selectedPartPrice});
+};
+window.selPart=i=>{
+  qsa('#parts-list .part-card').forEach((el,j)=>el.classList.toggle('sel',j===i));
+  const el=qsa('#parts-list .part-card')[i];
+  window._selectedPartPrice=el?Number(el.dataset.price):0;
+  const jid=getJobId();if(jid)update(ref(db,'jobs/'+jid),{partsPrice:window._selectedPartPrice});
+};
+// FIX #40: delivery method now carries a real fee that's written to the job
+// and folds into the final price calculation server-side.
+window.selPD2=(i,n)=>{
+  selPD=n;
+  [0,1,2,3].forEach(j=>{const e=ge('pd'+j);if(e)e.classList.toggle('sel',j===i);});
+  const fee=DELIVERY_FEES[n]||0;
+  const jid=getJobId();if(jid)update(ref(db,'jobs/'+jid),{delivery:n,deliveryFee:fee});
+};
+window.togCat=(el,n)=>{el.classList.toggle('sel');if(el.classList.contains('sel')){if(!cats.includes(n))cats.push(n);}else cats=cats.filter(c=>c!==n);};
+window.selPM=i=>[0,1,2].forEach(j=>{const e=ge('pm'+j);if(e)e.classList.toggle('sel',j===i);});
+window.rateStar=i=>qsa('.star').forEach((s,j)=>s.classList.toggle('on',j<=i));
+window.uploadPfp=async(inp)=>{
+  if(!uid||!inp.files[0])return;
+  toast('Uploading photo...');
+  const path='customers/'+uid+'/profile.jpg';
+  const b64data=await b64(inp.files[0]);
+  await uploadString(sref(storage,path),b64data,'data_url');
+  const url=await getDownloadURL(sref(storage,path));
+  await update(ref(db,'customers/'+uid),{pfp:url});
+  toast('✅ Photo updated');
+};
+window.prevPfp=(inp,imgId,icoId)=>{const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{const img=ge(imgId),ico=ge(icoId);if(img){img.src=e.target.result;img.style.display='block';}if(ico)ico.style.display='none';};r.readAsDataURL(f);};
+function gv(id){const e=ge(id);return e?e.value.trim():'';}
+function ge(id){return document.getElementById(id);}
+function qsa(s){return Array.from(document.querySelectorAll(s));}
+function tx(id,v){const e=ge(id);if(e)e.textContent=v;}
+// FIX #6: escape any user-controlled string before interpolating into innerHTML templates
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function toast(msg){let t=ge('rf-toast');if(!t){t=document.createElement('div');t.id='rf-toast';t.style.cssText='position:fixed;bottom:85px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.9);color:#fff;padding:9px 18px;border-radius:99px;font-size:13px;z-index:9999;transition:opacity .3s;pointer-events:none;white-space:nowrap;max-width:90vw;text-align:center';document.body.appendChild(t);}t.textContent=msg;t.style.opacity='1';clearTimeout(window._tt);window._tt=setTimeout(()=>{t.style.opacity='0';},2800);}
+function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>r(e.target.result);x.onerror=j;x.readAsDataURL(f);});}
+</script>
+<style>
+:root{--bg:#080C18;--bg2:#0F1626;--bg3:#162035;--card:#111E33;--bdr:rgba(255,255,255,.06);--bdr2:rgba(255,255,255,.11);--tx:#EEF2FF;--tx2:#7B90B8;--tx3:#3D5070;--or:#F97316;--or2:rgba(249,115,22,.13);--bl:#3B82F6;--bl2:rgba(59,130,246,.13);--gn:#22C55E;--gn2:rgba(34,197,94,.11);--rd:#EF4444;--rd2:rgba(239,68,68,.12);--yw:#EAB308;--yw2:rgba(234,179,8,.11);--r:12px;--r2:18px;--fh:'Syne',sans-serif;--fb:'DM Sans',sans-serif}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden;background:var(--bg)}
+body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;position:relative}
+.scr{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--bg);opacity:0;pointer-events:none;transition:opacity .2s}
+.scr.on{opacity:1;pointer-events:all}
+.sb{flex:1;overflow-y:auto;padding-bottom:76px}.sb::-webkit-scrollbar{display:none}
+@keyframes pp{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
+@keyframes dd{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes ss{to{transform:rotate(360deg)}}
+.auth{justify-content:center;align-items:center;padding:24px 20px;background:radial-gradient(ellipse at 50% 0%,rgba(249,115,22,.08),transparent 70%),var(--bg)}
+.logo{font-family:var(--fh);font-size:28px;font-weight:800;text-align:center;margin-bottom:4px}
+.logo em{color:var(--or);font-style:normal}
+.ac{background:var(--card);border:1px solid var(--bdr2);border-radius:var(--r2);padding:18px;width:100%;margin-bottom:12px;max-height:68vh;overflow-y:auto}
+.ac::-webkit-scrollbar{display:none}
+.at{font-family:var(--fh);font-size:15px;font-weight:700;margin-bottom:12px}
+.f{margin-bottom:9px}.f label{display:block;font-size:11px;font-weight:500;color:var(--tx2);margin-bottom:3px}
+.f input,.f select,.f textarea{background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:14px;padding:9px 11px;width:100%;outline:none;transition:border .15s}
+.f input:focus,.f select:focus,.f textarea:focus{border-color:var(--or)}
+.f input::placeholder,.f textarea::placeholder{color:var(--tx3)}
+.f select option{background:var(--bg3)}
+.err{font-size:11px;color:var(--rd);min-height:14px;text-align:center;margin-bottom:7px}
+.sw{font-size:13px;color:var(--tx2);text-align:center;cursor:pointer;margin-top:4px}
+.sw span{color:var(--or);font-weight:600}
+.pfp-up{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.pfp-ring{width:48px;height:48px;border-radius:50%;background:var(--bg3);border:2px dashed var(--bdr2);overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:20px;cursor:pointer;flex-shrink:0}
+.pfp-ring img{width:100%;height:100%;object-fit:cover;display:none}
+.btn{width:100%;border:none;border-radius:var(--r);padding:11px;font-family:var(--fh);font-size:14px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:transform .15s;margin-bottom:6px}
+.btn:active{transform:scale(.97)}
+.b-or{background:var(--or);color:#fff}.b-bl{background:var(--bl);color:#fff}.b-gn{background:var(--gn);color:#080C18}.b-ghost{background:var(--bg3);color:var(--tx);border:1px solid var(--bdr2)}.b-rd{background:var(--rd);color:#fff}
+.topbar{flex-shrink:0;padding:42px 14px 11px;display:flex;align-items:center;justify-content:space-between;background:var(--bg);border-bottom:1px solid var(--bdr);z-index:5}
+.lgo{font-family:var(--fh);font-size:18px;font-weight:800}.lgo em{color:var(--or);font-style:normal}
+.avi{width:31px;height:31px;border-radius:50%;overflow:hidden;background:var(--or2);border:1.5px solid var(--or);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}
+.c-pfp{width:100%;height:100%;object-fit:cover}.c-ini{font-family:var(--fh);font-size:11px;font-weight:700;color:var(--or)}
+.back{font-size:13px;color:var(--tx2);cursor:pointer}.pgt{font-family:var(--fh);font-size:15px;font-weight:700;flex:1;text-align:center}.sp{width:42px}
+.bnav{flex-shrink:0;display:flex;background:var(--bg2);border-top:1px solid var(--bdr2);padding:6px 0 15px}
+.bn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer}
+.bn-i{font-size:19px;transition:transform .15s}.bn-l{font-size:10px;color:var(--tx3);font-weight:500}
+.bn.on .bn-l{color:var(--or)}.bn.on .bn-i{transform:translateY(-2px)}
+.bdg{display:inline-flex;align-items:center;font-size:11px;font-weight:600;padding:2px 7px;border-radius:999px}
+.b-g{background:var(--gn2);color:var(--gn)}.b-o{background:var(--or2);color:var(--or)}.b-r{background:var(--rd2);color:var(--rd)}.b-b{background:var(--bl2);color:var(--bl)}.b-y{background:var(--yw2);color:var(--yw)}
+.card{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:13px;margin-bottom:9px}
+.sec{padding:13px}.sl{font-family:var(--fh);font-size:10px;font-weight:700;color:var(--tx3);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px}
+.lf-dot{width:6px;height:6px;border-radius:50%;background:var(--gn);animation:dd 1.2s infinite;flex-shrink:0}
+.lf-r{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--bdr);font-size:12px}.lf-r:last-child{border-bottom:none}
+.vg{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:9px}
+.vc{background:var(--bg3);border:1.5px solid var(--bdr2);border-radius:var(--r);padding:9px;cursor:pointer;text-align:center;transition:all .15s}.vc.sel{border-color:var(--or);background:var(--or2)}
+.ev{color:var(--tx3);font-size:12px;padding:8px 0;text-align:center}
+.ia-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;margin-bottom:9px}
+.ia{background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);padding:8px 5px;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer}.ia:active{border-color:var(--or)}
+.cats{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:11px}
+.cat{background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);padding:6px 10px;font-size:12px;cursor:pointer;transition:all .15s;user-select:none}
+.cat.sel{border-color:var(--or);background:var(--or2);color:var(--or)}
+.ai-sp{width:44px;height:44px;border:3px solid var(--bdr2);border-top-color:#A855F7;border-radius:50%;animation:ss .8s linear infinite}
+.fault{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r);padding:10px;margin-bottom:7px}
+.fh2{display:flex;justify-content:space-between;margin-bottom:4px}.fn{font-size:12px;font-weight:600}.fp{font-size:12px;font-weight:700}
+.ft{height:5px;background:var(--bg3);border-radius:3px;overflow:hidden}.fb{height:100%;border-radius:3px;transition:width 1s}
+.abox{border-radius:var(--r);padding:10px;display:flex;gap:8px;margin-bottom:7px}
+.a-d{background:var(--rd2);border:1px solid rgba(239,68,68,.2)}.a-i{background:var(--bl2);border:1px solid rgba(59,130,246,.18)}.a-g{background:var(--gn2);border:1px solid rgba(34,197,94,.18)}.a-y{background:var(--yw2);border:1px solid rgba(234,179,8,.18)}
+.pt-row{display:flex;background:var(--bg3);border-radius:var(--r);padding:3px;margin-bottom:10px}
+.pt{flex:1;text-align:center;padding:6px 4px;border-radius:9px;font-size:11px;font-weight:600;cursor:pointer;color:var(--tx3)}.pt.on{background:var(--card);color:var(--tx);border:1px solid var(--bdr2)}
+.part-card{background:var(--card);border:1.5px solid var(--bdr);border-radius:var(--r);padding:10px;margin-bottom:7px;cursor:pointer}.part-card.sel{border-color:var(--or);background:var(--or2)}
+.mlist{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);overflow:hidden}
+.mrow{display:flex;align-items:center;gap:9px;padding:10px 12px;border-bottom:1px solid var(--bdr);cursor:pointer}.mrow:last-child{border-bottom:none}.mrow:active{background:var(--bg3)}
+.bk-btn{background:var(--or);color:#fff;border:none;border-radius:7px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--fh);margin-top:3px}
+.steps{display:flex;align-items:flex-start;margin-bottom:11px}
+.sn{display:flex;flex-direction:column;align-items:center;gap:2px}
+.sd{width:9px;height:9px;border-radius:50%;background:var(--tx3)}.sd.dn{background:var(--gn)}.sd.nw{background:var(--or);animation:dd 1.4s infinite}
+.sl2{font-size:9px;color:var(--tx3);margin-top:2px;white-space:nowrap}.sli{flex:1;height:2px;background:var(--bdr2);margin-top:4px}.sli.dn{background:var(--gn)}
+.pbox{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:12px;margin-bottom:9px}
+.rr{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--bdr);font-size:13px}.rr:last-child{border-bottom:none}
+.pms{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:11px}
+.pm{background:var(--card);border:1.5px solid var(--bdr);border-radius:var(--r);padding:10px;text-align:center;cursor:pointer}.pm.sel{border-color:var(--or);background:var(--or2)}
+.star{font-size:26px;cursor:pointer;opacity:.25}.star.on{opacity:1}
+.ph{padding:16px 13px;display:flex;flex-direction:column;align-items:center;gap:7px;border-bottom:1px solid var(--bdr)}
+.p-avi{width:58px;height:58px;border-radius:50%;overflow:hidden;background:var(--or2);border:2px solid var(--or);display:flex;align-items:center;justify-content:center;cursor:pointer}
+.psts{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--bdr)}
+.pst{background:var(--bg2);padding:10px;text-align:center}.pstn{font-family:var(--fh);font-size:16px;font-weight:800}.pstl{font-size:10px;color:var(--tx3);margin-top:2px}
+.mit{display:flex;align-items:center;gap:10px;padding:10px 13px;border-bottom:1px solid var(--bdr);cursor:pointer;font-size:13px}.mit:active{background:var(--bg3)}
+.cam-dot{width:6px;height:6px;border-radius:50%;background:var(--rd);animation:dd 1s infinite;flex-shrink:0}
+.sos-ov{position:fixed;inset:0;background:rgba(8,12,24,.95);z-index:200;display:none;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center}
+img#photo-prev{display:none;width:100%;border-radius:var(--r);margin-top:7px;max-height:150px;object-fit:cover}
+</style>
+</head>
+<body>
+<div class="sos-ov" id="sos-ov">
+  <div style="font-size:64px;margin-bottom:11px;animation:pp 1s infinite">🆘</div>
+  <div style="font-family:var(--fh);font-size:21px;font-weight:800;color:var(--rd);margin-bottom:7px">SOS Sent Live!</div>
+  <div style="font-size:12px;color:var(--tx2);margin-bottom:8px;line-height:1.8">✅ GPS captured · ✅ Admin alerted<br><strong style="color:var(--gn)" id="sos-loc"></strong></div>
+  <button class="btn b-or" style="max-width:200px" onclick="ge('sos-ov').style.display='none'">✓ OK</button>
+</div>
+
+<!-- FIX 4: Loading screen shown first, never flashes login -->
+<div id="s-loading" class="scr on" style="justify-content:center;align-items:center;background:var(--bg)">
+  <div style="font-family:var(--fh);font-size:32px;font-weight:800;margin-bottom:12px">Road<em style="color:var(--or);font-style:normal">Fix</em></div>
+  <div style="width:36px;height:36px;border:3px solid var(--bdr2);border-top-color:var(--or);border-radius:50%;animation:ss .8s linear infinite"></div>
+</div>
+
+<!-- LOGIN -->
+<div id="s-login" class="scr auth">
+  <div class="logo">Road<em>Fix</em></div>
+  <div style="font-size:12px;color:var(--tx2);margin-bottom:16px;text-align:center">Sign in to get roadside help</div>
+  <div class="ac">
+    <div class="at">Sign in</div>
+    <div class="f"><label>Email</label><input id="lem" type="email" placeholder="your@email.com"></div>
+    <div class="f"><label>Password</label><input id="lpw" type="password" placeholder="••••••••"></div>
+    <div class="err" id="l-err"></div>
+    <button class="btn b-or" onclick="doLogin()">Sign in →</button>
+  </div>
+  <div class="sw">New here? <span onclick="go('s-reg')">Create account</span></div>
+</div>
+
+<!-- REGISTER -->
+<div id="s-reg" class="scr auth">
+  <div class="logo">Road<em>Fix</em></div>
+  <div style="font-size:12px;color:var(--tx2);margin-bottom:16px;text-align:center">Create your free account</div>
+  <div class="ac">
+    <div class="at">Create account</div>
+    <div class="pfp-up">
+      <div class="pfp-ring" onclick="document.getElementById('r-pfp').click()"><img id="rpfp-img" src="" alt=""><span id="rpfp-ico">📷</span></div>
+      <div><div style="font-size:12px;color:var(--tx2)">Profile photo</div><div style="font-size:10px;color:var(--tx3)">Optional</div></div>
+      <input type="file" id="r-pfp" accept="image/*" style="display:none" onchange="prevPfp(this,'rpfp-img','rpfp-ico')">
+    </div>
+    <div class="f"><label>Full name *</label><input id="rn" type="text" placeholder="Rajesh Kumar"></div>
+    <div class="f"><label>Phone *</label><input id="rph" type="tel" placeholder="+91 98765 43210"></div>
+    <div class="f"><label>City</label><input id="rci" type="text" placeholder="Guwahati"></div>
+    <div class="f"><label>Email *</label><input id="rem" type="email" placeholder="your@email.com"></div>
+    <div class="f"><label>Password *</label><input id="rpw" type="password" placeholder="Min 6 characters"></div>
+    <div class="err" id="r-err"></div>
+    <button class="btn b-or" onclick="doReg()">Create account →</button>
+  </div>
+  <div class="sw">Already have account? <span onclick="go('s-login')">Sign in</span></div>
+</div>
+
+<!-- HOME -->
+<div id="s-home" class="scr">
+  <div class="topbar"><div class="lgo">Road<em>Fix</em></div><div class="avi" onclick="go('s-profile')"><img class="c-pfp" src="" alt="" style="display:none"><span class="c-ini">RK</span></div></div>
+  <div class="sb">
+    <div style="padding:13px 13px 4px"><div style="font-family:var(--fh);font-size:20px;font-weight:700" class="c-first">Hi there 👋</div><div style="font-size:11px;color:var(--tx2);margin-top:3px">📍 Location tracking active</div></div>
+    <div class="sec">
+      <div style="background:var(--rd2);border:2px solid var(--rd);border-radius:14px;padding:15px;text-align:center;cursor:pointer;margin-bottom:10px" onclick="doSOS()">
+        <div style="font-size:36px;margin-bottom:4px">🆘</div>
+        <div style="font-family:var(--fh);font-size:14px;font-weight:800;color:var(--rd)">EMERGENCY SOS</div>
+        <div style="font-size:11px;color:var(--tx2);margin-top:2px">Real GPS · Admin alerted instantly</div>
+      </div>
+      <div style="background:var(--card);border:1px solid rgba(34,197,94,.22);border-radius:var(--r2);padding:10px;margin-bottom:10px">
+        <div style="font-family:var(--fh);font-size:10px;font-weight:700;color:var(--gn);margin-bottom:7px;display:flex;align-items:center;gap:5px"><div class="lf-dot"></div>Live from Firebase</div>
+        <div class="lf-r"><span style="color:var(--tx2)">Active jobs</span><span style="font-weight:600" id="lf-jobs">—</span></div>
+        <div class="lf-r"><span style="color:var(--tx2)">Verified mechanics</span><span style="font-weight:600;color:var(--bl)" id="lf-mechs">—</span></div>
+        <div class="lf-r"><span style="color:var(--tx2)">Your job</span><span style="font-weight:600;color:var(--or)" id="lf-status">None</span></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px">
+        <div class="card" style="display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;padding:12px" onclick="go('s-report')"><div style="font-size:23px">💬</div><div style="font-size:11px;color:var(--tx2)">Describe issue</div></div>
+        <div class="card" style="display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;padding:12px" onclick="doPhoto();go('s-report')"><div style="font-size:23px">📷</div><div style="font-size:11px;color:var(--tx2)">Photo upload</div></div>
+        <div class="card" style="display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;padding:12px" onclick="go('s-addcar')"><div style="font-size:23px">🚗</div><div style="font-size:11px;color:var(--tx2)">My vehicles</div></div>
+        <div class="card" style="display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;padding:12px"><div style="font-size:23px">📋</div><div style="font-size:11px;color:var(--tx2)">History</div></div>
+      </div>
+    </div>
+  </div>
+  <div class="bnav">
+    <div class="bn on" role="button" tabindex="0" aria-label="Navigate" onclick="go('s-home')" onkeydown="if(event.key==='Enter')this.click()"><div class="bn-i">🏠</div><div class="bn-l">Home</div></div>
+    <div class="bn" role="button" tabindex="0" aria-label="Navigate" onclick="go('s-report')" onkeydown="if(event.key==='Enter')this.click()"><div class="bn-i">🔍</div><div class="bn-l">Find help</div></div>
+    <div class="bn" role="button" tabindex="0" aria-label="Navigate" onclick="go('s-addcar')" onkeydown="if(event.key==='Enter')this.click()"><div class="bn-i">🚗</div><div class="bn-l">Vehicles</div></div>
+    <div class="bn" role="button" tabindex="0" aria-label="Navigate" onclick="go('s-profile')" onkeydown="if(event.key==='Enter')this.click()"><div class="bn-i">👤</div><div class="bn-l">Profile</div></div>
+  </div>
+</div>
+
+<!-- ADD CAR -->
+<div id="s-addcar" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">My vehicles</div><div class="sp"></div></div>
+  <div class="sb">
+    <div class="sec">
+      <div class="sl">Your vehicles</div>
+      <div id="vl1" class="vg" style="min-height:40px"></div>
+      <div style="height:1px;background:var(--bdr);margin:9px 0"></div>
+      <div class="sl">Add vehicle</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px">
+        <div class="f"><label>Make *</label><input id="vm" type="text" placeholder="Maruti, Honda..."></div>
+        <div class="f"><label>Model *</label><input id="vmo" type="text" placeholder="Swift, City..."></div>
+        <div class="f"><label>Year *</label><input id="vy" type="number" placeholder="2019" min="1990" max="2026"></div>
+        <div class="f"><label>Fuel type</label><select id="vf"><option>Petrol</option><option>Diesel</option><option>CNG</option><option>Electric</option><option>Hybrid</option></select></div>
+      </div>
+      <div class="f"><label>Reg. number (optional)</label><input id="vr" type="text" placeholder="AS01 AB 1234"></div>
+      <button class="btn b-or" onclick="addVehicle()">➕ Add vehicle</button>
+    </div>
+  </div>
+</div>
+
+<!-- REPORT -->
+<div id="s-report" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Report issue</div><div class="sp"></div></div>
+  <div class="sb">
+    <div class="sec">
+      <div class="sl">Describe problem</div>
+      <textarea id="ptxt" rows="3" style="background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:14px;padding:9px 11px;width:100%;outline:none;resize:none;transition:border .15s" placeholder="e.g. Loud clunking on left turns..."></textarea>
+      <img id="photo-prev" src="" alt="">
+      <div class="ia-row" style="margin-top:7px">
+        <div class="ia" onclick="doVoice()"><div style="font-size:18px">🎙️</div><div style="font-size:10px;color:var(--tx2)">Voice</div></div>
+        <div class="ia" onclick="doPhoto()"><div style="font-size:18px">📷</div><div style="font-size:10px;color:var(--tx2)">Camera</div></div>
+        <div class="ia"><div style="font-size:18px">🔌</div><div style="font-size:10px;color:var(--tx2)">OBD</div></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--bdr);margin:0 13px"></div>
+    <div class="sec">
+      <div class="sl">Select vehicle <span style="color:var(--rd);font-size:9px">* required for AI</span></div>
+      <div id="vl2" class="vg" style="min-height:40px"></div>
+      <div style="font-size:11px;color:var(--tx2);text-align:center;margin-bottom:4px">No vehicle? <span style="color:var(--or);cursor:pointer;font-weight:600" onclick="go('s-addcar')">Add one →</span></div>
+    </div>
+    <div style="height:1px;background:var(--bdr);margin:0 13px"></div>
+    <div class="sec">
+      <div class="sl">Categories <span style="font-size:9px;color:var(--tx3)">(tap multiple)</span></div>
+      <div class="cats">
+        <div class="cat" onclick="togCat(this,'Engine')">⚙️ Engine</div>
+        <div class="cat" onclick="togCat(this,'Tyres')">🛞 Tyres</div>
+        <div class="cat" onclick="togCat(this,'Suspension')">🔩 Suspension</div>
+        <div class="cat" onclick="togCat(this,'Battery')">🔋 Battery</div>
+        <div class="cat" onclick="togCat(this,'Cooling')">🌡️ Cooling</div>
+        <div class="cat" onclick="togCat(this,'Brakes')">🚨 Brakes</div>
+        <div class="cat" onclick="togCat(this,'Electrical')">⚡ Electrical</div>
+        <div class="cat" onclick="togCat(this,'Fuel')">⛽ Fuel</div>
+      </div>
+      <button class="btn b-or" onclick="startAI()">🤖 AI Analysis →</button>
+    </div>
+  </div>
+  <div class="bnav">
+    <div class="bn" role="button" tabindex="0" aria-label="Navigate" onclick="go('s-home')" onkeydown="if(event.key==='Enter')this.click()"><div class="bn-i">🏠</div><div class="bn-l">Home</div></div>
+    <div class="bn on"><div class="bn-i">🔍</div><div class="bn-l">Find help</div></div>
+    <div class="bn" role="button" tabindex="0" aria-label="Navigate" onclick="go('s-addcar')" onkeydown="if(event.key==='Enter')this.click()"><div class="bn-i">🚗</div><div class="bn-l">Vehicles</div></div>
+    <div class="bn" role="button" tabindex="0" aria-label="Navigate" onclick="go('s-profile')" onkeydown="if(event.key==='Enter')this.click()"><div class="bn-i">👤</div><div class="bn-l">Profile</div></div>
+  </div>
+</div>
+
+<!-- AI -->
+<div id="s-ai" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">AI Diagnosis</div><div class="sp"></div></div>
+  <div class="sb">
+    <div id="ai-load" style="display:flex;flex-direction:column;align-items:center;padding:38px 20px;gap:11px">
+      <div class="ai-sp"></div>
+      <div style="font-family:var(--fh);font-size:14px;font-weight:700;text-align:center">Analysing with Gemini AI...</div>
+      <div style="font-size:11px;color:var(--tx2);text-align:center" id="ai-veh-txt"></div>
+    </div>
+    <div id="ai-res" style="display:none">
+      <div class="sec">
+        <div id="ai-fallback-badge" style="display:none;align-items:center;gap:6px;background:var(--yw2);border:1px solid rgba(234,179,8,.3);border-radius:var(--r);padding:6px 10px;font-size:11px;color:var(--yw);margin-bottom:9px">⚠️ Estimated — AI unavailable, showing rule-based guess</div>
+        <div style="font-size:10px;color:var(--tx3);margin-bottom:9px;font-style:italic" id="ai-veh-res"></div>
+        <div class="sl">Fault analysis</div>
+        <div id="fault-bars"></div>
+      </div>
+      <div class="sec" style="padding-top:0">
+        <div class="abox a-d" id="swb" style="display:none"><div style="font-size:16px;flex-shrink:0">⚠️</div><div><div style="font-size:12px;font-weight:700;color:var(--rd);margin-bottom:2px">Safety warning</div><div style="font-size:11px;color:var(--tx2)" id="s-warn"></div></div></div>
+        <div class="abox a-i"><div style="font-size:16px;flex-shrink:0">📦</div><div><div style="font-size:12px;font-weight:700;color:var(--bl);margin-bottom:2px">Parts needed</div><div style="font-size:11px;color:var(--tx2)" id="parts-n">—</div></div></div>
+        <div class="abox a-g"><div style="font-size:16px;flex-shrink:0">📡</div><div><div style="font-size:12px;font-weight:700;color:var(--gn);margin-bottom:2px">Job created in Firebase</div><div style="font-size:11px;color:var(--tx2)">Job #<span id="job-id">—</span></div></div></div>
+        <div class="card">
+          <div style="background:var(--yw2);border:1px solid rgba(234,179,8,.2);border-radius:var(--r);padding:8px 11px;font-size:11px;color:var(--yw);margin-bottom:9px">⚠️ Estimate only — final price after job completion</div>
+          <div style="font-family:var(--fh);font-size:26px;font-weight:800;color:var(--or)" id="price-r">₹—</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">
+            <div style="background:var(--bg3);border-radius:9px;padding:7px"><div style="font-size:9px;color:var(--tx3)">Base</div><div style="font-size:11px;font-weight:700">₹800</div></div>
+            <div style="background:var(--bg3);border-radius:9px;padding:7px"><div style="font-size:9px;color:var(--tx3)">Distance×</div><div style="font-size:11px;font-weight:700">1.2×</div></div>
+            <div style="background:var(--bg3);border-radius:9px;padding:7px"><div style="font-size:9px;color:var(--tx3)">Surge×</div><div style="font-size:11px;font-weight:700">1.3×</div></div>
+            <div style="background:var(--bg3);border-radius:9px;padding:7px"><div style="font-size:9px;color:var(--tx3)">Severity×</div><div style="font-size:11px;font-weight:700">1.6×</div></div>
+          </div>
+        </div>
+        <button class="btn b-or" onclick="go('s-parts')">Choose parts type →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PARTS -->
+<div id="s-parts" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Parts & delivery</div><div class="sp"></div></div>
+  <div class="sb">
+    <div class="sec">
+      <div class="sl">Parts type</div>
+      <div class="pt-row"><div class="pt on" id="pt-OEM" onclick="selPT2('OEM')">OEM</div><div class="pt" id="pt-ODM" onclick="selPT2('ODM')">ODM</div><div class="pt" id="pt-Generic" onclick="selPT2('Generic')">Generic</div></div>
+      <div id="parts-list"></div>
+      <div class="sl" style="margin-top:4px">Delivery method</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:11px">
+        <div class="part-card sel" id="pd0" onclick="selPD2(0,'Company outlet')"><div style="font-size:12px;font-weight:600">🏪 Company outlet</div><div style="font-size:10px;color:var(--tx2)">Fixed · 20–40 min</div></div>
+        <div class="part-card" id="pd1" onclick="selPD2(1,'Rapido Parcel')"><div style="font-size:12px;font-weight:600">🛵 Rapido Parcel</div><div style="font-size:10px;color:var(--tx2)">15–30 min</div></div>
+        <div class="part-card" id="pd2" onclick="selPD2(2,'Mechanic own')"><div style="font-size:12px;font-weight:600">🔧 Mechanic's own</div><div style="font-size:10px;color:var(--tx2)">Instant</div></div>
+        <div class="part-card" id="pd3" onclick="selPD2(3,'24x7 shop')"><div style="font-size:12px;font-weight:600">🕐 24×7 shop</div><div style="font-size:10px;color:var(--tx2)">Partner</div></div>
+      </div>
+      <button class="btn b-or" onclick="submitJob()">🔧 Find verified mechanics →</button>
+    </div>
+  </div>
+</div>
+
+<!-- MECHANICS -->
+<div id="s-mechs" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Verified mechanics</div><span class="bdg b-g">● Live</span></div>
+  <div class="sb">
+    <div class="sec">
+      <div class="abox a-g" style="margin-bottom:11px"><div style="font-size:16px;flex-shrink:0">📡</div><div><div style="font-size:12px;font-weight:700;color:var(--gn)">Job posted · mechanics notified</div><div style="font-size:11px;color:var(--tx2)">Tap Request → wait for mechanic to accept</div></div></div>
+      <div id="mech-list" class="mlist"><div style="text-align:center;padding:16px;color:var(--tx3);font-size:12px">Loading verified mechanics...</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- WAITING FOR MECHANIC -->
+<div id="s-waiting" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Waiting...</div><div class="sp"></div></div>
+  <div class="sb">
+    <div class="sec" style="text-align:center;padding-top:36px">
+      <div style="font-size:52px;margin-bottom:14px;animation:pp 1.5s infinite">⏳</div>
+      <div style="font-family:var(--fh);font-size:19px;font-weight:800;margin-bottom:8px">Waiting for mechanic</div>
+      <div style="font-size:13px;color:var(--tx2);margin-bottom:22px;line-height:1.8">Request sent successfully.<br><strong style="color:var(--gn)">You'll auto-redirect the moment they accept.</strong></div>
+      <div style="background:var(--card);border:1px solid rgba(34,197,94,.22);border-radius:var(--r2);padding:13px;margin-bottom:14px;text-align:left">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px"><div class="lf-dot"></div><div style="font-family:var(--fh);font-size:10px;font-weight:700;color:var(--gn)">LIVE STATUS</div></div>
+        <div style="font-size:13px;color:var(--tx2)">Waiting for mechanic acceptance</div>
+      </div>
+      <button class="btn b-ghost" onclick="back()">← Choose different mechanic</button>
+      <button class="btn b-rd" onclick="cancelJobRequest()">✕ Cancel request</button>
+    </div>
+  </div>
+</div>
+
+<!-- TRACKING -->
+<div id="s-tracking" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Live tracking</div><span class="bdg b-g">En route</span></div>
+  <div class="sb">
+    <div class="sec">
+      <div class="steps">
+        <div class="sn"><div class="sd dn"></div><div class="sl2" style="color:var(--gn)">Booked</div></div><div class="sli dn"></div>
+        <div class="sn"><div class="sd dn"></div><div class="sl2" style="color:var(--gn)">Accepted</div></div><div class="sli dn"></div>
+        <div class="sn"><div class="sd nw"></div><div class="sl2" style="color:var(--or)">En route</div></div><div class="sli"></div>
+        <div class="sn"><div class="sd"></div><div class="sl2">Done</div></div>
+      </div>
+      <div style="background:var(--rd2);border:1px solid rgba(239,68,68,.2);border-radius:var(--r);padding:8px 11px;display:flex;align-items:center;gap:7px;margin-bottom:9px;font-size:12px;color:var(--rd)"><div class="cam-dot"></div>🎥 Bodycam ON · GPS tracking · Admin monitoring</div>
+      <div style="background:var(--bg3);border-radius:var(--r2);height:175px;overflow:hidden;border:1px solid var(--bdr2);margin-bottom:10px">
+        <!-- FIX #20: replaced fake animated path with a live map; track-map-frame
+             is populated by renderTrackingMap() using real customer + mechanic GPS -->
+        <iframe id="track-map-frame" style="width:100%;height:100%;border:0" loading="lazy"></iframe>
+      </div>
+      <div class="card" style="padding:11px;margin-bottom:9px">
+        <div style="display:flex;align-items:center;gap:9px;margin-bottom:10px">
+          <div style="width:38px;height:38px;border-radius:50%;overflow:hidden;background:#1D4ED8;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <img id="track-pfp" src="" alt="" style="display:none;width:100%;height:100%;object-fit:cover">
+            <span id="track-ini" style="font-family:var(--fh);font-size:12px;font-weight:700;color:#fff">AK</span>
+          </div>
+          <div style="flex:1"><div style="font-size:12px;font-weight:700;font-family:var(--fh)" id="track-mech">Mechanic</div><div style="font-size:11px;color:var(--tx2)">✅ Verified · GPS ON</div></div>
+          <div style="text-align:right"><div style="font-family:var(--fh);font-size:28px;font-weight:800;color:var(--gn)" id="track-eta">—</div><div style="font-size:9px;color:var(--tx3)">min</div></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px">
+          <div style="background:var(--gn2);border:1px solid rgba(34,197,94,.3);border-radius:var(--r);padding:8px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer" onclick="callMech()" id="track-call-btn"><div style="font-size:18px">📞</div><div style="font-size:9px;color:var(--gn)">Call</div></div>
+          <div style="background:var(--gn2);border:1px solid rgba(34,197,94,.3);border-radius:var(--r);padding:8px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer;position:relative" onclick="openChat()"><div style="font-size:18px">💬</div><div style="font-size:9px;color:var(--gn)">Chat</div><span id="chat-unread-badge" style="display:none;position:absolute;top:2px;right:10px;background:var(--rd);color:#fff;font-size:9px;font-weight:700;border-radius:50%;width:16px;height:16px;align-items:center;justify-content:center"></span></div>
+          <div style="background:var(--rd2);border:1px solid rgba(239,68,68,.3);border-radius:var(--r);padding:8px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer" onclick="doSOS()"><div style="font-size:18px">🆘</div><div style="font-size:9px;color:var(--rd)">SOS</div></div>
+        </div>
+      </div>
+      <button class="btn b-bl" onclick="customerJobDone()">Job complete → Confirm & Pay</button>
+    </div>
+  </div>
+</div>
+
+<!-- CHAT -->
+<div id="s-chat" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Chat with mechanic</div><div class="sp"></div></div>
+  <div id="chat-box" style="flex:1;overflow-y:auto;padding:12px 13px;min-height:0;"></div>
+  <div style="flex-shrink:0;display:flex;gap:7px;padding:9px 13px;background:var(--bg2);border-top:1px solid var(--bdr2)">
+    <input id="chat-inp" type="text" placeholder="Type a message..." style="flex:1;background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:13px;padding:8px 11px;outline:none" onkeydown="if(event.key==='Enter')sendMsg()">
+    <button style="background:var(--or);border:none;border-radius:var(--r);padding:0 13px;color:#fff;font-family:var(--fh);font-size:13px;font-weight:700;cursor:pointer" onclick="sendMsg()">Send</button>
+  </div>
+</div>
+
+<!-- PAYMENT -->
+<div id="s-pay" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Payment</div><div class="sp"></div></div>
+  <div class="sb">
+    <div class="sec">
+      <div style="text-align:center;padding:11px 0"><div style="font-size:48px;margin-bottom:8px">✅</div><div style="font-family:var(--fh);font-size:18px;font-weight:800;color:var(--gn)">Job complete!</div><div style="font-size:12px;color:var(--tx2);margin-top:4px">Waiting for mechanic confirmation...</div></div>
+      <div class="pbox">
+        <div class="rr"><div style="color:var(--tx2)">Base estimate</div><div style="font-weight:600" id="pay-base">—</div></div>
+        <div class="rr"><div style="color:var(--tx2)">Parts</div><div style="font-weight:600" id="pay-parts">—</div></div>
+        <div class="rr"><div style="color:var(--tx2)">Delivery</div><div style="font-weight:600" id="pay-delivery">—</div></div>
+        <div class="rr"><div style="color:var(--tx2)">Surge</div><div style="font-weight:600;color:var(--yw)" id="pay-surge">—</div></div>
+        <div class="rr"><div style="color:var(--tx2)">Platform fee (8%)</div><div style="font-weight:600" id="pay-fee">—</div></div>
+        <div class="rr" style="border-top:1.5px solid var(--bdr2);margin-top:3px"><div style="font-weight:700">Total</div><div style="font-family:var(--fh);font-size:17px;font-weight:800;color:var(--or)" id="pay-total">—</div></div>
+      </div>
+      <div class="pms">
+        <div class="pm sel" id="pm0" onclick="selPM(0)"><span style="font-size:20px;display:block;margin-bottom:2px">💳</span><span style="font-size:11px;color:var(--tx2)">UPI</span></div>
+        <div class="pm" id="pm1" onclick="selPM(1)"><span style="font-size:20px;display:block;margin-bottom:2px">💵</span><span style="font-size:11px;color:var(--tx2)">Cash</span></div>
+        <div class="pm" id="pm2" onclick="selPM(2)"><span style="font-size:20px;display:block;margin-bottom:2px">🏦</span><span style="font-size:11px;color:var(--tx2)">Card</span></div>
+      </div>
+      <div style="display:flex;justify-content:center;gap:6px;margin-bottom:11px">
+        <span class="star on" onclick="rateStar(0)">⭐</span><span class="star on" onclick="rateStar(1)">⭐</span><span class="star on" onclick="rateStar(2)">⭐</span><span class="star on" onclick="rateStar(3)">⭐</span><span class="star on" onclick="rateStar(4)">⭐</span>
+      </div>
+      <button class="btn b-or" id="pay-btn" onclick="processPayment()">Pay & Complete →</button>
+    </div>
+  </div>
+</div>
+
+<!-- PROFILE -->
+<div id="s-profile" class="scr">
+  <div class="sb" style="padding-bottom:76px">
+    <div class="ph">
+      <div class="p-avi" onclick="document.getElementById('pfp-inp').click()">
+        <img class="c-pfp" src="" alt="" style="display:none;width:100%;height:100%;object-fit:cover">
+        <span class="c-ini" style="font-family:var(--fh);font-size:19px;font-weight:800;color:var(--or)">RK</span>
+      </div>
+      <input type="file" id="pfp-inp" accept="image/*" style="display:none" onchange="uploadPfp(this)">
+      <div style="font-family:var(--fh);font-size:16px;font-weight:700" class="c-name">Loading...</div>
+      <div style="font-size:11px;color:var(--tx2)" class="c-phone">—</div>
+      <span class="bdg b-g">Verified customer</span>
+    </div>
+    <div class="psts"><div class="pst"><div class="pstn" id="stat-services">—</div><div class="pstl">Services</div></div><div class="pst"><div class="pstn" id="stat-rating">—</div><div class="pstl">Rating</div></div><div class="pst"><div class="pstn" id="stat-spent">—</div><div class="pstl">Spent</div></div></div>
+    <div class="mit" onclick="go('s-addcar')"><span style="font-size:15px">🚗</span><span style="flex:1">My vehicles</span><span style="color:var(--tx3)">›</span></div>
+    <div class="mit"><span style="font-size:15px">💳</span><span style="flex:1">Payment methods</span><span style="color:var(--tx3)">›</span></div>
+    <div class="mit" onclick="doLogout()"><span style="font-size:15px">🚪</span><span style="flex:1">Sign out</span><span style="color:var(--tx3)">›</span></div>
+    <div style="padding:13px;text-align:center;font-size:11px;color:var(--tx3)">RoadFix v7</div>
+  </div>
+  <div class="bnav">
+    <div class="bn" role="button" tabindex="0" aria-label="Navigate" onclick="go('s-home')" onkeydown="if(event.key==='Enter')this.click()"><div class="bn-i">🏠</div><div class="bn-l">Home</div></div>
+    <div class="bn" role="button" tabindex="0" aria-label="Navigate" onclick="go('s-report')" onkeydown="if(event.key==='Enter')this.click()"><div class="bn-i">🔍</div><div class="bn-l">Find help</div></div>
+    <div class="bn" role="button" tabindex="0" aria-label="Navigate" onclick="go('s-addcar')" onkeydown="if(event.key==='Enter')this.click()"><div class="bn-i">🚗</div><div class="bn-l">Vehicles</div></div>
+    <div class="bn on"><div class="bn-i">👤</div><div class="bn-l">Profile</div></div>
+  </div>
+</div>
+
+<script>
+var stk=['s-loading'],cur='s-loading';
+function go(id){
+  var o=document.getElementById(cur),n=document.getElementById(id);if(!n)return;
+  o.classList.remove('on');n.classList.add('on');stk.push(id);cur=id;
+  var sb=n.querySelector('.sb');if(sb)sb.scrollTop=0;
+  if(id==='s-addcar'||id==='s-report')initVehicles();
+  if(id==='s-pay')loadPaymentBreakdown();
+  if(id==='s-profile')loadCustomerStats();
+}
+function loadCustomerStats(){
+  if(!uid)return;
+  get(ref(db,'jobs')).then(s=>{
+    const all=s.val()||{};
+    const mine=Object.values(all).filter(j=>j.customerId===uid&&j.status==='done');
+    const totalSpent=mine.reduce((sum,j)=>sum+(Number(j.finalPrice)||0),0);
+    const ratings=mine.map(j=>Number(j.customerRatingGiven)).filter(n=>!isNaN(n));
+    const avgRating=ratings.length?(ratings.reduce((a,b)=>a+b,0)/ratings.length).toFixed(1):'—';
+    tx('stat-services',String(mine.length));
+    tx('stat-rating',avgRating);
+    tx('stat-spent',totalSpent>=1000?'₹'+(totalSpent/1000).toFixed(1)+'k':'₹'+totalSpent);
+  });
+}
+// FIX #9 (ordering): the customer must not be allowed to pay against a
+// client-estimated guess. We listen live for jobs/{id}/finalPrice, which is
+// only ever set by the finalizeJobIfComplete Cloud Function once BOTH sides
+// have confirmed completion. Until then, show a waiting state.
+let payBreakdownUnsub=null;
+function loadPaymentBreakdown(){
+  const jid=getJobId();if(!jid)return;
+  if(payBreakdownUnsub)payBreakdownUnsub();
+  const btn=ge('pay-btn');
+  payBreakdownUnsub=onValue(ref(db,'jobs/'+jid),snap=>{
+    const j=snap.val();if(!j)return;
+    if(!j.finalPrice){
+      tx('pay-base','—');tx('pay-parts','—');tx('pay-delivery','—');
+      tx('pay-surge','—');tx('pay-fee','—');tx('pay-total','Waiting for mechanic to confirm…');
+      if(btn){btn.disabled=true;btn.textContent='Waiting for mechanic confirmation…';}
+      window._payAmount=null;
+      return;
+    }
+    const base=Math.round(((Number(j.estimateLow)||0)+(Number(j.estimateHigh)||0))/2);
+    const parts=Number(j.partsPrice)||0;
+    const delivery=Number(j.deliveryFee)||0;
+    const fee=Number(j.platformFee)||0;
+    const total=Number(j.finalPrice);
+    tx('pay-base','₹'+base);tx('pay-parts','₹'+parts);tx('pay-delivery','₹'+delivery);
+    tx('pay-surge','—');tx('pay-fee','₹'+fee);tx('pay-total','₹'+total.toLocaleString('en-IN'));
+    if(btn){btn.disabled=false;btn.textContent='Pay ₹'+total.toLocaleString('en-IN')+' & Complete →';}
+    window._payAmount=total;
+  });
+}
+function back(){if(stk.length<2)return;stk.pop();var p=stk[stk.length-1];document.getElementById(cur).classList.remove('on');document.getElementById(p).classList.add('on');cur=p;}
+setTimeout(()=>selPT2('OEM'),400);
+function ge(id){return document.getElementById(id);}
+</script>
+</body>
+</html>

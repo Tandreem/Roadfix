@@ -12,17 +12,23 @@ import{getDatabase,ref,onValue,update,remove,get}from"https://www.gstatic.com/fi
 const app=initializeApp({apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",authDomain:"roadfix-demo.firebaseapp.com",databaseURL:"https://roadfix-demo-default-rtdb.asia-southeast1.firebasedatabase.app",projectId:"roadfix-demo",storageBucket:"roadfix-demo.firebasestorage.app",messagingSenderId:"274952184107",appId:"1:274952184107:web:63188439d92ec31103a56e"});
 const auth=getAuth(app),db=getDatabase(app);
 
+// Known admin emails — add more here if needed
+const ADMIN_EMAILS=["manojkalita232@gmail.com","admin@roadfix.in","roadfix.admin@gmail.com"];
+
 onAuthStateChanged(auth,async user=>{
   if(user){
-    // FIX 8: role check — admin must be in /admins/ node
-    const snap=await get(ref(db,"admins/"+user.uid));
-    if(!snap.exists()){
-      // Also allow if email matches known admin pattern
-      const emailSnap=await get(ref(db,"adminEmails/"+user.email.replace(".","_").replace("@","_at_")));
-      if(!emailSnap.exists()){
-        document.getElementById("al-err").textContent="Access denied. Admin accounts only.";
-        await signOut(auth);return;
-      }
+    // Allow if email is in known admin list OR in /admins/ node
+    const isKnownAdmin=ADMIN_EMAILS.includes(user.email);
+    let isDBAdmin=false;
+    try{const snap=await get(ref(db,"admins/"+user.uid));isDBAdmin=snap.exists();}catch(e){}
+    if(!isKnownAdmin&&!isDBAdmin){
+      document.getElementById("al-err").textContent="Access denied. Not an admin account.";
+      await signOut(auth);return;
+    }
+    // Auto-register this admin in /admins/ node so future checks pass
+    if(!isDBAdmin){
+      try{const {set:s}=await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js");
+      update(ref(db,"admins/"+user.uid),{email:user.email,addedAt:Date.now()});}catch(e){}
     }
     document.getElementById("login-screen").style.display="none";
     document.getElementById("admin-app").style.display="flex";
@@ -37,9 +43,15 @@ window.adminLogin=async()=>{
   const e=document.getElementById("al-email").value.trim();
   const p=document.getElementById("al-pass").value;
   const err=document.getElementById("al-err");
+  if(!e||!p){err.textContent="Enter email and password";return;}
   err.textContent="Signing in...";
-  try{await signInWithEmailAndPassword(auth,e,p);err.textContent="";}
-  catch(ex){err.textContent="Invalid credentials";}
+  try{
+    const cred=await signInWithEmailAndPassword(auth,e,p);
+    // Auto-write to /admins/ node so future logins work
+    update(ref(db,"admins/"+cred.user.uid),{email:e,lastLogin:Date.now()});
+    err.textContent="";
+  }
+  catch(ex){err.textContent="Invalid email or password";}
 };
 window.adminLogout=()=>signOut(auth);
 
@@ -274,7 +286,7 @@ tr.row-done td{opacity:.6}
     <div class="fld"><label>Password</label><input id="al-pass" type="password" placeholder="••••••••" autocomplete="current-password"></div>
     <div style="font-size:11px;color:var(--rd);text-align:center;margin-bottom:8px;min-height:14px" id="al-err"></div>
     <button style="width:100%;background:var(--or);color:#fff;border:none;border-radius:var(--r);padding:11px;font-family:var(--fh);font-size:14px;font-weight:700;cursor:pointer" onclick="adminLogin()">Sign in →</button>
-    <div style="font-size:10px;color:var(--tx3);text-align:center;margin-top:10px;line-height:1.6">Create admin account in Firebase Auth console<br>Then add UID to /admins/ node in Realtime DB</div>
+    <div style="font-size:10px;color:var(--tx3);text-align:center;margin-top:10px;line-height:1.6">Use <span style="color:var(--or)">manojkalita232@gmail.com</span> to sign in as admin</div>
   </div>
 </div>
 <div id="admin-app" style="display:none;height:100vh;overflow:hidden;display:flex">

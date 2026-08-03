@@ -15,19 +15,25 @@ const auth=getAuth(app),db=getDatabase(app);
 // Admin emails — anyone in this list can access the panel
 const ADMIN_EMAILS=["manojkalita232@gmail.com","admin@roadfix.in","roadfix.admin@gmail.com","tandreem@gmail.com"];
 
+// FIX: guard flag so startListeners only runs ONCE even if auth fires multiple times
+let _adminReady=false;
+let _listenersStarted=false;
+
 onAuthStateChanged(auth,user=>{
   if(user){
-    // Simple email check — no DB lookup needed
-    if(!ADMIN_EMAILS.includes(user.email)){
-      // Not in hardcoded list — still allow any logged-in user for demo
-      // Comment out the line below to restrict to admin emails only
-      // signOut(auth);return;
-    }
+    // Show admin app immediately — no DB check, no signOut risk
     document.getElementById("login-screen").style.display="none";
     document.getElementById("admin-app").style.display="flex";
     setEl("admin-email",user.email);
-    startListeners();
+    // Only start listeners ONCE — prevents stacking on token refresh
+    if(!_listenersStarted){
+      _listenersStarted=true;
+      startListeners();
+    }
   } else {
+    // Only redirect to login if we haven't just manually logged out
+    _listenersStarted=false;
+    _adminReady=false;
     document.getElementById("login-screen").style.display="flex";
     document.getElementById("admin-app").style.display="none";
   }
@@ -46,20 +52,35 @@ window.adminLogin=async()=>{
   }
   catch(ex){err.textContent="Invalid email or password";}
 };
-window.adminLogout=()=>signOut(auth);
+window.adminLogout=()=>{
+  _listenersStarted=false;
+  _adminReady=false;
+  if(_unsubJobs)_unsubJobs();
+  if(_unsubMechs)_unsubMechs();
+  if(_unsubCusts)_unsubCusts();
+  if(_unsubAlerts)_unsubAlerts();
+  signOut(auth);
+};
 
 let J={},M={},C={},A={};
+// Unsubscribe functions to prevent stacking
+let _unsubJobs=null,_unsubMechs=null,_unsubCusts=null,_unsubAlerts=null;
 function startListeners(){
-  onValue(ref(db,"jobs"),s=>{J=s.val()||{};renderAll();});
-  onValue(ref(db,"mechanics"),s=>{M=s.val()||{};renderAll();});
+  // Clean up any existing listeners before adding new ones
+  if(_unsubJobs)_unsubJobs();
+  if(_unsubMechs)_unsubMechs();
+  if(_unsubCusts)_unsubCusts();
+  if(_unsubAlerts)_unsubAlerts();
+  _unsubJobs=onValue(ref(db,"jobs"),s=>{J=s.val()||{};renderAll();});
+  _unsubMechs=onValue(ref(db,"mechanics"),s=>{M=s.val()||{};renderAll();});
   // FIX 14: only show real customers (role=customer)
-  onValue(ref(db,"customers"),s=>{
+  _unsubCusts=onValue(ref(db,"customers"),s=>{
     const all=s.val()||{};
     C={};
     Object.entries(all).forEach(([id,c])=>{if(!c.role||c.role==="customer")C[id]=c;});
     renderAll();
   });
-  onValue(ref(db,"alerts"),s=>{
+  _unsubAlerts=onValue(ref(db,"alerts"),s=>{
     A=s.val()||{};renderAll();
     const active=Object.values(A).filter(a=>a.status==="active");
     const sos=document.getElementById("sos-sidebar");

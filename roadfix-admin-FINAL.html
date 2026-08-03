@@ -3,192 +3,207 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>RoadFix Admin v4</title>
+<title>RoadFix Admin v7</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
 <script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import { getDatabase, ref, onValue, update, remove } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
-const FC={apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",authDomain:"roadfix-demo.firebaseapp.com",databaseURL:"https://roadfix-demo-default-rtdb.asia-southeast1.firebasedatabase.app",projectId:"roadfix-demo",storageBucket:"roadfix-demo.firebasestorage.app",messagingSenderId:"274952184107",appId:"1:274952184107:web:63188439d92ec31103a56e"};
-const app=initializeApp(FC);
-const auth=getAuth(app);
-const db=getDatabase(app);
+import{initializeApp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import{getAuth,signInWithEmailAndPassword,signOut,onAuthStateChanged}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import{getDatabase,ref,onValue,update,remove,get}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+const app=initializeApp({apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",authDomain:"roadfix-demo.firebaseapp.com",databaseURL:"https://roadfix-demo-default-rtdb.asia-southeast1.firebasedatabase.app",projectId:"roadfix-demo",storageBucket:"roadfix-demo.firebasestorage.app",messagingSenderId:"274952184107",appId:"1:274952184107:web:63188439d92ec31103a56e"});
+const auth=getAuth(app),db=getDatabase(app);
 
-onAuthStateChanged(auth,user=>{
+onAuthStateChanged(auth,async user=>{
   if(user){
-    document.getElementById('login-screen').style.display='none';
-    document.getElementById('admin-app').style.display='flex';
-    setEl('admin-email',user.email);
+    // FIX 8: role check — admin must be in /admins/ node
+    const snap=await get(ref(db,"admins/"+user.uid));
+    if(!snap.exists()){
+      // Also allow if email matches known admin pattern
+      const emailSnap=await get(ref(db,"adminEmails/"+user.email.replace(".","_").replace("@","_at_")));
+      if(!emailSnap.exists()){
+        document.getElementById("al-err").textContent="Access denied. Admin accounts only.";
+        await signOut(auth);return;
+      }
+    }
+    document.getElementById("login-screen").style.display="none";
+    document.getElementById("admin-app").style.display="flex";
+    setEl("admin-email",user.email);
     startListeners();
   } else {
-    document.getElementById('login-screen').style.display='flex';
-    document.getElementById('admin-app').style.display='none';
+    document.getElementById("login-screen").style.display="flex";
+    document.getElementById("admin-app").style.display="none";
   }
 });
 window.adminLogin=async()=>{
-  const e=document.getElementById('al-email').value.trim();
-  const p=document.getElementById('al-pass').value;
-  const err=document.getElementById('al-err');
-  err.textContent='Signing in...';
-  try{await signInWithEmailAndPassword(auth,e,p);err.textContent='';}
-  catch(ex){err.textContent='Invalid credentials';}
+  const e=document.getElementById("al-email").value.trim();
+  const p=document.getElementById("al-pass").value;
+  const err=document.getElementById("al-err");
+  err.textContent="Signing in...";
+  try{await signInWithEmailAndPassword(auth,e,p);err.textContent="";}
+  catch(ex){err.textContent="Invalid credentials";}
 };
 window.adminLogout=()=>signOut(auth);
 
-// ── DATA ──────────────────────────────────────────────
 let J={},M={},C={},A={};
-
 function startListeners(){
-  onValue(ref(db,'jobs'),s=>{J=s.val()||{};renderAll();});
-  onValue(ref(db,'mechanics'),s=>{M=s.val()||{};renderAll();});
-  onValue(ref(db,'customers'),s=>{C=s.val()||{};renderAll();});
-  onValue(ref(db,'alerts'),s=>{
+  onValue(ref(db,"jobs"),s=>{J=s.val()||{};renderAll();});
+  onValue(ref(db,"mechanics"),s=>{M=s.val()||{};renderAll();});
+  // FIX 14: only show real customers (role=customer)
+  onValue(ref(db,"customers"),s=>{
+    const all=s.val()||{};
+    C={};
+    Object.entries(all).forEach(([id,c])=>{if(!c.role||c.role==="customer")C[id]=c;});
+    renderAll();
+  });
+  onValue(ref(db,"alerts"),s=>{
     A=s.val()||{};renderAll();
-    const active=Object.values(A).filter(a=>a.status==='active');
-    const sos=document.getElementById('sos-sidebar');
-    const badge=document.getElementById('sos-badge');
+    const active=Object.values(A).filter(a=>a.status==="active");
+    const sos=document.getElementById("sos-sidebar");
+    const badge=document.getElementById("sos-badge");
     if(active.length>0){
-      if(sos){sos.style.display='flex';sos.querySelector('.sos-cnt').textContent=active.length+' Active SOS';}
-      if(badge){badge.textContent='🆘 '+active.length;badge.style.display='inline-flex';}
+      if(sos){sos.style.display="flex";sos.querySelector(".sos-cnt").textContent=active.length+" Active SOS";}
+      // FIX 38: only show badge when SOS exists
+      if(badge){badge.textContent="🆘 "+active.length;badge.style.display="inline-flex";}
     } else {
-      if(sos)sos.style.display='none';
-      if(badge)badge.style.display='none';
+      if(sos)sos.style.display="none";
+      if(badge)badge.style.display="none";
     }
   });
 }
 
-function renderAll(){
-  updateKPIs();
-  renderJobs();
-  renderMechanics();
-  renderCustomers();
-  renderAlerts();
-}
+function renderAll(){updateKPIs();renderJobs();renderMechanics();renderCustomers();renderAlerts();}
 
 function updateKPIs(){
-  const jList=Object.values(J);
-  const mList=Object.values(M);
-  const cList=Object.values(C);
-  const aList=Object.values(A);
-  const active=jList.filter(j=>j.status&&j.status!=='done').length;
-  const done=jList.filter(j=>j.status==='done').length;
-  const online=mList.filter(m=>m.status==='online'||m.status==='enroute').length;
+  const jList=Object.values(J),mList=Object.values(M),cList=Object.values(C),aList=Object.values(A);
+  const active=jList.filter(j=>j.status&&j.status!=="done"&&j.status!=="customer_done").length;
+  const done=jList.filter(j=>j.status==="done").length;
+  const online=mList.filter(m=>m.status==="online"||m.status==="enroute").length;
   const verified=mList.filter(m=>m.verified).length;
   const pending=mList.filter(m=>!m.verified).length;
-  const sosActive=aList.filter(a=>a.status==='active').length;
-  const gmv=jList.filter(j=>j.finalPrice).reduce((s,j)=>s+(j.finalPrice||0),0);
-  setEl('d-active',active);setEl('d-done',done);setEl('d-online',online);setEl('d-verified',verified);
-  setEl('d-custs',cList.length);setEl('d-sos',sosActive);setEl('d-gmv',gmv>0?'₹'+gmv.toLocaleString('en-IN'):'₹0');setEl('d-pending',pending);
-  // Update mechanic tab stats
-  setEl('d-m-online',online);setEl('d-m-verified',verified);setEl('d-m-pending',pending);
-  // Update customer tab stats
-  setEl('d-c-total',cList.length);setEl('d-c-jobs',jList.length);setEl('d-c-gmv',gmv>0?'₹'+gmv.toLocaleString('en-IN'):'₹0');
+  const sosActive=aList.filter(a=>a.status==="active").length;
+  // FIX 18: GMV counts all jobs with estimateLow (not just finalPrice)
+  const gmv=jList.filter(j=>j.status==="done").reduce((s,j)=>s+(j.finalPrice||j.estimateLow||0),0);
+  setEl("d-active",active);setEl("d-done",done);setEl("d-online",online);setEl("d-verified",verified);
+  setEl("d-custs",Object.keys(C).length);setEl("d-sos",sosActive);
+  setEl("d-gmv",gmv>0?"₹"+Math.round(gmv).toLocaleString("en-IN"):"₹0");
+  setEl("d-pending",pending);
+  setEl("d-m-online",online);setEl("d-m-verified",verified);setEl("d-m-pending",pending);
+  setEl("d-c-total",Object.keys(C).length);setEl("d-c-jobs",jList.length);
+  setEl("d-c-gmv",gmv>0?"₹"+Math.round(gmv).toLocaleString("en-IN"):"₹0");
 }
 
 function renderJobs(){
-  ['jobs-tbody','jobs-tbody-2'].forEach(tid=>{
+  ["jobs-tbody","jobs-tbody-2"].forEach(tid=>{
     const tb=document.getElementById(tid);if(!tb)return;
     const list=Object.entries(J).sort((a,b)=>(b[1].createdAt||0)-(a[1].createdAt||0));
-    if(list.length===0){tb.innerHTML='<tr><td colspan="9" class="empty-row">No jobs yet. Customer creates a job → appears here instantly.</td></tr>';return;}
+    if(!list.length){tb.innerHTML='<tr><td colspan="9" class="empty-row">No jobs yet. Customers create jobs → appear here instantly.</td></tr>';return;}
     tb.innerHTML=list.map(([id,j])=>`
-      <tr class="${j.status==='done'?'row-done':''}">
+      <tr class="${j.status==="done"?"row-done":""}">
         <td><span class="mono">#${j.id||id.slice(-6)}</span></td>
-        <td>${j.customerName||'—'}</td>
-        <td style="font-size:11px;max-width:100px">${j.vehicle||'—'}</td>
+        <td>${j.customerName||"—"}</td>
+        <td style="font-size:11px;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${j.vehicle||"—"}</td>
         <td>${j.mechanic||'<span class="muted">Unassigned</span>'}</td>
-        <td style="font-size:11px;max-width:80px">${(j.issue||'—').slice(0,40)}</td>
-        <td>${j.status==='done'&&j.finalPrice?'<span class="price-final">₹'+j.finalPrice+'</span>':'<span class="price-est">₹'+(j.estimateLow||'?')+'–'+(j.estimateHigh||'?')+'</span>'}</td>
+        <td style="font-size:11px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(j.issue||"—").slice(0,35)}</td>
+        <td>${j.status==="done"&&j.finalPrice?'<span class="price-final">₹'+Math.round(j.finalPrice)+'</span>':'<span class="price-est">₹'+(j.estimateLow||"?")+"–"+(j.estimateHigh||"?")+"</span>"}</td>
         <td><span class="bdg ${sBadge(j.status)}">${sLabel(j.status)}</span></td>
-        <td><span class="bdg ${pBadge(j.partType)}">${j.partType||'—'}</span></td>
+        <td><span class="bdg ${pBadge(j.partType)}">${j.partType||"—"}</span></td>
         <td><button class="del-btn" onclick="delJob('${id}')">🗑</button></td>
-      </tr>`).join('');
+      </tr>`).join("");
   });
 }
 
 function renderMechanics(){
-  const tb=document.getElementById('mechs-tbody');if(!tb)return;
+  const tb=document.getElementById("mechs-tbody");if(!tb)return;
   const list=Object.entries(M).sort((a,b)=>(b[1].createdAt||0)-(a[1].createdAt||0));
-  if(list.length===0){tb.innerHTML='<tr><td colspan="9" class="empty-row">No mechanics registered yet. Open Mechanic app → register → appear here.</td></tr>';return;}
+  if(!list.length){tb.innerHTML='<tr><td colspan="8" class="empty-row">No mechanics yet.</td></tr>';return;}
   tb.innerHTML=list.map(([uid,m])=>{
-    const pfpHtml=m.pfp?`<img src="${m.pfp}" style="width:28px;height:28px;border-radius:50%;object-fit:cover;flex-shrink:0">`:`<div class="mini-av" style="background:#1D4ED8">${(m.name||'M').substr(0,2).toUpperCase()}</div>`;
+    const pfpHtml=m.pfp?`<img src="${m.pfp}" style="width:28px;height:28px;border-radius:50%;object-fit:cover;flex-shrink:0">`:`<div class="mini-av" style="background:#1D4ED8">${(m.name||"M").substr(0,2).toUpperCase()}</div>`;
+    // FIX 34: show actual GPS coords not just true/false
+    const gpsStr=m.lat?m.lat.toFixed(3)+"°N":(m.gpsOn?"ON":"OFF");
     return `<tr>
-      <td><div style="display:flex;align-items:center;gap:6px">${pfpHtml}<span>${m.name||'—'}</span></div></td>
-      <td>${m.phone||'—'}</td>
-      <td>${m.city||'—'}</td>
-      <td style="font-size:11px;max-width:100px">${m.skills||'General'}</td>
-      <td><span class="${m.gpsOn?'status-on':'status-off'}">${m.gpsOn?'📍 ON':'OFF'}</span></td>
-      <td><span class="${m.status==='online'?'status-on':m.status==='enroute'?'status-warn':'status-off'}">${m.status||'offline'}</span></td>
-      <td>
-        ${m.verified
-          ?'<span class="bdg b-g">✅ Verified</span>'
-          :`<span class="bdg b-y">⏳ Pending</span> <button class="action-btn" onclick="verifyMech('${uid}')">Verify ✓</button>`}
-      </td>
-      <td><button class="del-btn" onclick="delMech('${uid}','${(m.name||'').replace(/'/g,'')}')">🗑 Del</button></td>
+      <td><div style="display:flex;align-items:center;gap:6px">${pfpHtml}<span>${m.name||"—"}</span></div></td>
+      <td>${m.phone||"—"}</td>
+      <td>${m.city||"—"}</td>
+      <td style="font-size:11px;max-width:90px">${m.skills||"General"}</td>
+      <td><span class="${m.lat?"status-on":"status-off"}">${gpsStr}</span></td>
+      <td><span class="${m.status==="online"?"status-on":m.status==="enroute"?"status-warn":"status-off"}">${m.status||"offline"}</span></td>
+      <td>${m.verified?'<span class="bdg b-g">✅ Verified</span>':'<span class="bdg b-y">⏳ Pending</span> <button class="action-btn" onclick="verifyMech(\'${uid}\')">Verify ✓</button>'}</td>
+      <td><button class="del-btn" onclick="delMech('${uid}','${(m.name||"").replace(/'/g,"")}')">🗑 Del</button></td>
     </tr>`;
-  }).join('');
+  }).join("");
 }
 
 function renderCustomers(){
-  const tb=document.getElementById('custs-tbody');if(!tb)return;
+  const tb=document.getElementById("custs-tbody");if(!tb)return;
   const list=Object.entries(C).sort((a,b)=>(b[1].createdAt||0)-(a[1].createdAt||0));
-  if(list.length===0){tb.innerHTML='<tr><td colspan="7" class="empty-row">No customers registered yet. Open Customer app → register → appear here.</td></tr>';return;}
+  if(!list.length){tb.innerHTML='<tr><td colspan="7" class="empty-row">No customers yet.</td></tr>';return;}
+  // FIX 22: count jobs per customer
+  const jobsByCustomer={};
+  Object.values(J).forEach(j=>{if(j.customerId)jobsByCustomer[j.customerId]=(jobsByCustomer[j.customerId]||0)+1;});
   tb.innerHTML=list.map(([uid,c])=>{
-    const pfpHtml=c.pfp?`<img src="${c.pfp}" style="width:26px;height:26px;border-radius:50%;object-fit:cover;flex-shrink:0">`:`<div class="mini-av" style="background:rgba(249,115,22,.2);color:#F97316;border:1px solid #F97316">${(c.name||'C').substr(0,2).toUpperCase()}</div>`;
+    const pfpHtml=c.pfp?`<img src="${c.pfp}" style="width:26px;height:26px;border-radius:50%;object-fit:cover;flex-shrink:0">`:`<div class="mini-av" style="background:rgba(249,115,22,.2);color:#F97316;border:1px solid #F97316">${(c.name||"C").substr(0,2).toUpperCase()}</div>`;
     return `<tr>
-      <td><div style="display:flex;align-items:center;gap:6px">${pfpHtml}<span>${c.name||'—'}</span></div></td>
-      <td>${c.phone||'—'}</td>
-      <td>${c.email||'—'}</td>
-      <td>${c.city||'—'}</td>
-      <td class="muted">${ago(c.createdAt)}</td>
-      <td><span class="bdg b-g">Active</span></td>
-      <td><button class="del-btn" onclick="delCust('${uid}','${(c.name||'').replace(/'/g,'')}')">🗑 Del</button></td>
+      <td><div style="display:flex;align-items:center;gap:6px">${pfpHtml}<span>${c.name||"—"}</span></div></td>
+      <td>${c.phone||"—"}</td>
+      <td>${c.email||"—"}</td>
+      <td>${c.city||"—"}</td>
+      <td style="font-weight:600;color:var(--or)">${jobsByCustomer[uid]||0}</td>
+      <td class="muted" title="${c.createdAt?new Date(c.createdAt).toLocaleString("en-IN"):""}">${ago(c.createdAt)}</td>
+      <td><button class="del-btn" onclick="delCust('${uid}','${(c.name||"").replace(/'/g,"")}')">🗑 Del</button></td>
     </tr>`;
-  }).join('');
+  }).join("");
 }
 
 function renderAlerts(){
-  const container=document.getElementById('alerts-container');if(!container)return;
+  const container=document.getElementById("alerts-container");if(!container)return;
   const list=Object.entries(A).sort((a,b)=>(b[1].time||0)-(a[1].time||0));
-  if(list.length===0){container.innerHTML='<div class="empty-card">No alerts. SOS from Customer or Mechanic app appears here instantly with GPS + Google Maps link.</div>';return;}
+  if(!list.length){container.innerHTML='<div class="empty-card">No alerts yet. SOS from any app appears here in under 1 second with GPS + Google Maps link.</div>';return;}
+  // FIX 30: no infinite animation on resolved alerts
   container.innerHTML=list.map(([id,a])=>`
-    <div class="alert-card ${a.status==='active'?'alert-active':'alert-done'}">
-      <div style="font-size:22px;flex-shrink:0">${a.type&&a.type.includes('sos')?'🆘':'⚠️'}</div>
+    <div class="alert-card ${a.status==="active"?"alert-active":"alert-done"}">
+      <div style="font-size:22px;flex-shrink:0">${a.type&&a.type.includes("sos")?"🆘":"⚠️"}</div>
       <div style="flex:1;min-width:0">
-        <div style="font-size:13px;font-weight:600;margin-bottom:3px">${a.type==='customer_sos'?'Customer SOS':a.type==='mechanic_sos'?'Mechanic SOS':'Alert'} — <strong>${a.name||'?'}</strong></div>
-        <div style="font-size:11px;color:var(--tx2);margin-top:2px">📍 ${a.location||'—'} · 📞 ${a.phone||'—'} · App: ${a.app||'—'}</div>
-        ${a.mapsLink?`<a href="${a.mapsLink}" target="_blank" style="font-size:11px;color:var(--bl)">📌 Open in Google Maps</a>`:''}
-        <div style="font-size:10px;color:var(--tx3);margin-top:2px">${new Date(a.time||Date.now()).toLocaleString('en-IN')}</div>
+        <div style="font-size:13px;font-weight:600;margin-bottom:3px">${a.type==="customer_sos"?"Customer SOS":a.type==="mechanic_sos"?"Mechanic SOS":"Alert"} — <strong>${a.name||"?"}</strong></div>
+        <div style="font-size:11px;color:var(--tx2);margin-top:2px">📞 ${a.phone||"—"} · App: ${a.app||"—"}</div>
+        <div style="font-size:11px;color:var(--tx2);margin-top:2px">📍 ${a.location||"—"}</div>
+        ${a.mapsLink?`<a href="${a.mapsLink}" target="_blank" style="font-size:11px;color:var(--bl)">📌 Open in Google Maps →</a>`:""}
+        <div style="font-size:10px;color:var(--tx3);margin-top:2px">${a.time?new Date(a.time).toLocaleString("en-IN"):""}</div>
       </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex-shrink:0">
-        <span class="bdg ${a.status==='active'?'b-r':'b-g'}">${a.status||'active'}</span>
-        ${a.status==='active'?`<button class="action-btn green" onclick="resolveAlert('${id}')">Resolve</button>`:''}
+        <span class="bdg ${a.status==="active"?"b-r":"b-g"}">${a.status||"active"}</span>
+        ${a.status==="active"?`<button class="action-btn green" onclick="resolveAlert('${id}')">Resolve</button>`:""}
         <button class="del-btn" onclick="delAlert('${id}')">🗑</button>
       </div>
-    </div>`).join('');
+    </div>`).join("");
 }
 
-// ── ACTIONS ──────────────────────────────────────────
 window.verifyMech=uid=>{
-  update(ref(db,'mechanics/'+uid),{verified:true});
-  toast('✅ Mechanic verified — they will auto-redirect now');
+  update(ref(db,"mechanics/"+uid),{verified:true});
+  toast("✅ Mechanic verified — they will auto-redirect now");
 };
-window.delMech=(uid,name)=>{if(!confirm('Delete mechanic "'+name+'"?'))return;remove(ref(db,'mechanics/'+uid));toast('Deleted');};
-window.delCust=(uid,name)=>{if(!confirm('Delete customer "'+name+'"?'))return;remove(ref(db,'customers/'+uid));toast('Deleted');};
-window.delJob=id=>{if(!confirm('Delete this job?'))return;remove(ref(db,'jobs/'+id));toast('Deleted');};
-window.delAlert=id=>{remove(ref(db,'alerts/'+id));toast('Alert removed');};
-window.resolveAlert=id=>{update(ref(db,'alerts/'+id),{status:'resolved'});};
+// FIX 46: admin delete with undo-style confirmation
+window.delMech=(uid,name)=>{if(!confirm("Delete mechanic \""+name+"\"? This cannot be undone."))return;remove(ref(db,"mechanics/"+uid));toast("Deleted");};
+window.delCust=(uid,name)=>{if(!confirm("Delete customer \""+name+"\"? This cannot be undone."))return;remove(ref(db,"customers/"+uid));toast("Deleted");};
+window.delJob=id=>{if(!confirm("Delete this job? This cannot be undone."))return;remove(ref(db,"jobs/"+id));toast("Deleted");};
+window.delAlert=id=>{remove(ref(db,"alerts/"+id));toast("Alert removed");};
+window.resolveAlert=id=>{update(ref(db,"alerts/"+id),{status:"resolved",resolvedAt:Date.now()});};
 
-// ── HELPERS ───────────────────────────────────────────
 function setEl(id,val){const e=document.getElementById(id);if(e)e.textContent=val;}
-function ago(ts){if(!ts)return'—';const s=Math.floor((Date.now()-ts)/1000);if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';if(s<86400)return Math.floor(s/3600)+'h';return Math.floor(s/86400)+'d';}
-function sLabel(s){return{pending:'Posted — pending',searching_mechanic:'Searching mechanic',mechanic_assigned:'Mechanic accepted ✅',enroute:'En route to customer',fixing:'Fixing vehicle',done:'Done ✓',declined:'Declined'}[s]||s||'—';}
-function sBadge(s){return{done:'b-g',fixing:'b-b',enroute:'b-p',mechanic_assigned:'b-g',searching_mechanic:'b-o',pending:'b-y',declined:'b-off'}[s]||'b-y';}
-function pBadge(t){return t==='OEM'?'b-b':t==='ODM'?'b-g':'b-y';}
-function toast(msg){let t=document.getElementById('a-toast');if(!t){t=document.createElement('div');t.id='a-toast';t.style.cssText='position:fixed;bottom:18px;right:18px;background:var(--card);border:1px solid var(--bdr2);color:var(--tx);padding:9px 16px;border-radius:9px;font-size:13px;z-index:999;transition:opacity .3s';document.body.appendChild(t);}t.textContent=msg;t.style.opacity='1';clearTimeout(window._aT);window._aT=setTimeout(()=>{t.style.opacity='0';},2200);}
-setInterval(()=>{const e=document.getElementById('live-time');if(e)e.textContent=new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});},1000);
+// FIX 49: ago with title tooltip showing absolute date
+function ago(ts){
+  if(!ts)return"—";
+  const s=Math.floor((Date.now()-ts)/1000);
+  if(s<60)return s+"s ago";if(s<3600)return Math.floor(s/60)+"m ago";
+  if(s<86400)return Math.floor(s/3600)+"h ago";
+  return Math.floor(s/86400)+"d ago";
+}
+function sLabel(s){return{pending:"Posted",searching_mechanic:"Searching",mechanic_assigned:"Accepted ✅",enroute:"En route 🛵",fixing:"Fixing 🔧",customer_done:"Customer done",done:"Done ✓",declined:"Declined"}[s]||s||"—";}
+function sBadge(s){return{done:"b-g",fixing:"b-b",enroute:"b-p",mechanic_assigned:"b-g",searching_mechanic:"b-o",pending:"b-y",declined:"b-off",customer_done:"b-y"}[s]||"b-y";}
+function pBadge(t){return t==="OEM"?"b-b":t==="ODM"?"b-g":"b-y";}
+function toast(msg){let t=document.getElementById("a-toast");if(!t){t=document.createElement("div");t.id="a-toast";t.style.cssText="position:fixed;bottom:18px;right:18px;background:var(--card);border:1px solid var(--bdr2);color:var(--tx);padding:9px 16px;border-radius:9px;font-size:13px;z-index:999;transition:opacity .3s";document.body.appendChild(t);}t.textContent=msg;t.style.opacity="1";clearTimeout(window._aT);window._aT=setTimeout(()=>{t.style.opacity="0";},2200);}
+setInterval(()=>{const e=document.getElementById("live-time");if(e)e.textContent=new Date().toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit",second:"2-digit"});},1000);
 </script>
 <style>
-:root{--bg:#080C18;--bg2:#0F1626;--bg3:#162035;--card:#111E33;--bdr:rgba(255,255,255,.06);--bdr2:rgba(255,255,255,.11);--tx:#EEF2FF;--tx2:#7B90B8;--tx3:#3D5070;--or:#F97316;--or2:rgba(249,115,22,.13);--bl:#3B82F6;--bl2:rgba(59,130,246,.13);--gn:#22C55E;--gn2:rgba(34,197,94,.11);--rd:#EF4444;--rd2:rgba(239,68,68,.12);--yw:#EAB308;--yw2:rgba(234,179,8,.11);--pu:#A855F7;--pu2:rgba(168,85,247,.11);--fh:'Syne',sans-serif;--fb:'DM Sans',sans-serif;--r:9px;--r2:14px;--sw:210px}
+:root{--bg:#080C18;--bg2:#0F1626;--bg3:#162035;--card:#111E33;--bdr:rgba(255,255,255,.06);--bdr2:rgba(255,255,255,.11);--tx:#EEF2FF;--tx2:#7B90B8;--tx3:#3D5070;--or:#F97316;--or2:rgba(249,115,22,.13);--bl:#3B82F6;--bl2:rgba(59,130,246,.13);--gn:#22C55E;--gn2:rgba(34,197,94,.11);--rd:#EF4444;--rd2:rgba(239,68,68,.12);--yw:#EAB308;--yw2:rgba(234,179,8,.11);--pu:#A855F7;--pu2:rgba(168,85,247,.11);--fh:"Syne",system-ui,sans-serif;--fb:"DM Sans",system-ui,sans-serif;--r:9px;--r2:14px;--sw:210px}
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden;background:var(--bg);font-family:var(--fb);color:var(--tx)}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
@@ -196,20 +211,16 @@ html,body{height:100%;overflow:hidden;background:var(--bg);font-family:var(--fb)
 .login-box{background:var(--card);border:1px solid var(--bdr2);border-radius:var(--r2);padding:24px;width:100%;max-width:340px}
 .login-logo{font-family:var(--fh);font-size:24px;font-weight:800;text-align:center;margin-bottom:4px}
 .login-logo em{color:var(--or);font-style:normal}
-.fld{margin-bottom:10px}
-.fld label{display:block;font-size:11px;font-weight:500;color:var(--tx2);margin-bottom:3px}
+.fld{margin-bottom:10px}.fld label{display:block;font-size:11px;font-weight:500;color:var(--tx2);margin-bottom:3px}
 .fld input{background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:14px;padding:9px 11px;width:100%;outline:none;transition:border .15s}
-.fld input:focus{border-color:var(--or)}
-.fld input::placeholder{color:var(--tx3)}
+.fld input:focus{border-color:var(--or)}.fld input::placeholder{color:var(--tx3)}
 #admin-app{display:none;height:100vh;overflow:hidden}
-.sidebar{width:var(--sw);flex-shrink:0;background:var(--bg2);border-right:1px solid var(--bdr);display:flex;flex-direction:column;height:100vh;overflow-y:auto}
-.sidebar::-webkit-scrollbar{display:none}
+.sidebar{width:var(--sw);flex-shrink:0;background:var(--bg2);border-right:1px solid var(--bdr);display:flex;flex-direction:column;height:100vh;overflow-y:auto}.sidebar::-webkit-scrollbar{display:none}
 .sb-logo{padding:16px 14px 12px;border-bottom:1px solid var(--bdr)}
-.sb-logo-t{font-family:var(--fh);font-size:16px;font-weight:800}
-.sb-logo-t em{color:var(--or);font-style:normal}
+.sb-logo-t{font-family:var(--fh);font-size:16px;font-weight:800}.sb-logo-t em{color:var(--or);font-style:normal}
 .sb-live{display:flex;align-items:center;gap:5px;padding:7px 12px;font-size:11px;color:var(--gn);border-bottom:1px solid var(--bdr)}
 .live-dot{width:6px;height:6px;border-radius:50%;background:var(--gn);animation:blink 1.2s infinite}
-.sb-sos{background:var(--rd2);border:1px solid rgba(239,68,68,.25);border-radius:var(--r);padding:7px 10px;margin:6px 8px;display:flex;align-items:center;gap:7px;cursor:pointer;animation:blink 1.5s infinite;display:none}
+.sb-sos{background:var(--rd2);border:1px solid rgba(239,68,68,.25);border-radius:var(--r);padding:7px 10px;margin:6px 8px;display:flex;align-items:center;gap:7px;cursor:pointer;display:none}
 .sos-cnt{font-family:var(--fh);font-size:11px;font-weight:700;color:var(--rd)}
 .sb-sec{padding:10px 10px 4px;font-family:var(--fh);font-size:10px;font-weight:700;color:var(--tx3);letter-spacing:.1em;text-transform:uppercase}
 .sb-item{display:flex;align-items:center;gap:7px;padding:7px 11px;margin:1px 5px;border-radius:var(--r);cursor:pointer;transition:background .12s;font-size:13px;color:var(--tx2)}
@@ -219,8 +230,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);font-family:var(--fb)
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
 .topbar{flex-shrink:0;padding:11px 16px;background:var(--bg2);border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;gap:10px}
 .tb-title{font-family:var(--fh);font-size:15px;font-weight:700;white-space:nowrap}
-.content{flex:1;overflow-y:auto;padding:14px 16px}
-.content::-webkit-scrollbar{width:3px}.content::-webkit-scrollbar-thumb{background:var(--bdr2);border-radius:2px}
+.content{flex:1;overflow-y:auto;padding:14px 16px}.content::-webkit-scrollbar{width:3px}.content::-webkit-scrollbar-thumb{background:var(--bdr2);border-radius:2px}
 .view{display:none}.view.active{display:block}
 .bdg{display:inline-flex;align-items:center;font-size:11px;font-weight:600;padding:2px 7px;border-radius:999px;white-space:nowrap}
 .b-g{background:var(--gn2);color:var(--gn)}.b-o{background:var(--or2);color:var(--or)}.b-r{background:var(--rd2);color:var(--rd)}.b-b{background:var(--bl2);color:var(--bl)}.b-y{background:var(--yw2);color:var(--yw)}.b-p{background:var(--pu2);color:var(--pu)}.b-off{background:rgba(255,255,255,.06);color:var(--tx2)}
@@ -228,33 +238,26 @@ html,body{height:100%;overflow:hidden;background:var(--bg);font-family:var(--fb)
 .price-final{font-family:var(--fh);font-weight:700;color:var(--or)}.price-est{font-size:11px;color:var(--yw)}
 .empty-row{text-align:center;color:var(--tx3);padding:22px 20px;font-size:13px}
 .empty-card{text-align:center;color:var(--tx3);padding:32px 20px;font-size:13px;background:var(--card);border-radius:var(--r2);border:1px solid var(--bdr)}
-.status-on{color:var(--gn);font-size:12px;font-weight:500}
-.status-warn{color:var(--yw);font-size:12px;font-weight:500}
-.status-off{color:var(--tx3);font-size:12px}
+.status-on{color:var(--gn);font-size:12px;font-weight:500}.status-warn{color:var(--yw);font-size:12px;font-weight:500}.status-off{color:var(--tx3);font-size:12px}
 .action-btn{background:var(--bl2);color:var(--bl);border:none;border-radius:5px;padding:3px 8px;font-size:11px;font-weight:600;cursor:pointer;font-family:var(--fh)}
 .action-btn.green{background:var(--gn2);color:var(--gn)}
 .del-btn{background:var(--rd2);color:var(--rd);border:none;border-radius:5px;padding:3px 8px;font-size:11px;font-weight:600;cursor:pointer;font-family:var(--fh)}
-/* CLICKABLE KPI CARDS */
 .kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
 .kpi-grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px}
-.kpi{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:12px;cursor:pointer;transition:border-color .15s}
-.kpi:hover{border-color:var(--bdr2)}
-.kpi-ico{font-size:19px;margin-bottom:6px}
-.kpi-val{font-family:var(--fh);font-size:20px;font-weight:800;margin-bottom:2px}
-.kpi-lbl{font-size:11px;color:var(--tx2)}
-.kpi-hint{font-size:10px;color:var(--tx3);margin-top:2px}
+.kpi{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:12px;cursor:pointer;transition:border-color .15s}.kpi:hover{border-color:var(--bdr2)}
+.kpi-ico{font-size:19px;margin-bottom:6px}.kpi-val{font-family:var(--fh);font-size:20px;font-weight:800;margin-bottom:2px}.kpi-lbl{font-size:11px;color:var(--tx2)}.kpi-hint{font-size:10px;color:var(--tx3);margin-top:2px}
 .table-wrap{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);overflow:hidden;margin-bottom:12px}
 .table-head{padding:10px 13px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between}
 .table-head-title{font-family:var(--fh);font-size:12px;font-weight:700}
-table{width:100%;border-collapse:collapse}
-th{font-family:var(--fh);font-size:10px;font-weight:700;color:var(--tx3);letter-spacing:.07em;text-transform:uppercase;padding:7px 10px;text-align:left;border-bottom:1px solid var(--bdr);white-space:nowrap}
-td{padding:7px 10px;border-bottom:1px solid var(--bdr);font-size:12px;vertical-align:middle}
+table{width:100%;border-collapse:collapse;table-layout:fixed}
+th{font-family:var(--fh);font-size:10px;font-weight:700;color:var(--tx3);letter-spacing:.07em;text-transform:uppercase;padding:7px 10px;text-align:left;border-bottom:1px solid var(--bdr);white-space:nowrap;overflow:hidden}
+td{padding:7px 10px;border-bottom:1px solid var(--bdr);font-size:12px;vertical-align:middle;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 tr:last-child td{border-bottom:none}
 tr:hover td{background:rgba(255,255,255,.015)}
 tr.row-done td{opacity:.6}
 .mini-av{width:26px;height:26px;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;font-family:var(--fh);font-size:10px;font-weight:700;flex-shrink:0}
 .alert-card{display:flex;align-items:flex-start;gap:10px;padding:11px 13px;border-radius:var(--r2);margin-bottom:7px;border:1px solid var(--bdr)}
-.alert-active{background:var(--rd2);border-color:rgba(239,68,68,.3);animation:blink 2s 4}
+.alert-active{background:var(--rd2);border-color:rgba(239,68,68,.3)}
 .alert-done{background:var(--card);opacity:.7}
 .info-box{background:linear-gradient(135deg,rgba(249,115,22,.1),rgba(249,115,22,.03));border:1px solid rgba(249,115,22,.22);border-radius:var(--r2);padding:13px;margin-bottom:12px}
 .info-box h3{font-family:var(--fh);font-size:13px;font-weight:700;color:var(--or);margin-bottom:8px}
@@ -263,7 +266,6 @@ tr.row-done td{opacity:.6}
 </style>
 </head>
 <body>
-<!-- LOGIN -->
 <div id="login-screen">
   <div class="login-box">
     <div class="login-logo">Road<em>Fix</em> Admin</div>
@@ -272,14 +274,12 @@ tr.row-done td{opacity:.6}
     <div class="fld"><label>Password</label><input id="al-pass" type="password" placeholder="••••••••" autocomplete="current-password"></div>
     <div style="font-size:11px;color:var(--rd);text-align:center;margin-bottom:8px;min-height:14px" id="al-err"></div>
     <button style="width:100%;background:var(--or);color:#fff;border:none;border-radius:var(--r);padding:11px;font-family:var(--fh);font-size:14px;font-weight:700;cursor:pointer" onclick="adminLogin()">Sign in →</button>
-    <div style="font-size:10px;color:var(--tx3);text-align:center;margin-top:10px;line-height:1.6">Use Firebase Auth credentials<br>Create one at console.firebase.google.com</div>
+    <div style="font-size:10px;color:var(--tx3);text-align:center;margin-top:10px;line-height:1.6">Create admin account in Firebase Auth console<br>Then add UID to /admins/ node in Realtime DB</div>
   </div>
 </div>
-
-<!-- ADMIN APP -->
 <div id="admin-app" style="display:none;height:100vh;overflow:hidden;display:flex">
   <div class="sidebar">
-    <div class="sb-logo"><div class="sb-logo-t">Road<em>Fix</em></div><div style="font-size:10px;color:var(--tx3);margin-top:2px">Admin Panel v4</div></div>
+    <div class="sb-logo"><div class="sb-logo-t">Road<em>Fix</em></div><div style="font-size:10px;color:var(--tx3);margin-top:2px">Admin Panel v7</div></div>
     <div class="sb-live"><div class="live-dot"></div>Firebase connected · Live</div>
     <div class="sb-sos" id="sos-sidebar" onclick="showView('v-alerts')">
       <span style="font-size:15px">🆘</span>
@@ -300,7 +300,6 @@ tr.row-done td{opacity:.6}
       <button style="width:100%;background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);padding:7px;color:var(--tx2);font-size:11px;cursor:pointer;margin-top:5px;font-family:var(--fh);font-weight:600" onclick="adminLogout()">Sign out</button>
     </div>
   </div>
-
   <div class="main">
     <div class="topbar">
       <div class="tb-title" id="tb-title">Dashboard</div>
@@ -309,80 +308,42 @@ tr.row-done td{opacity:.6}
         <span class="bdg b-r" id="sos-badge" style="display:none;cursor:pointer" onclick="showView('v-alerts')">🆘 0</span>
       </div>
     </div>
-
     <div class="content">
-      <!-- DASHBOARD — all KPI cards CLICKABLE to navigate -->
       <div id="v-dash" class="view active">
         <div class="kpi-grid">
-          <div class="kpi" onclick="showView('v-jobs')" title="Click to view all jobs">
-            <div class="kpi-ico">🔧</div><div class="kpi-val" style="color:var(--or)" id="d-active">0</div>
-            <div class="kpi-lbl">Active jobs</div><div class="kpi-hint">↗ Click to view</div>
-          </div>
-          <div class="kpi" onclick="showView('v-jobs')" title="Click to view jobs">
-            <div class="kpi-ico">✅</div><div class="kpi-val" style="color:var(--gn)" id="d-done">0</div>
-            <div class="kpi-lbl">Completed</div><div class="kpi-hint">↗ Click to view</div>
-          </div>
-          <div class="kpi" onclick="showView('v-mechs')" title="Click to view mechanics">
-            <div class="kpi-ico">👷</div><div class="kpi-val" style="color:var(--bl)" id="d-online">0</div>
-            <div class="kpi-lbl">Mechanics online</div><div class="kpi-hint">↗ Click to manage</div>
-          </div>
-          <div class="kpi" onclick="showView('v-dash')">
-            <div class="kpi-ico">💰</div><div class="kpi-val" style="color:var(--gn)" id="d-gmv">₹0</div>
-            <div class="kpi-lbl">GMV (paid)</div>
-          </div>
+          <div class="kpi" onclick="showView('v-jobs')" title="View all jobs"><div class="kpi-ico">🔧</div><div class="kpi-val" style="color:var(--or)" id="d-active">0</div><div class="kpi-lbl">Active jobs</div><div class="kpi-hint">↗ Click to view</div></div>
+          <div class="kpi" onclick="showView('v-jobs')" title="Completed jobs"><div class="kpi-ico">✅</div><div class="kpi-val" style="color:var(--gn)" id="d-done">0</div><div class="kpi-lbl">Completed</div><div class="kpi-hint">↗ Click to view</div></div>
+          <div class="kpi" onclick="showView('v-mechs')" title="Mechanics online"><div class="kpi-ico">👷</div><div class="kpi-val" style="color:var(--bl)" id="d-online">0</div><div class="kpi-lbl">Mechanics online</div><div class="kpi-hint">↗ Click to manage</div></div>
+          <div class="kpi"><div class="kpi-ico">💰</div><div class="kpi-val" style="color:var(--gn)" id="d-gmv">₹0</div><div class="kpi-lbl">GMV (completed)</div></div>
         </div>
         <div class="kpi-grid">
-          <div class="kpi" onclick="showView('v-custs')" title="Click to view customers">
-            <div class="kpi-ico">👥</div><div class="kpi-val" style="color:var(--yw)" id="d-custs">0</div>
-            <div class="kpi-lbl">Customers</div><div class="kpi-hint">↗ Click to manage</div>
-          </div>
-          <div class="kpi" onclick="showView('v-alerts')" title="Click to view SOS alerts">
-            <div class="kpi-ico">🚨</div><div class="kpi-val" style="color:var(--rd)" id="d-sos">0</div>
-            <div class="kpi-lbl">Active SOS</div><div class="kpi-hint">↗ Click to view</div>
-          </div>
-          <div class="kpi" onclick="showView('v-mechs')" title="Click to verify mechanics">
-            <div class="kpi-ico">⏳</div><div class="kpi-val" style="color:var(--yw)" id="d-pending">0</div>
-            <div class="kpi-lbl">Pending verify</div><div class="kpi-hint">↗ Click to verify</div>
-          </div>
-          <div class="kpi" onclick="showView('v-mechs')" title="Click to view verified mechanics">
-            <div class="kpi-ico">✅</div><div class="kpi-val" style="color:var(--gn)" id="d-verified">0</div>
-            <div class="kpi-lbl">Verified mechs</div><div class="kpi-hint">↗ Click to view</div>
-          </div>
+          <div class="kpi" onclick="showView('v-custs')" title="Customers"><div class="kpi-ico">👥</div><div class="kpi-val" style="color:var(--yw)" id="d-custs">0</div><div class="kpi-lbl">Customers</div><div class="kpi-hint">↗ Click to manage</div></div>
+          <div class="kpi" onclick="showView('v-alerts')" title="Active SOS"><div class="kpi-ico">🚨</div><div class="kpi-val" style="color:var(--rd)" id="d-sos">0</div><div class="kpi-lbl">Active SOS</div><div class="kpi-hint">↗ Click to view</div></div>
+          <div class="kpi" onclick="showView('v-mechs')" title="Pending verification"><div class="kpi-ico">⏳</div><div class="kpi-val" style="color:var(--yw)" id="d-pending">0</div><div class="kpi-lbl">Pending verify</div><div class="kpi-hint">↗ Click to verify</div></div>
+          <div class="kpi" onclick="showView('v-mechs')" title="Verified mechanics"><div class="kpi-ico">✅</div><div class="kpi-val" style="color:var(--gn)" id="d-verified">0</div><div class="kpi-lbl">Verified mechs</div><div class="kpi-hint">↗ Click to view</div></div>
         </div>
-
         <div class="info-box">
-          <h3>🎯 How to use this panel</h3>
-          <div class="info-step"><div class="info-n">1</div><div>All KPI cards above are clickable — click any card to navigate to that section</div></div>
-          <div class="info-step"><div class="info-n">2</div><div>Mechanic registers → appears in Mechanics tab as ⏳ Pending → click <strong>Verify ✓</strong> → mechanic auto-enters app instantly</div></div>
-          <div class="info-step"><div class="info-n">3</div><div>Customer triggers SOS → red alert with GPS + Google Maps link appears in Alerts tab in under 1 second</div></div>
-          <div class="info-step"><div class="info-n">4</div><div>Delete any mechanic, customer, job or alert using the 🗑 buttons — confirmation required</div></div>
-          <div class="info-step"><div class="info-n">5</div><div>All data is real-time — open Customer + Mechanic apps in other tabs and watch changes here instantly</div></div>
+          <h3>🎯 Admin guide</h3>
+          <div class="info-step"><div class="info-n">1</div><div>All KPI cards are clickable — click any to navigate to that section</div></div>
+          <div class="info-step"><div class="info-n">2</div><div>Mechanic registers → Pending ⏳ → Click <strong>Verify ✓</strong> → mechanic auto-enters app instantly</div></div>
+          <div class="info-step"><div class="info-n">3</div><div>Customer SOS → red alert appears with GPS + Google Maps link in under 1 second</div></div>
+          <div class="info-step"><div class="info-n">4</div><div>FIX 8: Create admin in Firebase Auth → add UID to /admins/ node → same email won't show as customer</div></div>
         </div>
-
         <div class="table-wrap">
           <div class="table-head"><div class="table-head-title">Recent jobs (live)</div><span class="bdg b-g">● Live</span></div>
-          <div style="overflow-x:auto"><table><thead><tr><th>Job</th><th>Customer</th><th>Vehicle</th><th>Mechanic</th><th>Issue</th><th>Price</th><th>Status</th><th>Parts</th><th>Del</th></tr></thead><tbody id="jobs-tbody"><tr><td colspan="9" class="empty-row">No jobs yet</td></tr></tbody></table></div>
+          <div style="overflow-x:auto"><table><thead><tr><th style="width:80px">Job</th><th style="width:100px">Customer</th><th style="width:110px">Vehicle</th><th style="width:100px">Mechanic</th><th>Issue</th><th style="width:90px">Price</th><th style="width:90px">Status</th><th style="width:50px">Parts</th><th style="width:40px">Del</th></tr></thead><tbody id="jobs-tbody"><tr><td colspan="9" class="empty-row">No jobs yet</td></tr></tbody></table></div>
         </div>
       </div>
-
-      <!-- LIVE JOBS -->
       <div id="v-jobs" class="view">
         <div class="table-wrap">
           <div class="table-head"><div class="table-head-title">All jobs — live from Firebase</div><span class="bdg b-g">● Synced</span></div>
-          <div style="overflow-x:auto"><table><thead><tr><th>Job</th><th>Customer</th><th>Vehicle</th><th>Mechanic</th><th>Issue</th><th>Price</th><th>Status</th><th>Parts</th><th>Del</th></tr></thead><tbody id="jobs-tbody-2"><tr><td colspan="9" class="empty-row">No jobs yet</td></tr></tbody></table></div>
+          <div style="overflow-x:auto"><table><thead><tr><th style="width:80px">Job</th><th style="width:100px">Customer</th><th style="width:110px">Vehicle</th><th style="width:100px">Mechanic</th><th>Issue</th><th style="width:90px">Price</th><th style="width:90px">Status</th><th style="width:50px">Parts</th><th style="width:40px">Del</th></tr></thead><tbody id="jobs-tbody-2"><tr><td colspan="9" class="empty-row">No jobs yet</td></tr></tbody></table></div>
         </div>
       </div>
-
-      <!-- ALERTS -->
       <div id="v-alerts" class="view">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:11px">
-          <div style="font-family:var(--fh);font-size:13px;font-weight:700">Alerts & SOS — real time</div>
-          <span class="bdg b-g">● Live</span>
-        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:11px"><div style="font-family:var(--fh);font-size:13px;font-weight:700">Alerts & SOS</div><span class="bdg b-g">● Live</span></div>
         <div id="alerts-container"><div class="empty-card">No alerts yet.</div></div>
       </div>
-
-      <!-- MECHANICS — with pfp, verify, delete -->
       <div id="v-mechs" class="view">
         <div class="kpi-grid-3" style="margin-bottom:12px">
           <div class="kpi"><div class="kpi-ico">👷</div><div class="kpi-val" style="color:var(--gn)" id="d-m-online">0</div><div class="kpi-lbl">Online now</div></div>
@@ -390,12 +351,10 @@ tr.row-done td{opacity:.6}
           <div class="kpi"><div class="kpi-ico">⏳</div><div class="kpi-val" style="color:var(--yw)" id="d-m-pending">0</div><div class="kpi-lbl">Pending — click Verify</div></div>
         </div>
         <div class="table-wrap">
-          <div class="table-head"><div class="table-head-title">All mechanics — click Verify to activate</div><span class="bdg b-g">● Live</span></div>
-          <div style="overflow-x:auto"><table><thead><tr><th>Name + Photo</th><th>Phone</th><th>City</th><th>Skills</th><th>GPS</th><th>Status</th><th>Verification</th><th>Delete</th></tr></thead><tbody id="mechs-tbody"><tr><td colspan="8" class="empty-row">No mechanics yet</td></tr></tbody></table></div>
+          <div class="table-head"><div class="table-head-title">All mechanics</div><span class="bdg b-g">● Live</span></div>
+          <div style="overflow-x:auto"><table><thead><tr><th>Name + Photo</th><th>Phone</th><th>City</th><th>Skills</th><th style="width:70px">GPS</th><th style="width:70px">Status</th><th style="width:130px">Verification</th><th style="width:60px">Delete</th></tr></thead><tbody id="mechs-tbody"><tr><td colspan="8" class="empty-row">No mechanics yet</td></tr></tbody></table></div>
         </div>
       </div>
-
-      <!-- CUSTOMERS -->
       <div id="v-custs" class="view">
         <div class="kpi-grid-3" style="margin-bottom:12px">
           <div class="kpi"><div class="kpi-ico">👥</div><div class="kpi-val" style="color:var(--bl)" id="d-c-total">0</div><div class="kpi-lbl">Registered customers</div></div>
@@ -403,26 +362,26 @@ tr.row-done td{opacity:.6}
           <div class="kpi"><div class="kpi-ico">💰</div><div class="kpi-val" style="color:var(--gn)" id="d-c-gmv">₹0</div><div class="kpi-lbl">GMV</div></div>
         </div>
         <div class="table-wrap">
-          <div class="table-head"><div class="table-head-title">All customers</div><span class="bdg b-g">● Live</span></div>
-          <div style="overflow-x:auto"><table><thead><tr><th>Name + Photo</th><th>Phone</th><th>Email</th><th>City</th><th>Joined</th><th>Status</th><th>Delete</th></tr></thead><tbody id="custs-tbody"><tr><td colspan="7" class="empty-row">No customers yet</td></tr></tbody></table></div>
+          <div class="table-head"><div class="table-head-title">All customers (role=customer only)</div><span class="bdg b-g">● Live</span></div>
+          <div style="overflow-x:auto"><table><thead><tr><th>Name + Photo</th><th>Phone</th><th>Email</th><th>City</th><th style="width:60px">Jobs</th><th style="width:70px">Joined</th><th style="width:60px">Delete</th></tr></thead><tbody id="custs-tbody"><tr><td colspan="7" class="empty-row">No customers yet</td></tr></tbody></table></div>
         </div>
       </div>
     </div>
   </div>
 </div>
-
 <script>
-var views=['v-dash','v-jobs','v-alerts','v-mechs','v-custs'];
-var siMap={'v-dash':'si-dash','v-jobs':'si-jobs','v-alerts':'si-alerts','v-mechs':'si-mechs','v-custs':'si-custs'};
-var titles={'v-dash':'Dashboard','v-jobs':'Live jobs','v-alerts':'Alerts & SOS','v-mechs':'Mechanics','v-custs':'Customers'};
+var views=["v-dash","v-jobs","v-alerts","v-mechs","v-custs"];
+var siMap={"v-dash":"si-dash","v-jobs":"si-jobs","v-alerts":"si-alerts","v-mechs":"si-mechs","v-custs":"si-custs"};
+var titles={"v-dash":"Dashboard","v-jobs":"Live jobs","v-alerts":"Alerts & SOS","v-mechs":"Mechanics","v-custs":"Customers"};
 function showView(id){
-  views.forEach(v=>{var e=document.getElementById(v);if(e)e.classList.remove('active');});
-  var n=document.getElementById(id);if(n)n.classList.add('active');
-  Object.values(siMap).forEach(s=>{var e=document.getElementById(s);if(e)e.classList.remove('active');});
-  var si=siMap[id];if(si){var e=document.getElementById(si);if(e)e.classList.add('active');}
-  var t=document.getElementById('tb-title');if(t)t.textContent=titles[id]||'Admin';
+  views.forEach(v=>{var e=document.getElementById(v);if(e)e.classList.remove("active");});
+  var n=document.getElementById(id);if(n)n.classList.add("active");
+  Object.values(siMap).forEach(s=>{var e=document.getElementById(s);if(e)e.classList.remove("active");});
+  var si=siMap[id];if(si){var e=document.getElementById(si);if(e)e.classList.add("active");}
+  var t=document.getElementById("tb-title");if(t)t.textContent=titles[id]||"Admin";
 }
-document.addEventListener('keydown',e=>{if(e.key==='Enter'){var s=document.getElementById('login-screen');if(s&&s.style.display!=='none')window.adminLogin&&window.adminLogin();}});
+// FIX 41: Enter key submits admin login
+document.addEventListener("keydown",e=>{if(e.key==="Enter"){var s=document.getElementById("login-screen");if(s&&s.style.display!=="none")window.adminLogin&&window.adminLogin();}});
 </script>
 </body>
 </html>

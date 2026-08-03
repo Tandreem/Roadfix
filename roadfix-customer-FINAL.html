@@ -248,12 +248,19 @@ window.initVehicles=()=>{
     ['vl1','vl2'].forEach(cid=>{
       const c=ge(cid);if(!c)return;
       if(!list.length){c.innerHTML='<div class="ev">No vehicles yet. Add one below.</div>';return;}
-      c.innerHTML=list.map(v=>`<div class="vc${selVeh&&selVeh.id===v.id?' sel':''}" id="vc-${v.id}" onclick="pickVeh('${v.id}','${(v.make||'').replace(/'/g,"\\'")}','${(v.model||'').replace(/'/g,"\\'")}','${v.year}','${v.fuel}')"><div style="font-size:17px">${fIco(v.fuel)}</div><div style="font-size:11px;font-weight:600">${v.make} ${v.model}</div><div style="font-size:10px;color:var(--tx2)">${v.year}·${v.fuel}</div></div>`).join('');
+      c.innerHTML=list.map(v=>{const sel=selVeh&&selVeh.id===v.id?' sel':'';const mk=(v.make||'').replace(/"/g,'&quot;');const mo=(v.model||'').replace(/"/g,'&quot;');return '<div class="vc'+sel+'" id="vc-'+v.id+'" data-id="'+v.id+'" data-make="'+mk+'" data-model="'+mo+'" data-year="'+v.year+'" data-fuel="'+v.fuel+'" onclick="pickVehEl(this)"><div style="font-size:17px">'+fIco(v.fuel)+'</div><div style="font-size:11px;font-weight:600">'+v.make+' '+v.model+'</div><div style="font-size:10px;color:var(--tx2)">'+v.year+'·'+v.fuel+'</div></div>';}).join('');
       if(!selVeh&&list[0]){const v=list[0];selVeh={id:v.id,make:v.make,model:v.model,year:v.year,fuel:v.fuel};qsa('#vc-'+v.id).forEach(e=>e.classList.add('sel'));}
     });
   });
 };
 window.pickVeh=(id,make,model,year,fuel)=>{
+  selVeh={id,make,model,year,fuel};
+  qsa('.vc').forEach(c=>c.classList.remove('sel'));
+  qsa('#vc-'+id).forEach(c=>c.classList.add('sel'));
+};
+// Use data attributes to avoid JS string escape issues
+window.pickVehEl=(el)=>{
+  const id=el.dataset.id,make=el.dataset.make,model=el.dataset.model,year=el.dataset.year,fuel=el.dataset.fuel;
   selVeh={id,make,model,year,fuel};
   qsa('.vc').forEach(c=>c.classList.remove('sel'));
   qsa('#vc-'+id).forEach(c=>c.classList.add('sel'));
@@ -510,7 +517,7 @@ function buildMechList(all){
   list.innerHTML=verified.map(([id,m])=>{
     const ini=(m.name||'M').split(' ').map(w=>w[0]).join('').substr(0,2).toUpperCase();
     const avi=m.pfp?`<img src="${m.pfp}" style="width:40px;height:40px;border-radius:50%;object-fit:cover;flex-shrink:0">`:`<div style="width:40px;height:40px;border-radius:50%;background:#1D4ED8;color:#fff;font-family:var(--fh);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${ini}</div>`;
-    const nm=(m.name||'Mechanic').replace(/'/g,"\\'"),ph=(m.phone||'').replace(/'/g,"\\'");
+    const nm=(m.name||'Mechanic').replace(/'/g,"'"),ph=(m.phone||'').replace(/'/g,"'");
     return `<div class="mrow" onclick="bookMech('${id}','${nm}','${ph}')">
       ${avi}<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600">${m.name||'Mechanic'} <span class="bdg b-y">⭐${(m.rating||5).toString().substr(0,3)}</span> <span class="bdg b-g">✅</span></div>
       <div style="font-size:11px;color:var(--tx2);margin-top:1px">${m.skills||'General'} · ${m.city||''}</div></div>

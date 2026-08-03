@@ -190,11 +190,10 @@ window.doReg=async()=>{
   const err=ge("mr-err");
   if(!n||!ph||!em||!pw){err.textContent="Fill all required fields";return;}
   const pfpF=ge("m-pfp-inp").files[0];
-  if(!pfpF){err.textContent="Profile photo is required ✱";return;}
   err.textContent="Creating account...";
   try{
     const c=await createUserWithEmailAndPassword(auth,em,pw);
-    const pfp=await b64(pfpF);
+    const pfp=pfpF?await b64(pfpF):'';
     await set(ref(db,"mechanics/"+c.user.uid),{name:n,phone:ph,city:ci||"",skills:sk||"General",email:em,role:"mechanic",status:"online",gpsOn:true,rating:5.0,verified:false,createdAt:Date.now(),pfp,totalJobs:0,totalEarned:0});
     err.textContent="";
   }catch(e){err.textContent=e.message.replace("Firebase: ","").replace(/\(.*\)/,"");}
@@ -292,7 +291,7 @@ window.openMechChat=()=>{
     box.innerHTML=msgs.length?msgs.map(m=>{
       const mine=m.senderId===uid;
       return `<div style="display:flex;justify-content:${mine?"flex-end":"flex-start"};margin-bottom:8px"><div style="max-width:78%;background:${mine?"var(--gn)":"var(--card)"};color:${mine?"#060D08":"var(--tx)"};border-radius:${mine?"14px 14px 4px 14px":"14px 14px 14px 4px"};padding:9px 12px;font-size:13px;line-height:1.4"><div style="font-size:10px;opacity:.6;margin-bottom:3px">${mine?"You":m.senderName||"Customer"}</div>${m.text}<div style="font-size:9px;opacity:.5;margin-top:3px;text-align:right">${new Date(m.time).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}</div></div></div>`;
-    }).join(""):"<div style=\"text-align:center;color:var(--tx3);padding:20px;font-size:12px\">No messages yet. Say hello!</div>";
+    }).join(""):"<div style='text-align:center;color:var(--tx3);padding:20px;font-size:12px'>No messages yet — say hello!</div>";
     box.scrollTop=box.scrollHeight;
   });
 };
@@ -343,7 +342,7 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
     <div class="at">Registration</div>
     <div class="pfp-up">
       <div class="pfp-ring" onclick="document.getElementById('m-pfp-inp').click()"><img id="mreg-img" src="" alt=""><span id="mreg-ico">📷</span></div>
-      <div><div style="font-size:12px;color:var(--tx2)">Profile photo</div><div style="font-size:11px;color:var(--rd)">Required ✱</div></div>
+      <div><div style="font-size:12px;color:var(--tx2)">Profile photo</div><div style="font-size:10px;color:var(--tx3)">Optional</div></div>
       <input type="file" id="m-pfp-inp" accept="image/*" style="display:none" onchange="prevPfp(this,'mreg-img','mreg-ico')">
     </div>
     <div class="f"><label>Full name ✱</label><input id="mn" type="text" placeholder="Arjun Kalita"></div>

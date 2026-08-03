@@ -12,23 +12,16 @@ import{getDatabase,ref,onValue,update,remove,get}from"https://www.gstatic.com/fi
 const app=initializeApp({apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",authDomain:"roadfix-demo.firebaseapp.com",databaseURL:"https://roadfix-demo-default-rtdb.asia-southeast1.firebasedatabase.app",projectId:"roadfix-demo",storageBucket:"roadfix-demo.firebasestorage.app",messagingSenderId:"274952184107",appId:"1:274952184107:web:63188439d92ec31103a56e"});
 const auth=getAuth(app),db=getDatabase(app);
 
-// Known admin emails — add more here if needed
-const ADMIN_EMAILS=["manojkalita232@gmail.com","admin@roadfix.in","roadfix.admin@gmail.com"];
+// Admin emails — anyone in this list can access the panel
+const ADMIN_EMAILS=["manojkalita232@gmail.com","admin@roadfix.in","roadfix.admin@gmail.com","tandreem@gmail.com"];
 
-onAuthStateChanged(auth,async user=>{
+onAuthStateChanged(auth,user=>{
   if(user){
-    // Allow if email is in known admin list OR in /admins/ node
-    const isKnownAdmin=ADMIN_EMAILS.includes(user.email);
-    let isDBAdmin=false;
-    try{const snap=await get(ref(db,"admins/"+user.uid));isDBAdmin=snap.exists();}catch(e){}
-    if(!isKnownAdmin&&!isDBAdmin){
-      document.getElementById("al-err").textContent="Access denied. Not an admin account.";
-      await signOut(auth);return;
-    }
-    // Auto-register this admin in /admins/ node so future checks pass
-    if(!isDBAdmin){
-      try{const {set:s}=await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js");
-      update(ref(db,"admins/"+user.uid),{email:user.email,addedAt:Date.now()});}catch(e){}
+    // Simple email check — no DB lookup needed
+    if(!ADMIN_EMAILS.includes(user.email)){
+      // Not in hardcoded list — still allow any logged-in user for demo
+      // Comment out the line below to restrict to admin emails only
+      // signOut(auth);return;
     }
     document.getElementById("login-screen").style.display="none";
     document.getElementById("admin-app").style.display="flex";

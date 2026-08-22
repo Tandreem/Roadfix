@@ -6,7 +6,7 @@
 <title>MechPro — Mechanic</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#060D08;--bg2:#0D1810;--bg3:#14221A;--card:#102018;--bdr:rgba(255,255,255,.06);--bdr2:rgba(255,255,255,.11);--tx:#EEF8EE;--tx2:#7AAA82;--tx3:#3A5C44;--gn:#4ADE80;--gn2:rgba(74,222,128,.11);--am:#FBBF24;--am2:rgba(251,191,36,.11);--rd:#F87171;--rd2:rgba(248,113,113,.11);--bl:#60A5FA;--bl2:rgba(96,165,250,.11);--or:#F97316;--or2:rgba(249,115,22,.13);--pu:#C084FC;--pu2:rgba(192,132,252,.11);--r:12px;--r2:18px;--fh:"Syne",system-ui,sans-serif;--fb:"DM Sans",system-ui,sans-serif}
+:root{--bg:#060D08;--bg2:#0D1810;--bg3:#14221A;--card:#102018;--bdr:rgba(255,255,255,.06);--bdr2:rgba(255,255,255,.11);--tx:#EEF8EE;--tx2:#7AAA82;--tx3:#3A5C44;--gn:#4ADE80;--gn2:rgba(74,222,128,.11);--am:#FBBF24;--am2:rgba(251,191,36,.11);--rd:#F87171;--rd2:rgba(248,113,113,.11);--bl:#60A5FA;--bl2:rgba(96,165,250,.11);--or:#F97316;--or2:rgba(249,115,22,.13);--pu:#C084FC;--pu2:rgba(192,132,252,.12);--pu:#C084FC;--pu2:rgba(192,132,252,.11);--r:12px;--r2:18px;--fh:"Syne",system-ui,sans-serif;--fb:"DM Sans",system-ui,sans-serif}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;overflow:hidden;background:var(--bg)}
 body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;position:relative}
@@ -88,9 +88,20 @@ function setPendingGigId(id){if(id)localStorage.setItem("mrf_pendingGigId",id);e
 onAuthStateChanged(auth,async user=>{
   if(user){
     uid=user.uid;
-    const snap=await get(ref(db,"mechanics/"+uid));
-    if(!snap.exists()){toast("This app is for mechanics only.");await signOut(auth);go("m-login");return;}
-    startApp(snap.val());
+    // Retry DB check — write may not complete before auth fires
+    let snap=null;
+    for(let i=0;i<4;i++){
+      snap=await get(ref(db,"mechanics/"+uid));
+      if(snap.exists())break;
+      if(i<3)await new Promise(r=>setTimeout(r,800));
+    }
+    if(!snap||!snap.exists()){
+      // Check if customer (wrong app)
+      const custSnap=await get(ref(db,"customers/"+uid));
+      if(custSnap.exists()){toast("⚠️ This is the Mechanic app. Use the Customer app.");await signOut(auth);go("m-login");return;}
+      // New mechanic — record being written by doReg
+    }
+    startApp(snap&&snap.exists()?snap.val():{});
   } else {uid=null;profile=null;_listenersStarted=false;go("m-login");}
 });
 
@@ -212,11 +223,21 @@ window.setVType=(t)=>{
   selVehicleType=t;
   qsa(".vtype-btn").forEach(b=>b.classList.remove("sel"));
   const btn=ge("vtype-"+t);if(btn)btn.classList.add("sel");
-  // Show brand field based on type
-  const bf=ge("brand-field");
-  if(bf)bf.style.display="block";
+  const bf=ge("brand-field");if(bf)bf.style.display="block";
   const bl=ge("brand-label");
-  if(bl)bl.textContent=t==="car"?"Car brands you specialise in (e.g. Maruti, Honda, Hyundai)":"Luxury bike brands (e.g. Ducati, BMW Motorrad, Kawasaki)";
+  const bh=ge("brand-hint");
+  const bi=ge("mbrand");
+  if(t==="car"){
+    if(bl)bl.textContent="Car brands you specialise in *";
+    if(bi)bi.placeholder="e.g. Maruti, Honda, Hyundai — or All brands";
+    if(bh)bh.innerHTML='🚗 <strong>Car brands:</strong> Maruti, Hyundai, Tata, Honda, Toyota, Ford, Kia, MG, Volkswagen, Skoda, BMW, Mercedes, Audi, Mahindra, Renault, Nissan';
+    if(bh)bh.style.color='var(--gn)';
+  } else {
+    if(bl)bl.textContent="Luxury bike brands you specialise in *";
+    if(bi)bi.placeholder="e.g. Ducati, Kawasaki, BMW Motorrad";
+    if(bh)bh.innerHTML='🏍️ <strong>Luxury bike brands (₹5L+):</strong><br>• <strong>Italian:</strong> Ducati Panigale, Ducati Multistrada, Ducati StreetFighter, Ducati Monster, Aprilia RSV4, Aprilia Tuono, MV Agusta<br>• <strong>German:</strong> BMW S1000RR, BMW R1250GS, BMW M1000RR, BMW K1600<br>• <strong>Japanese:</strong> Kawasaki Ninja H2/H2R, Kawasaki ZX-10R, Kawasaki Z900, Suzuki Hayabusa, Suzuki GSX-R1000, Yamaha R1, Yamaha MT-10, Honda CBR1000RR, Honda Gold Wing<br>• <strong>British:</strong> Triumph Rocket 3, Triumph Tiger 900, Triumph Speed Triple, Triumph Bonneville T120<br>• <strong>Austrian:</strong> KTM 1290 Super Duke, KTM 890 Duke<br>• <strong>American:</strong> Harley-Davidson CVO, Harley Pan America, Indian Scout, Indian Chief';
+    if(bh)bh.style.color='var(--pu)';bh.style.background='var(--pu2)';bh.style.border='1px solid rgba(168,85,247,.2)';
+  }
 };
 window.doLogin=async()=>{
   const err=ge("ml-err");err.textContent="Signing in...";
@@ -333,18 +354,19 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
     <div class="at">Mechanic Registration</div>
     <!-- VEHICLE TYPE SELECTION - MANDATORY -->
     <div style="margin-bottom:11px">
-      <div class="f"><label style="color:var(--rd)">I am a * (select one)</label></div>
+      <div class="f"><label style="color:var(--gn);font-weight:600">I am a * — choose one:</label></div>
       <div class="vtype-sel">
         <div class="vtype-btn" id="vtype-car" onclick="setVType('car')">
           <div class="ico">🚗</div>
           <div class="lbl">Car Mechanic</div>
           <div class="sub">All car brands</div>
         </div>
-        <div class="vtype-btn" id="vtype-luxbike" style="display:none">
-          <!-- Hidden - no bike mechanics per requirement -->
+        <div class="vtype-btn" id="vtype-luxbike" onclick="setVType('luxbike')">
+          <div class="ico">🏍️</div>
+          <div class="lbl">Luxury Bike</div>
+          <div class="sub">Premium only</div>
         </div>
       </div>
-      <div style="background:var(--gn2);border:1px solid rgba(74,222,128,.2);border-radius:var(--r);padding:8px 11px;font-size:10px;color:var(--gn)">ℹ️ RoadFix currently supports car mechanics only. Luxury bike mechanics coming soon.</div>
     </div>
     <div class="pfp-up">
       <div class="pfp-ring" onclick="document.getElementById('m-pfp-inp').click()"><img id="mreg-img" src="" alt=""><span id="mreg-ico">📷</span></div>
@@ -356,13 +378,16 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
     <div class="f"><label>City</label><input id="mci" type="text" placeholder="Guwahati"></div>
     <div class="f"><label>Skills (comma separated)</label><input id="msk" type="text" placeholder="Engine, Brakes, Suspension, Electrical"></div>
     <div class="f" id="brand-field" style="display:block">
-      <label id="brand-label">Car brands you specialise in</label>
-      <input id="mbrand" type="text" placeholder="e.g. Maruti, Honda, Hyundai — or All brands">
+      <label id="brand-label">Brands you specialise in *</label>
+      <input id="mbrand" type="text" placeholder="e.g. Maruti, Honda, Hyundai">
+    </div>
+    <div id="brand-hint" style="background:var(--gn2);border:1px solid rgba(74,222,128,.2);border-radius:var(--r);padding:8px 11px;font-size:10px;color:var(--gn);margin-bottom:9px">
+      🚗 <strong>Car brands:</strong> Maruti, Hyundai, Tata, Honda, Toyota, Ford, Kia, MG, Volkswagen, Skoda, BMW, Mercedes, Audi, etc.
     </div>
     <div class="f"><label>Email ✱</label><input id="mem" type="email" placeholder="your@email.com"></div>
     <div class="f"><label>Password ✱</label><input id="mpw" type="password" placeholder="Min 6 characters"></div>
     <div class="err" id="mr-err"></div>
-    <button class="btn b-gn" onclick="selVehicleType='car';doReg()">Register as Car Mechanic →</button>
+    <button class="btn b-gn" onclick="doReg()">Register →</button>
   </div>
   <div class="sw">Already registered? <span onclick="go('m-login')">Sign in</span></div>
 </div>

@@ -109,11 +109,24 @@ function getJobId(){return localStorage.getItem('rf_jobId')||null;}
 function setJobId(id){if(id)localStorage.setItem('rf_jobId',id);else localStorage.removeItem('rf_jobId');}
 
 // ── AUTH ──────────────────────────────────────────────
+// FIX: onAuthStateChanged fires BEFORE DB write completes on register
+// So we retry the check up to 3 times with delay
 onAuthStateChanged(auth,async user=>{
   if(user){
     uid=user.uid;
-    const snap=await get(ref(db,'customers/'+uid));
-    if(!snap.exists()){toast('This app is for customers only.');await signOut(auth);go('s-login');return;}
+    // Check with retries — DB write may not be complete yet
+    let snap=null;
+    for(let i=0;i<4;i++){
+      snap=await get(ref(db,'customers/'+uid));
+      if(snap.exists())break;
+      if(i<3)await new Promise(r=>setTimeout(r,800)); // wait 800ms between retries
+    }
+    if(!snap||!snap.exists()){
+      // Still no customer record — check if they're a mechanic (wrong app)
+      const mechSnap=await get(ref(db,'mechanics/'+uid));
+      if(mechSnap.exists()){toast('⚠️ This is the Customer app. Use the Mechanic app.');await signOut(auth);go('s-login');return;}
+      // New user — record will be created by doReg, just proceed
+    }
     startApp();
   } else {uid=null;profile=null;go('s-login');}
 });
@@ -148,8 +161,17 @@ function startApp(){
     const myJob=Object.values(all).find(j=>j.customerId===uid&&j.status!=='done');
     if(myJob){
       if(!getJobId())setJobId(myJob.id);
-      const L={pending:'Pending',searching_mechanic:'Searching...',mechanic_assigned:(myJob.mechanic||'?')+' accepted ✅',enroute:'En route 🛵',fixing:'Being fixed 🔧'};
-      tx('lf-status',L[myJob.status]||myJob.status);
+      const L={pending:'Pending — waiting for mechanic',searching_mechanic:'🔍 Searching for mechanic...',mechanic_assigned:(myJob.mechanic||'?')+' accepted ✅',enroute:'🛵 '+(myJob.mechanic||'Mechanic')+' en route to you',fixing:'🔧 Being fixed'};
+      const statusText=L[myJob.status]||myJob.status;
+      tx('lf-status',statusText);
+      // Update active job banner
+      const banner=ge('active-job-banner');
+      if(banner){
+        banner.style.display='block';
+        tx('banner-issue',myJob.issue||'Vehicle repair');
+        tx('banner-status',statusText);
+        tx('banner-vehicle',myJob.vehicle||'');
+      }
       if((myJob.status==='mechanic_assigned'||myJob.status==='enroute')&&myJob.mechanic){
         bookedMechPhone=myJob.mechanicPhone||'';bookedMechId=myJob.mechanicId||'';
         tx('track-mech',myJob.mechanic);
@@ -169,7 +191,7 @@ function startApp(){
       if(myJob.customer_done&&myJob.mechanic_done){
         update(ref(db,'jobs/'+myJob.id),{status:'done',finalPrice:myJob.estimateLow||1550,completedAt:Date.now()});
         update(ref(db,'customers/'+uid),{totalJobs:(profile&&profile.totalJobs||0)+1,totalSpend:(profile&&profile.totalSpend||0)+(myJob.estimateLow||1550)});
-        setJobId(null);tx('lf-status','None active');
+        setJobId(null);tx('lf-status','None active');clearActiveJobBanner();
       }
     } else {
       if(!getJobId())tx('lf-status','None active');
@@ -201,6 +223,32 @@ window.doLogin=async()=>{
   try{await signInWithEmailAndPassword(auth,gv('lem'),gv('lpw'));err.textContent='';}
   catch(e){err.textContent='Invalid email or password';}
 };
+// Open the correct screen based on active job status
+window.openActiveJob=()=>{
+  const jid=getJobId();
+  if(!jid){toast('No active job');return;}
+  get(ref(db,'jobs/'+jid)).then(s=>{
+    const j=s.val();
+    if(!j||j.status==='done'){setJobId(null);toast('Job already completed');return;}
+    if(j.status==='pending'||j.status==='searching_mechanic'){go('s-mechs');}
+    else if(j.status==='mechanic_assigned'||j.status==='enroute'||j.status==='fixing'){
+      if(j.mechanic){
+        bookedMechPhone=j.mechanicPhone||'';bookedMechId=j.mechanicId||'';
+        tx('track-mech',j.mechanic);
+        if(j.mechanicId)get(ref(db,'mechanics/'+j.mechanicId)).then(ms=>{
+          const m=ms.val();
+          if(m&&m.pfp){const img=ge('track-pfp');if(img){img.src=m.pfp;img.style.display='block';ge('track-ini').style.display='none';}}
+          else tx('track-ini',(j.mechanic||'M').substr(0,2).toUpperCase());
+        });
+        if(j.lat&&j.lng){const ml=ge('mech-gps-link');if(ml){ml.href='https://maps.google.com/?q='+j.lat+','+j.lng;ml.style.display='block';}}
+      }
+      go('s-tracking');
+    }else if(j.status==='customer_done'){go('s-pay');}
+  });
+};
+// Also hide banner when job done
+function clearActiveJobBanner(){const b=ge('active-job-banner');if(b)b.style.display='none';}
+
 window.doLogout=()=>{
   if(profUnsub)profUnsub();if(jobsUnsub)jobsUnsub();if(mechsUnsub)mechsUnsub();if(chatUnsub)chatUnsub();if(vehUnsub)vehUnsub();
   setJobId(null);signOut(auth);
@@ -523,7 +571,7 @@ window.finishJob=()=>{
   const jid=getJobId();const price=window._aiResult?Math.round(window._aiResult.low):1550;
   if(jid){update(ref(db,'jobs/'+jid),{customer_done:true,status:'done',finalPrice:price,paymentMethod:selPayMethod,completedAt:Date.now()});
   update(ref(db,'customers/'+uid),{totalJobs:(profile&&profile.totalJobs||0)+1,totalSpend:(profile&&profile.totalSpend||0)+price});}
-  setJobId(null);window._aiResult=null;go('s-home');
+  setJobId(null);window._aiResult=null;clearActiveJobBanner();go('s-home');
 };
 
 // ── CHAT ─────────────────────────────────────────────
@@ -616,6 +664,16 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
 <div id="s-home" class="scr">
   <div class="topbar"><div class="lgo">Road<em>Fix</em></div><div class="avi" onclick="go('s-profile')"><img class="c-pfp" src="" alt="" style="display:none"><span class="c-ini">RK</span></div></div>
   <div class="sb">
+    <!-- ACTIVE JOB BANNER - shows when customer has an active job -->
+    <div id="active-job-banner" style="display:none;background:linear-gradient(135deg,rgba(249,115,22,.15),rgba(249,115,22,.05));border:1.5px solid rgba(249,115,22,.4);border-radius:var(--r2);margin:10px 13px 0;padding:12px;cursor:pointer" onclick="openActiveJob()">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--or);display:flex;align-items:center;gap:5px"><div class="lf-dot" style="background:var(--or)"></div>ACTIVE JOB</div>
+        <span style="font-size:11px;color:var(--or)">Tap for details →</span>
+      </div>
+      <div style="font-size:13px;font-weight:600" id="banner-issue">—</div>
+      <div style="font-size:11px;color:var(--tx2);margin-top:3px" id="banner-status">—</div>
+      <div style="font-size:11px;color:var(--tx2);margin-top:2px" id="banner-vehicle">—</div>
+    </div>
     <div style="padding:13px 13px 4px"><div style="font-family:var(--fh);font-size:20px;font-weight:700" class="c-first">Hi there 👋</div><div style="font-size:11px;color:var(--tx2);margin-top:3px">📍 Location active</div></div>
     <div class="sec">
       <div style="background:var(--rd2);border:2px solid var(--rd);border-radius:14px;padding:15px;text-align:center;cursor:pointer;margin-bottom:10px" onclick="doSOS()">
@@ -627,7 +685,10 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
         <div style="font-family:var(--fh);font-size:10px;font-weight:700;color:var(--gn);margin-bottom:7px;display:flex;align-items:center;gap:5px"><div class="lf-dot"></div>Live · Firebase</div>
         <div class="lf-r"><span style="color:var(--tx2)">Active jobs</span><span style="font-weight:600" id="lf-jobs">—</span></div>
         <div class="lf-r"><span style="color:var(--tx2)">Car mechanics online</span><span style="font-weight:600;color:var(--bl)" id="lf-mechs">—</span></div>
-        <div class="lf-r"><span style="color:var(--tx2)">Your job</span><span style="font-weight:600;color:var(--or)" id="lf-status">None active</span></div>
+        <div class="lf-r" id="lf-job-row" style="cursor:pointer" onclick="openActiveJob()">
+          <span style="color:var(--tx2)">Your job</span>
+          <span style="font-weight:600;color:var(--or)" id="lf-status">None active</span>
+        </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px">
         <div class="card" style="display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;padding:12px" onclick="go('s-report')"><div style="font-size:23px">💬</div><div style="font-size:11px;color:var(--tx2)">Report issue</div></div>
@@ -721,27 +782,21 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
   <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Preventive Check</div><div class="sp"></div></div>
   <div class="sb">
     <div class="sec">
-      <div class="abox a-p"><div style="font-size:16px;flex-shrink:0">🛡️</div><div><div style="font-size:12px;font-weight:700;color:var(--pu);margin-bottom:2px">Preventive health check</div><div style="font-size:11px;color:var(--tx2)">Enter your vehicle readings — AI analyses and warns you before damage happens</div></div></div>
-      <div class="sl">Engine temperature</div>
-      <div class="f"><label>Engine temp (°C)</label><input id="eng-temp" type="number" placeholder="Enter current temp e.g. 92" min="0" max="150"></div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:11px;text-align:center">
-        <div style="background:var(--gn2);border-radius:var(--r);padding:6px;font-size:10px;color:var(--gn)">Normal<br><strong>75–88°C</strong></div>
-        <div style="background:var(--yw2);border-radius:var(--r);padding:6px;font-size:10px;color:var(--yw)">Warning<br><strong>88–95°C</strong></div>
-        <div style="background:var(--rd2);border-radius:var(--r);padding:6px;font-size:10px;color:var(--rd)">Critical<br><strong>&gt;95°C</strong></div>
+      <!-- OBD DEVICE REQUIRED MESSAGE -->
+      <div style="background:var(--pu2);border:1.5px solid rgba(168,85,247,.4);border-radius:var(--r2);padding:16px;text-align:center;margin-bottom:14px">
+        <div style="font-size:36px;margin-bottom:8px">📡</div>
+        <div style="font-family:var(--fh);font-size:14px;font-weight:700;color:var(--pu);margin-bottom:6px">RoadFix OBD+ Required</div>
+        <div style="font-size:12px;color:var(--tx2);line-height:1.7;margin-bottom:12px">This feature works only with the <strong style="color:var(--pu)">RoadFix OBD+ hardware module</strong> plugged into your car's OBD port. The device sends live data to your phone automatically.</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px;text-align:left">
+          <div style="background:var(--bg3);border-radius:var(--r);padding:8px;display:flex;gap:6px;align-items:center"><span>🌡️</span><span style="font-size:10px;color:var(--tx2)">Engine temp live</span></div>
+          <div style="background:var(--bg3);border-radius:var(--r);padding:8px;display:flex;gap:6px;align-items:center"><span>🛞</span><span style="font-size:10px;color:var(--tx2)">Tyre pressure live</span></div>
+          <div style="background:var(--bg3);border-radius:var(--r);padding:8px;display:flex;gap:6px;align-items:center"><span>📍</span><span style="font-size:10px;color:var(--tx2)">Real-time GPS</span></div>
+          <div style="background:var(--bg3);border-radius:var(--r);padding:8px;display:flex;gap:6px;align-items:center"><span>🤖</span><span style="font-size:10px;color:var(--tx2)">AI fault alerts</span></div>
+        </div>
+        <div style="background:var(--gn2);border:1px solid rgba(34,197,94,.2);border-radius:var(--r);padding:7px 10px;font-size:11px;color:var(--gn);margin-bottom:10px">💡 OBD+ only suggests mechanics. It never forces you to book. You stay in full control.</div>
+        <div style="font-family:var(--fh);font-size:18px;font-weight:800;color:var(--pu);margin-bottom:8px">₹2,499 <span style="font-size:11px;font-weight:400;color:var(--tx3)">one-time · optional</span></div>
+        <button class="btn b-pu" style="margin-bottom:0" onclick="toast('✅ Notified! We will alert you when OBD+ launches.')">🔔 Notify me when available</button>
       </div>
-      <div class="sl">Tyre pressure</div>
-      <div class="f"><label>Tyre pressure (PSI)</label><input id="tyre-psi" type="number" placeholder="Enter PSI e.g. 32" min="0" max="50"></div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:11px;text-align:center">
-        <div style="background:var(--rd2);border-radius:var(--r);padding:6px;font-size:10px;color:var(--rd)">Danger<br><strong>&lt;28 PSI</strong></div>
-        <div style="background:var(--yw2);border-radius:var(--r);padding:6px;font-size:10px;color:var(--yw)">Low<br><strong>28–32 PSI</strong></div>
-        <div style="background:var(--gn2);border-radius:var(--r);padding:6px;font-size:10px;color:var(--gn)">Ideal<br><strong>32–35 PSI</strong></div>
-      </div>
-      <div class="sl">Engine oil level</div>
-      <div class="f"><label>Oil dipstick reading</label>
-        <select id="oil-level"><option value="">Select level</option><option value="full">Full ✅</option><option value="min">Near minimum ⚠️</option><option value="low">Below minimum 🔴</option></select>
-      </div>
-      <button class="btn b-pu" onclick="runPreventiveCheck()">🛡️ Check my vehicle now</button>
-      <div id="prev-results" style="margin-top:9px"></div>
       <div style="height:1px;background:var(--bdr);margin:12px 0"></div>
       <div class="sl">RoadFix OBD+ Device</div>
       <div style="background:var(--card);border:1.5px solid rgba(168,85,247,.3);border-radius:var(--r2);padding:14px;margin-bottom:9px">

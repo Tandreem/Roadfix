@@ -7,54 +7,70 @@
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
 <script type="module">
 import{initializeApp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import{getAuth,signInWithEmailAndPassword,signOut,onAuthStateChanged}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import{getAuth,signInWithEmailAndPassword,signOut,onAuthStateChanged,setPersistence,browserSessionPersistence}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import{getDatabase,ref,onValue,update,remove,get}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 const app=initializeApp({apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",authDomain:"roadfix-demo.firebaseapp.com",databaseURL:"https://roadfix-demo-default-rtdb.asia-southeast1.firebasedatabase.app",projectId:"roadfix-demo",storageBucket:"roadfix-demo.firebasestorage.app",messagingSenderId:"274952184107",appId:"1:274952184107:web:63188439d92ec31103a56e"});
 const auth=getAuth(app),db=getDatabase(app);
 
-// Admin emails — anyone in this list can access the panel
-const ADMIN_EMAILS=["manojkalita232@gmail.com","admin@roadfix.in","roadfix.admin@gmail.com","tandreem@gmail.com"];
+// Admin emails — only these can access
+// SECURITY: Only these emails can access admin
+const ADMIN_EMAILS=["manojkalita232@gmail.com"];
 
-// FIX: guard flag so startListeners only runs ONCE even if auth fires multiple times
-let _adminReady=false;
 let _listenersStarted=false;
 
+// SECURITY FIX: Sign out any existing session on page load
+// This forces login screen every time the page is opened
+// Prevents auto-login from persisted Firebase session
+auth.signOut().catch(()=>{}).finally(()=>{
+  // After sign out, set session-only persistence
+  // so session ends when browser tab is closed
+  setPersistence(auth,browserSessionPersistence).catch(()=>{});
+});
+
+// Auth state listener — only fires after manual login now
 onAuthStateChanged(auth,user=>{
   if(user){
-    // Show admin app immediately — no DB check, no signOut risk
+    // Verify email is in admin list
+    if(!ADMIN_EMAILS.includes(user.email)){
+      auth.signOut();
+      document.getElementById("al-err").textContent="Access denied — not an admin account.";
+      document.getElementById("login-screen").style.display="flex";
+      document.getElementById("admin-app").style.display="none";
+      return;
+    }
     document.getElementById("login-screen").style.display="none";
     document.getElementById("admin-app").style.display="flex";
-    setEl("admin-email",user.email);
-    // Only start listeners ONCE — prevents stacking on token refresh
-    if(!_listenersStarted){
-      _listenersStarted=true;
-      startListeners();
-    }
+    // Don't show email in UI for security
+    setEl("admin-email","Admin ●●●");
+    if(!_listenersStarted){_listenersStarted=true;startListeners();}
   } else {
-    // Only redirect to login if we haven't just manually logged out
     _listenersStarted=false;
-    _adminReady=false;
     document.getElementById("login-screen").style.display="flex";
     document.getElementById("admin-app").style.display="none";
   }
 });
+
 window.adminLogin=async()=>{
   const e=document.getElementById("al-email").value.trim();
   const p=document.getElementById("al-pass").value;
   const err=document.getElementById("al-err");
   if(!e||!p){err.textContent="Enter email and password";return;}
+  if(!ADMIN_EMAILS.includes(e)){err.textContent="Not an admin account.";return;}
   err.textContent="Signing in...";
   try{
+    _manuallyLoggedIn=true; // Mark that user actively logged in
     const cred=await signInWithEmailAndPassword(auth,e,p);
-    // Auto-write to /admins/ node so future logins work
-    update(ref(db,"admins/"+cred.user.uid),{email:e,lastLogin:Date.now()});
+    update(ref(db,"admins/"+cred.user.uid),{lastLogin:Date.now()});
     err.textContent="";
   }
-  catch(ex){err.textContent="Invalid email or password";}
+  catch(ex){
+    _manuallyLoggedIn=false;
+    err.textContent="Invalid email or password";
+  }
 };
 window.adminLogout=()=>{
   _listenersStarted=false;
-  _adminReady=false;
+  _manuallyLoggedIn=false;
   if(_unsubJobs)_unsubJobs();
   if(_unsubMechs)_unsubMechs();
   if(_unsubCusts)_unsubCusts();
@@ -324,11 +340,11 @@ tr.row-done td{opacity:.6}
   <div class="login-box">
     <div class="login-logo">Road<em>Fix</em> Admin</div>
     <div style="font-size:12px;color:var(--tx2);text-align:center;margin-bottom:16px">Manager login</div>
-    <div class="fld"><label>Admin email</label><input id="al-email" type="email" placeholder="admin@roadfix.in" autocomplete="email"></div>
+    <div class="fld"><label>Admin email</label><input id="al-email" type="email" placeholder="Admin email" autocomplete="off"></div>
     <div class="fld"><label>Password</label><input id="al-pass" type="password" placeholder="••••••••" autocomplete="current-password"></div>
     <div style="font-size:11px;color:var(--rd);text-align:center;margin-bottom:8px;min-height:14px" id="al-err"></div>
     <button style="width:100%;background:var(--or);color:#fff;border:none;border-radius:var(--r);padding:11px;font-family:var(--fh);font-size:14px;font-weight:700;cursor:pointer" onclick="adminLogin()">Sign in →</button>
-    <div style="font-size:10px;color:var(--tx3);text-align:center;margin-top:10px;line-height:1.6">Use <span style="color:var(--or)">manojkalita232@gmail.com</span> to sign in as admin</div>
+    <div style="font-size:10px;color:var(--tx3);text-align:center;margin-top:10px;line-height:1.6">Admin access only — contact RoadFix for credentials</div>
   </div>
 </div>
 <div id="admin-app" style="display:none;height:100vh;overflow:hidden;display:flex">
@@ -349,7 +365,7 @@ tr.row-done td{opacity:.6}
     <div class="sb-bottom">
       <div style="display:flex;align-items:center;gap:7px;padding:5px">
         <div style="width:26px;height:26px;border-radius:50%;background:var(--or2);border:1.5px solid var(--or);display:flex;align-items:center;justify-content:center;font-family:var(--fh);font-size:10px;font-weight:700;color:var(--or)">AD</div>
-        <div style="min-width:0;flex:1"><div style="font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="admin-email">admin</div></div>
+        <div style="min-width:0;flex:1"><div style="font-size:11px;font-weight:600;color:var(--gn)" id="admin-email">Admin ●●●●</div></div>
       </div>
       <button style="width:100%;background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);padding:7px;color:var(--tx2);font-size:11px;cursor:pointer;margin-top:5px;font-family:var(--fh);font-weight:600" onclick="adminLogout()">Sign out</button>
     </div>

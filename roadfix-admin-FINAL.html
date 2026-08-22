@@ -96,6 +96,15 @@ function startListeners(){
     Object.entries(all).forEach(([id,c])=>{if(!c.role||c.role==="customer")C[id]=c;});
     renderAll();
   });
+  // Pre-bookings listener
+  onValue(ref(db,"prebookings"),s=>{
+    const pbs=Object.values(s.val()||{});
+    const pending=pbs.filter(pb=>pb.status==="pending").length;
+    const confirmed=pbs.filter(pb=>pb.status==="confirmed").length;
+    setEl("d-pb-pending",String(pending));
+    setEl("d-pb-confirmed",String(confirmed));
+    renderPrebookings(pbs);
+  });
   _unsubAlerts=onValue(ref(db,"alerts"),s=>{
     A=s.val()||{};renderAll();
     const active=Object.values(A).filter(a=>a.status==="active");
@@ -259,6 +268,28 @@ window.resolveAlert=id=>{update(ref(db,"alerts/"+id),{status:"resolved",resolved
 
 function setEl(id,val){const e=document.getElementById(id);if(e)e.textContent=val;}
 // FIX 49: ago with title tooltip showing absolute date
+function renderPrebookings(pbs){
+  const c=document.getElementById("pb-tbody");if(!c)return;
+  const sorted=pbs.sort((a,b)=>(a.scheduledDateTime||0)-(b.scheduledDateTime||0));
+  if(!sorted.length){c.innerHTML='<tr><td colspan="7" class="empty-row">No pre-bookings yet</td></tr>';return;}
+  c.innerHTML=sorted.map(pb=>{
+    const dt=new Date(pb.scheduledDateTime||0);
+    const dateStr=dt.toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"});
+    const timeStr=dt.toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"});
+    const isPast=dt<new Date();
+    const statusCol={pending:"b-y",confirmed:"b-g",cancelled:"b-off",completed:"b-b"}[pb.status]||"b-y";
+    return `<tr class="${isPast&&pb.status==="pending"?"row-done":""}">
+      <td><span class="mono">#${pb.id||"—"}</span></td>
+      <td style="font-size:12px">${pb.customerName||"—"}</td>
+      <td style="font-size:11px">${pb.vehicle||"—"}</td>
+      <td style="font-size:11px">${pb.issue||"—"}</td>
+      <td style="font-size:11px;white-space:nowrap">${dateStr}<br>${timeStr}</td>
+      <td><span class="bdg ${statusCol}">${isPast&&pb.status==="pending"?"Overdue":pb.status}</span></td>
+      <td>${pb.mechanic||'<span class="muted">None yet</span>'}</td>
+    </tr>`;
+  }).join("");
+}
+
 function ago(ts){
   if(!ts)return"—";
   const s=Math.floor((Date.now()-ts)/1000);
@@ -362,6 +393,7 @@ tr.row-done td{opacity:.6}
     <div class="sb-sec">People</div>
     <div class="sb-item" id="si-mechs" onclick="showView('v-mechs')"><div class="sb-ico">👷</div>Mechanics</div>
     <div class="sb-item" id="si-custs" onclick="showView('v-custs')"><div class="sb-ico">👥</div>Customers</div>
+    <div class="sb-item" id="si-pb" onclick="showView('v-pb')"><div class="sb-ico">📅</div>Pre-bookings</div>
     <div class="sb-bottom">
       <div style="display:flex;align-items:center;gap:7px;padding:5px">
         <div style="width:26px;height:26px;border-radius:50%;background:var(--or2);border:1.5px solid var(--or);display:flex;align-items:center;justify-content:center;font-family:var(--fh);font-size:10px;font-weight:700;color:var(--or)">AD</div>
@@ -437,12 +469,35 @@ tr.row-done td{opacity:.6}
         </div>
       </div>
     </div>
+    <!-- PRE-BOOKINGS VIEW -->
+    <div id="v-pb" class="view">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:11px">
+        <div style="font-family:var(--fh);font-size:13px;font-weight:700">Pre-bookings</div>
+        <span class="bdg b-g">● Live</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+        <div class="kpi"><div class="kpi-ico">📅</div><div class="kpi-val" style="color:var(--yw)" id="d-pb-pending2">0</div><div class="kpi-lbl">Pending</div></div>
+        <div class="kpi"><div class="kpi-ico">✅</div><div class="kpi-val" style="color:var(--gn)" id="d-pb-confirmed2">0</div><div class="kpi-lbl">Confirmed</div></div>
+      </div>
+      <div class="table-wrap">
+        <div class="table-head"><div class="table-head-title">All pre-bookings</div></div>
+        <div style="overflow-x:auto"><table><thead><tr>
+          <th style="width:80px">Booking ID</th>
+          <th style="width:100px">Customer</th>
+          <th style="width:110px">Vehicle</th>
+          <th>Issue / concern</th>
+          <th style="width:90px">Scheduled</th>
+          <th style="width:80px">Status</th>
+          <th style="width:100px">Mechanic</th>
+        </tr></thead><tbody id="pb-tbody"><tr><td colspan="7" class="empty-row">No pre-bookings yet</td></tr></tbody></table></div>
+      </div>
+    </div>
   </div>
 </div>
 <script>
-var views=["v-dash","v-jobs","v-alerts","v-mechs","v-custs"];
-var siMap={"v-dash":"si-dash","v-jobs":"si-jobs","v-alerts":"si-alerts","v-mechs":"si-mechs","v-custs":"si-custs"};
-var titles={"v-dash":"Dashboard","v-jobs":"Live jobs","v-alerts":"Alerts & SOS","v-mechs":"Mechanics","v-custs":"Customers"};
+var views=["v-dash","v-jobs","v-alerts","v-mechs","v-custs","v-pb"];
+var siMap={"v-dash":"si-dash","v-jobs":"si-jobs","v-alerts":"si-alerts","v-mechs":"si-mechs","v-custs":"si-custs","v-pb":"si-pb"};
+var titles={"v-dash":"Dashboard","v-jobs":"Live jobs","v-alerts":"Alerts & SOS","v-mechs":"Mechanics","v-custs":"Customers","v-pb":"Pre-bookings"};
 function showView(id){
   views.forEach(v=>{var e=document.getElementById(v);if(e)e.classList.remove("active");});
   var n=document.getElementById(id);if(n)n.classList.add("active");

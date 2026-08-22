@@ -244,6 +244,80 @@ window.doLogin=async()=>{
   try{await signInWithEmailAndPassword(auth,gv("mlem"),gv("mlpw"));err.textContent="";}
   catch(e){err.textContent="Invalid email or password";}
 };
+
+// ── PRE-BOOKING LISTENER ──────────────────────────────
+let pbUnsub=null;
+window.loadMechPrebookings=()=>{
+  if(!uid)return;
+  if(pbUnsub)pbUnsub();
+  const myType=(profile&&profile.vehicleType)||'car';
+  pbUnsub=onValue(ref(db,'prebookings'),snap=>{
+    const all=Object.values(snap.val()||{})
+      .filter(pb=>pb.status==='pending'&&(pb.vehicleType||'car')===myType)
+      .sort((a,b)=>(a.scheduledDateTime||0)-(b.scheduledDateTime||0));
+    const c=ge('pb-mech-list');if(!c)return;
+    const badge=ge('pb-badge');
+    if(badge)badge.style.display=all.length>0?'block':'none';
+    if(!all.length){c.innerHTML='<div style="text-align:center;color:var(--tx3);padding:24px;font-size:13px">No pending pre-bookings right now. Check back later!</div>';return;}
+    c.innerHTML=all.map(pb=>{
+      const dt=new Date(pb.scheduledDateTime||0);
+      const dateStr=dt.toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short',year:'numeric'});
+      const timeStr=dt.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
+      const isPast=dt<new Date();
+      return `<div style="background:var(--card);border:1px solid rgba(74,222,128,.2);border-radius:var(--r2);padding:12px;margin-bottom:9px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+          <div style="flex:1">
+            <div style="font-size:13px;font-weight:600;color:var(--tx)">${pb.issue||'Preventive check'}</div>
+            <div style="font-size:11px;color:var(--tx2);margin-top:3px">📅 ${dateStr} at ${timeStr}</div>
+            <div style="font-size:11px;color:var(--tx2);margin-top:2px">🚗 ${pb.vehicle||'—'}</div>
+            <div style="font-size:11px;color:var(--tx2);margin-top:2px">👤 ${pb.customerName||'—'} · ${pb.customerPhone||'—'}</div>
+            ${pb.location?`<div style="font-size:11px;color:var(--tx2);margin-top:2px">📍 ${pb.location}</div>`:''}
+            ${pb.notes?`<div style="font-size:11px;color:var(--tx3);margin-top:3px;font-style:italic">"${pb.notes}"</div>`:''}
+          </div>
+          <span class="bdg ${isPast?'b-r':'b-a'}" style="margin-left:8px;flex-shrink:0">${isPast?'Overdue':'Upcoming'}</span>
+        </div>
+        ${!isPast?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:7px">
+          <button class="btn b-gn" style="margin-bottom:0;padding:9px;font-size:12px" onclick="acceptPrebook('${pb.id}','${pb.customerName||'Customer'}','${pb.customerPhone||''}')">✅ Accept slot</button>
+          <button class="btn b-ghost" style="margin-bottom:0;padding:9px;font-size:12px" onclick="declinePrebook('${pb.id}')">✗ Decline</button>
+        </div>`:`<div style="font-size:11px;color:var(--rd);text-align:center">Scheduled time has passed</div>`}
+      </div>`;
+    }).join('');
+  });
+};
+
+window.acceptPrebook=async(pbId,custName,custPhone)=>{
+  const p=profile||{};
+  await update(ref(db,'prebookings/'+pbId),{
+    status:'confirmed',
+    mechanic:p.name||'Mechanic',
+    mechanicId:uid,
+    mechanicPhone:p.phone||'—',
+    confirmedAt:Date.now()
+  });
+  toast('✅ Pre-booking accepted! Customer notified.');
+  // Also create a job entry so it shows in admin
+  const jobId='PB'+pbId;
+  const pbSnap=await get(ref(db,'prebookings/'+pbId));
+  const pb=pbSnap.val();
+  if(pb){
+    await set(ref(db,'jobs/'+jobId),{
+      id:jobId,type:'prebooking',
+      customerId:pb.customerId,customerName:pb.customerName,customerPhone:pb.customerPhone,
+      vehicle:pb.vehicle,vehicleMake:pb.vehicleMake,vehicleModel:pb.vehicleModel,vehicleYear:pb.vehicleYear,vehicleFuel:pb.vehicleFuel,vehicleType:pb.vehicleType||'car',
+      issue:pb.issue||'Pre-booked service',
+      scheduledDate:pb.scheduledDate,scheduledTime:pb.scheduledTime,scheduledDateTime:pb.scheduledDateTime,
+      location:pb.location||'',
+      status:'scheduled',
+      mechanic:p.name||'Mechanic',mechanicId:uid,mechanicPhone:p.phone||'—',
+      createdAt:Date.now()
+    });
+  }
+};
+window.declinePrebook=(pbId)=>{
+  // Just hide from this mechanic — don't cancel (other mechanics can still take it)
+  toast('Skipped — other mechanics can still accept');
+};
+
 window.doLogout=async()=>{
   if(profUnsub)profUnsub();if(jobsUnsub)jobsUnsub();if(alertsUnsub)alertsUnsub();if(chatUnsub)chatUnsub();
   clearInterval(window._gpsInterval);_listenersStarted=false;
@@ -437,6 +511,10 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
       </div>
       <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--gn)">Welcome, <span class="m-name">Mechanic</span> ✅</div>
       <div style="font-size:11px;color:var(--tx2);margin-top:2px">Active job: <span id="active-job" style="color:var(--am)">None</span></div>
+      <div style="margin-top:10px;background:rgba(192,132,252,.08);border:1px solid rgba(192,132,252,.25);border-radius:var(--r2);padding:10px;display:flex;align-items:center;justify-content:space-between;cursor:pointer" onclick="go('m-prebookings')">
+        <div><div style="font-size:12px;font-weight:600;color:var(--pu)">📅 Pre-bookings available</div><div style="font-size:11px;color:var(--tx2);margin-top:2px">Customers booking in advance</div></div>
+        <div style="display:flex;align-items:center;gap:6px"><div id="pb-badge" style="display:none;width:8px;height:8px;border-radius:50%;background:var(--rd)"></div><span style="font-size:11px;color:var(--pu)">View →</span></div>
+      </div>
     </div>
   </div>
   <div class="bnav">
@@ -590,10 +668,26 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
     <div class="bn on"><div class="bn-i">👤</div><div class="bn-l">Profile</div></div>
   </div>
 </div>
+
+<!-- PRE-BOOKINGS SCREEN -->
+<div id="m-prebookings" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Pre-bookings</div><span class="bdg b-g">● Live</span></div>
+  <div class="sb">
+    <div class="sec">
+      <div style="background:var(--gn2);border:1px solid rgba(74,222,128,.2);border-radius:var(--r2);padding:11px;margin-bottom:11px">
+        <div style="font-size:12px;font-weight:700;color:var(--gn);margin-bottom:4px">📅 Advance bookings from customers</div>
+        <div style="font-size:11px;color:var(--tx2)">These customers feel their car might need attention. Accept a slot and earn extra income — scheduled in advance.</div>
+      </div>
+      <div id="pb-mech-list"><div style="text-align:center;color:var(--tx3);padding:24px;font-size:13px">Loading...</div></div>
+    </div>
+  </div>
+</div>
+
 <script>
 var stk=["m-loading"],cur="m-loading";
 function go(id){var o=document.getElementById(cur),n=document.getElementById(id);if(!n)return;o.classList.remove("on");n.classList.add("on");if(stk[stk.length-1]!==id)stk.push(id);cur=id;var sb=n.querySelector(".sb");if(sb)sb.scrollTop=0;
   if(id==="m-gig"){const pid=localStorage.getItem("mrf_pendingGigId");if(pid){get(ref(db,"jobs/"+pid)).then(snap=>{const j=snap.val();if(j)populateGig(pid,j);});}}
+  if(id==="m-prebookings")loadMechPrebookings();
   if(id==="m-earn"&&typeof profile!=="undefined"&&profile){
     document.getElementById("earn-total").textContent="₹"+(profile.totalEarned||0).toLocaleString("en-IN");
     document.getElementById("earn-jobs").textContent=String(profile.totalJobs||0);

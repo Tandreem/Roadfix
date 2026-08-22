@@ -14,35 +14,24 @@ const auth=getAuth(app),db=getDatabase(app);
 
 // Admin emails — only these can access
 // SECURITY: Only these emails can access admin
-const ADMIN_EMAILS=["manojkalita232@gmail.com"];
-
+// Admin access — kept private
+const ADMIN_EMAILS=["manojkalita232@gmail.com","admin@roadfix.in"];
 let _listenersStarted=false;
+let _manualLogin=false; // only allow entry after manual login button click
 
-// SECURITY FIX: Sign out any existing session on page load
-// This forces login screen every time the page is opened
-// Prevents auto-login from persisted Firebase session
-auth.signOut().catch(()=>{}).finally(()=>{
-  // After sign out, set session-only persistence
-  // so session ends when browser tab is closed
-  setPersistence(auth,browserSessionPersistence).catch(()=>{});
-});
+// Always show login screen on load — sign out any saved session silently
+auth.signOut().catch(()=>{});
 
-// Auth state listener — only fires after manual login now
 onAuthStateChanged(auth,user=>{
-  if(user){
-    // Verify email is in admin list
-    if(!ADMIN_EMAILS.includes(user.email)){
-      auth.signOut();
-      document.getElementById("al-err").textContent="Access denied — not an admin account.";
-      document.getElementById("login-screen").style.display="flex";
-      document.getElementById("admin-app").style.display="none";
-      return;
-    }
+  if(user&&_manualLogin){
+    // Only enter admin if login button was clicked (not auto session)
     document.getElementById("login-screen").style.display="none";
     document.getElementById("admin-app").style.display="flex";
-    // Don't show email in UI for security
     setEl("admin-email","Admin ●●●");
     if(!_listenersStarted){_listenersStarted=true;startListeners();}
+  } else if(user&&!_manualLogin){
+    // Auto session — sign out and show login
+    auth.signOut().catch(()=>{});
   } else {
     _listenersStarted=false;
     document.getElementById("login-screen").style.display="flex";
@@ -55,19 +44,31 @@ window.adminLogin=async()=>{
   const p=document.getElementById("al-pass").value;
   const err=document.getElementById("al-err");
   if(!e||!p){err.textContent="Enter email and password";return;}
-  if(!ADMIN_EMAILS.includes(e)){err.textContent="Not an admin account.";return;}
   err.textContent="Signing in...";
   try{
-    _manuallyLoggedIn=true; // Mark that user actively logged in
+    // Set flag BEFORE sign in so onAuthStateChanged allows entry
+    _manualLogin=true;
     const cred=await signInWithEmailAndPassword(auth,e,p);
+    // Check email after successful auth
+    if(!ADMIN_EMAILS.includes(cred.user.email)){
+      _manualLogin=false;
+      await auth.signOut();
+      err.textContent="Access denied.";
+      return;
+    }
     update(ref(db,"admins/"+cred.user.uid),{lastLogin:Date.now()});
     err.textContent="";
   }
   catch(ex){
-    _manuallyLoggedIn=false;
-    err.textContent="Invalid email or password";
+    _manualLogin=false;
+    const m=ex.message||"";
+    if(m.includes("wrong-password")||m.includes("invalid-credential"))err.textContent="Wrong password";
+    else if(m.includes("user-not-found"))err.textContent="Email not found";
+    else if(m.includes("too-many-requests"))err.textContent="Too many attempts — try again later";
+    else err.textContent="Login failed — check email and password";
   }
 };
+
 window.adminLogout=()=>{
   _listenersStarted=false;
   _manuallyLoggedIn=false;

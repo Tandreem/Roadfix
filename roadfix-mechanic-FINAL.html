@@ -6,7 +6,7 @@
 <title>MechPro — Mechanic</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#060D08;--bg2:#0D1810;--bg3:#14221A;--card:#102018;--bdr:rgba(255,255,255,.06);--bdr2:rgba(255,255,255,.11);--tx:#EEF8EE;--tx2:#7AAA82;--tx3:#3A5C44;--gn:#4ADE80;--gn2:rgba(74,222,128,.11);--am:#FBBF24;--am2:rgba(251,191,36,.11);--rd:#F87171;--rd2:rgba(248,113,113,.11);--bl:#60A5FA;--bl2:rgba(96,165,250,.11);--or:#F97316;--or2:rgba(249,115,22,.13);--r:12px;--r2:18px;--fh:"Syne",system-ui,sans-serif;--fb:"DM Sans",system-ui,sans-serif}
+:root{--bg:#060D08;--bg2:#0D1810;--bg3:#14221A;--card:#102018;--bdr:rgba(255,255,255,.06);--bdr2:rgba(255,255,255,.11);--tx:#EEF8EE;--tx2:#7AAA82;--tx3:#3A5C44;--gn:#4ADE80;--gn2:rgba(74,222,128,.11);--am:#FBBF24;--am2:rgba(251,191,36,.11);--rd:#F87171;--rd2:rgba(248,113,113,.11);--bl:#60A5FA;--bl2:rgba(96,165,250,.11);--or:#F97316;--or2:rgba(249,115,22,.13);--pu:#C084FC;--pu2:rgba(192,132,252,.11);--r:12px;--r2:18px;--fh:"Syne",system-ui,sans-serif;--fb:"DM Sans",system-ui,sans-serif}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;overflow:hidden;background:var(--bg)}
 body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;position:relative}
@@ -18,7 +18,7 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 @keyframes spin{to{transform:rotate(360deg)}}
 .auth{justify-content:center;align-items:center;padding:24px 20px;background:radial-gradient(ellipse at 50% 0%,rgba(74,222,128,.07),transparent 70%),var(--bg)}
 .logo{font-family:var(--fh);font-size:28px;font-weight:800;text-align:center;margin-bottom:4px}.logo em{color:var(--gn);font-style:normal}
-.ac{background:var(--card);border:1px solid var(--bdr2);border-radius:var(--r2);padding:18px;width:100%;margin-bottom:12px;max-height:70vh;overflow-y:auto}.ac::-webkit-scrollbar{display:none}
+.ac{background:var(--card);border:1px solid var(--bdr2);border-radius:var(--r2);padding:18px;width:100%;margin-bottom:12px;max-height:72vh;overflow-y:auto}.ac::-webkit-scrollbar{display:none}
 .at{font-family:var(--fh);font-size:15px;font-weight:700;margin-bottom:12px}
 .f{margin-bottom:9px}.f label{display:block;font-size:11px;font-weight:500;color:var(--tx2);margin-bottom:3px}
 .f input,.f select{background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:14px;padding:9px 11px;width:100%;outline:none;transition:border .15s}
@@ -51,7 +51,9 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 .tth{width:17px;height:17px;border-radius:50%;background:#fff;position:absolute;top:2px;left:2px;transition:left .25s}.tt.on .tth{left:25px}
 .gig-prev{background:linear-gradient(135deg,rgba(74,222,128,.14),rgba(74,222,128,.04));border:1.5px solid rgba(74,222,128,.3);border-radius:var(--r2);padding:12px;margin-bottom:10px;cursor:pointer;display:none}
 .veh-box{background:var(--am2);border:1px solid rgba(251,191,36,.25);border-radius:var(--r);padding:11px;margin-bottom:9px}
-.veh-row{display:flex;justify-content:space-between;font-size:12px;padding:3px 0}.veh-row .vl{color:var(--tx2)}.veh-row .vv{font-weight:600;text-align:right;max-width:60%}
+.veh-row{display:flex;justify-content:space-between;font-size:12px;padding:3px 0}.veh-row .vl{color:var(--tx2)}.veh-row .vv{font-weight:600;text-align:right;max-width:55%}
+.parts-box{background:var(--pu2);border:1px solid rgba(192,132,252,.25);border-radius:var(--r);padding:11px;margin-bottom:9px}
+.part-row{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid rgba(192,132,252,.1);font-size:11px}.part-row:last-child{border-bottom:none}
 .er{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--bdr);font-size:13px}.er:last-child{border-bottom:none}
 .cr{display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--bdr);cursor:pointer}.cr:last-child{border-bottom:none}
 .ph{padding:16px 13px;display:flex;flex-direction:column;align-items:center;gap:7px;border-bottom:1px solid var(--bdr)}
@@ -60,6 +62,12 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 .sw2{display:flex;flex-wrap:wrap;gap:5px;padding:10px 13px;border-bottom:1px solid var(--bdr)}
 .mit{display:flex;align-items:center;gap:10px;padding:10px 13px;border-bottom:1px solid var(--bdr);cursor:pointer;font-size:13px}.mit:active{background:var(--bg3)}
 .msos-ov{position:fixed;inset:0;background:rgba(6,13,8,.96);z-index:200;display:none;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center}
+.vtype-sel{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:11px}
+.vtype-btn{background:var(--card);border:2px solid var(--bdr2);border-radius:var(--r);padding:14px;text-align:center;cursor:pointer;transition:all .15s}
+.vtype-btn.sel{border-color:var(--gn);background:var(--gn2)}
+.vtype-btn .ico{font-size:28px;margin-bottom:6px}
+.vtype-btn .lbl{font-size:12px;font-weight:600;font-family:var(--fh)}
+.vtype-btn .sub{font-size:10px;color:var(--tx3);margin-top:2px}
 </style>
 <script type="module">
 import{initializeApp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
@@ -69,32 +77,31 @@ const app=initializeApp({apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",authDo
 const auth=getAuth(app),db=getDatabase(app);
 
 let uid=null,profile=null,chatUnsub=null,shownGig=false;
-let jobsUnsub=null,profUnsub=null,alertsUnsub=null;
-// FIX 5: persist job across refresh
+let jobsUnsub=null,profUnsub=null,alertsUnsub=null,_listenersStarted=false;
+let selVehicleType='car'; // default to car mechanic
+
 function getJobId(){return localStorage.getItem("mrf_jobId")||null;}
 function setJobId(id){if(id)localStorage.setItem("mrf_jobId",id);else localStorage.removeItem("mrf_jobId");}
 function getPendingGigId(){return localStorage.getItem("mrf_pendingGigId")||null;}
 function setPendingGigId(id){if(id)localStorage.setItem("mrf_pendingGigId",id);else localStorage.removeItem("mrf_pendingGigId");}
 
-// FIX 1+8: role check + FIX 4: loading screen first
 onAuthStateChanged(auth,async user=>{
   if(user){
     uid=user.uid;
-    // FIX 1+8: only mechanics allowed
     const snap=await get(ref(db,"mechanics/"+uid));
-    if(!snap.exists()){toast("This app is for mechanics only. Use the Customer app.");await signOut(auth);go("m-login");return;}
+    if(!snap.exists()){toast("This app is for mechanics only.");await signOut(auth);go("m-login");return;}
     startApp(snap.val());
-  } else {uid=null;profile=null;go("m-login");}
+  } else {uid=null;profile=null;_listenersStarted=false;go("m-login");}
 });
 
 function startApp(p){
-  if(profUnsub)profUnsub();if(jobsUnsub)jobsUnsub();if(alertsUnsub)alertsUnsub();
-  // FIX x+viii: realtime profile — instant verification redirect
+  if(profUnsub)profUnsub();
   profUnsub=onValue(ref(db,"mechanics/"+uid),snap=>{
     const mp=snap.val();if(!mp)return;
     profile=mp;applyProfile(mp);
     if(!mp.verified){if(cur!=="m-pending")go("m-pending");}
-    else if(cur==="m-pending"||cur==="m-login"||cur==="m-register"||cur==="m-loading"){
+    else if(!_listenersStarted){
+      _listenersStarted=true;
       update(ref(db,"mechanics/"+uid),{status:"online",gpsOn:true,lastSeen:Date.now()});
       startListeners();go("m-home");
       if(cur==="m-pending")toast("✅ Verified! Welcome to MechPro.");
@@ -108,32 +115,33 @@ function applyProfile(p){
   qsa(".m-name").forEach(e=>e.textContent=p.name||"Mechanic");
   qsa(".m-phone").forEach(e=>e.textContent=(p.phone||"")+(p.city?" · "+p.city:""));
   if(p.pfp){qsa(".m-pfp").forEach(e=>{e.src=p.pfp;e.style.display="block";});qsa(".m-ini").forEach(e=>e.style.display="none");}
-  // FIX 17: real stats from Firebase
   tx("stat-jobs",String(p.totalJobs||0));
   tx("stat-rat",(p.rating||5).toString().substr(0,3)+"⭐");
   tx("stat-earn",p.totalEarned?"₹"+Math.round(p.totalEarned/1000)+"k":"₹0");
-  if(p.skills){const sw=ge("skills-wrap");if(sw)sw.innerHTML=p.skills.split(",").map(s=>`<span class="bdg b-g">${s.trim()}</span>`).join("");}
+  const vt=p.vehicleType||"car";
+  const vtEl=ge("vtype-badge");if(vtEl)vtEl.textContent=vt==="car"?"🚗 Car mechanic":"🏍️ Luxury bike mechanic";
+  if(p.brandSpeciality){const sw=ge("skills-wrap");if(sw)sw.innerHTML=p.brandSpeciality.split(",").map(s=>`<span class="bdg b-g">${s.trim()}</span>`).join("");}
+  else if(p.skills){const sw=ge("skills-wrap");if(sw)sw.innerHTML=p.skills.split(",").map(s=>`<span class="bdg b-g">${s.trim()}</span>`).join("");}
 }
 
 function startListeners(){
-  // FIX 9: no stacking listeners
-  if(jobsUnsub)jobsUnsub();
+  if(jobsUnsub)jobsUnsub();if(alertsUnsub)alertsUnsub();
   jobsUnsub=onValue(ref(db,"jobs"),snap=>{
     const all=snap.val()||{};
-    // FIX 5: restore active job
+    // Restore active job
     const myJobId=getJobId();
     if(myJobId&&all[myJobId]){
       const j=all[myJobId];
       tx("active-job",j.issue||"Active job");
       if(j.status==="done"){setJobId(null);setPendingGigId(null);shownGig=false;tx("active-job","None");hideGigBanner();}
     }
-    // FIX 4: gig listener
+    // Find new gigs for car mechanics only
+    const myType=(profile&&profile.vehicleType)||"car";
     Object.entries(all).forEach(([id,job])=>{
-      if(job.status==="searching_mechanic"&&!job.mechanicId&&!shownGig){
-        shownGig=true;setPendingGigId(id);
-        showGigBanner(id,job);
+      // Only show car jobs to car mechanics
+      if(job.status==="searching_mechanic"&&!job.mechanicId&&!shownGig&&(job.vehicleType||"car")===myType){
+        shownGig=true;setPendingGigId(id);showGigBanner(id,job);
       }
-      // FIX 4: hide if job taken/done
       if(getPendingGigId()===id){
         if(job.status!=="searching_mechanic"||job.mechanicId){
           if(job.mechanicId!==uid){shownGig=false;setPendingGigId(null);hideGigBanner();}
@@ -141,100 +149,104 @@ function startListeners(){
         if(job.status==="done"){shownGig=false;setPendingGigId(null);hideGigBanner();}
       }
     });
-    // FIX 4: no searching jobs = hide banner
-    const anyOpen=Object.values(all).some(j=>j.status==="searching_mechanic"&&!j.mechanicId);
+    const anyOpen=Object.values(all).some(j=>j.status==="searching_mechanic"&&!j.mechanicId&&(j.vehicleType||"car")===(profile&&profile.vehicleType||"car"));
     if(!anyOpen&&shownGig&&!getJobId()){shownGig=false;setPendingGigId(null);hideGigBanner();}
   });
-
   alertsUnsub=onValue(ref(db,"alerts"),snap=>{
     const active=Object.values(snap.val()||{}).filter(a=>a.status==="active"&&a.type==="customer_sos");
     const bar=ge("sos-bar");if(!bar)return;
-    if(active.length){bar.style.display="flex";tx("sos-bar-txt","🆘 "+active[active.length-1].name+" · "+active[active.length-1].location);}
+    if(active.length){bar.style.display="flex";tx("sos-bar-txt","🆘 "+active[active.length-1].name);}
     else bar.style.display="none";
   });
-
-  // FIX xii+xiii: GPS immediately + every 30s
   const doGPS=()=>{if(!uid)return;navigator.geolocation&&navigator.geolocation.getCurrentPosition(p=>{update(ref(db,"mechanics/"+uid),{lat:p.coords.latitude,lng:p.coords.longitude,gpsOn:true,lastGPS:Date.now()});tx("gps-stat","📍 GPS: "+p.coords.latitude.toFixed(4)+"°N");},()=>tx("gps-stat","📍 GPS: Active"),{enableHighAccuracy:true,timeout:7000});};
-  doGPS();
-  // FIX 13: store interval so we can clear on logout
-  window._gpsInterval=setInterval(doGPS,30000);
+  doGPS();window._gpsInterval=setInterval(doGPS,30000);
 }
 
 function showGigBanner(id,job){
+  setPendingGigId(id);
   const pv=ge("gig-prev");if(pv)pv.style.display="block";
   tx("gig-prev-title","🔔 New job — "+(job.issue||"Repair"));
   tx("gig-prev-price","₹"+(job.estimateLow||"—")+"–"+(job.estimateHigh||"—"));
   const nb=ge("gig-badge");if(nb)nb.style.display="block";
-  // FIX 4: populate gig detail immediately
   populateGig(id,job);
 }
-function hideGigBanner(){
-  const pv=ge("gig-prev");if(pv)pv.style.display="none";
-  const nb=ge("gig-badge");if(nb)nb.style.display="none";
-}
+function hideGigBanner(){localStorage.removeItem("mrf_pendingGigId");const pv=ge("gig-prev");if(pv)pv.style.display="none";const nb=ge("gig-badge");if(nb)nb.style.display="none";}
 function populateGig(id,job){
-  tx("gig-issue",job.issue||"—");
-  tx("gig-loc","📍 "+(job.location||"—"));
+  tx("gig-issue",job.issue||"—");tx("gig-loc","📍 "+(job.location||"—"));
   tx("gig-price","₹"+(job.estimateLow||"—")+"–"+(job.estimateHigh||"—"));
-  tx("gig-cust",job.customerName||"—");
-  tx("gig-cph",job.customerPhone||"—");
+  tx("gig-cust",job.customerName||"—");tx("gig-cph",job.customerPhone||"—");
   const vs=job.vehicle||((job.vehicleMake||"")+" "+(job.vehicleModel||"")+" "+(job.vehicleYear||"")+" "+(job.vehicleFuel||"")).trim();
-  tx("gig-veh",vs||"Not specified");
-  tx("gig-parts",job.partType||"OEM");
-  tx("gig-cats",job.categories||"General");
+  tx("gig-veh",vs||"Not specified");tx("gig-parts",job.partType||"OEM");tx("gig-cats",job.categories||"General");
+  // PARTS TO CARRY
+  const pc=ge("parts-to-carry");
+  if(pc&&job.partsDetail&&job.partsDetail.length){
+    pc.innerHTML='<div class="sl">🔧 Parts to carry</div>'+job.partsDetail.map(p=>`<div class="part-row"><div><div style="font-size:11px;font-weight:600;color:var(--pu)">${p.part} ×${p.qty||1}</div><div style="font-size:10px;color:var(--tx3)">${p.spec||""}</div></div><span class="bdg ${p.urgency==="immediate"?"b-r":"b-a"}">${p.urgency||"check"}</span></div>`).join('');
+    pc.style.display="block";
+  } else if(pc){pc.innerHTML='<div class="sl">🔧 Parts to carry</div><div style="font-size:11px;color:var(--tx2)">'+( job.partsNeeded||"General tools")+'</div>';pc.style.display="block";}
+  // CUSTOMER GPS LINK
+  if(job.lat&&job.lng){
+    const cgl=ge("cust-gps-link");
+    if(cgl){cgl.href="https://maps.google.com/?q="+job.lat+","+job.lng;cgl.style.display="block";}
+    tx("cust-coords",job.lat.toFixed(4)+"°N, "+job.lng.toFixed(4)+"°E");
+  }
 }
 
-// ── REGISTER ─────────────────────────────────────────
+// REGISTER
 window.doReg=async()=>{
-  const n=gv("mn"),ph=gv("mph"),ci=gv("mci"),sk=gv("msk"),em=gv("mem"),pw=gv("mpw");
+  const n=gv("mn"),ph=gv("mph"),ci=gv("mci"),sk=gv("msk"),brand=gv("mbrand"),em=gv("mem"),pw=gv("mpw");
   const err=ge("mr-err");
   if(!n||!ph||!em||!pw){err.textContent="Fill all required fields";return;}
-  const pfpF=ge("m-pfp-inp").files[0];
+  if(pw.length<6){err.textContent="Password must be at least 6 characters";return;}
+  if(!selVehicleType){err.textContent="Please select car or luxury bike mechanic";return;}
   err.textContent="Creating account...";
   try{
     const c=await createUserWithEmailAndPassword(auth,em,pw);
-    const pfp=pfpF?await b64(pfpF):'';
-    await set(ref(db,"mechanics/"+c.user.uid),{name:n,phone:ph,city:ci||"",skills:sk||"General",email:em,role:"mechanic",status:"online",gpsOn:true,rating:5.0,verified:false,createdAt:Date.now(),pfp,totalJobs:0,totalEarned:0});
+    const pfpF=ge("m-pfp-inp").files[0];const pfp=pfpF?await b64(pfpF):"";
+    try{
+      await set(ref(db,"mechanics/"+c.user.uid),{name:n,phone:ph,city:ci||"",skills:sk||"General",brandSpeciality:brand||sk||"General",vehicleType:selVehicleType,email:em,role:"mechanic",status:"online",gpsOn:true,rating:5.0,verified:false,createdAt:Date.now(),pfp,totalJobs:0,totalEarned:0});
+    }catch(dbErr){try{await set(ref(db,"mechanics/"+c.user.uid),{name:n,phone:ph,email:em,role:"mechanic",vehicleType:selVehicleType,verified:false,createdAt:Date.now()});}catch(e2){}}
     err.textContent="";
-  }catch(e){err.textContent=e.message.replace("Firebase: ","").replace(/\(.*\)/,"");}
+  }catch(e){const m=e.message||"";if(m.includes("email-already-in-use"))err.textContent="Email already registered";else if(m.includes("weak-password"))err.textContent="Use at least 6 characters";else err.textContent=m.replace("Firebase: ","").replace(/\(.*\)/,"")||"Registration failed";}
+};
+window.setVType=(t)=>{
+  selVehicleType=t;
+  qsa(".vtype-btn").forEach(b=>b.classList.remove("sel"));
+  const btn=ge("vtype-"+t);if(btn)btn.classList.add("sel");
+  // Show brand field based on type
+  const bf=ge("brand-field");
+  if(bf)bf.style.display="block";
+  const bl=ge("brand-label");
+  if(bl)bl.textContent=t==="car"?"Car brands you specialise in (e.g. Maruti, Honda, Hyundai)":"Luxury bike brands (e.g. Ducati, BMW Motorrad, Kawasaki)";
 };
 window.doLogin=async()=>{
   const err=ge("ml-err");err.textContent="Signing in...";
   try{await signInWithEmailAndPassword(auth,gv("mlem"),gv("mlpw"));err.textContent="";}
   catch(e){err.textContent="Invalid email or password";}
 };
-// FIX 9+13: cleanup on logout
 window.doLogout=async()=>{
   if(profUnsub)profUnsub();if(jobsUnsub)jobsUnsub();if(alertsUnsub)alertsUnsub();if(chatUnsub)chatUnsub();
-  clearInterval(window._gpsInterval);
+  clearInterval(window._gpsInterval);_listenersStarted=false;
   if(uid)await update(ref(db,"mechanics/"+uid),{status:"offline"});
-  setJobId(null);setPendingGigId(null);shownGig=false;
-  await signOut(auth);
+  setJobId(null);setPendingGigId(null);shownGig=false;await signOut(auth);
 };
 
-// FIX xiv: atomic accept
 window.acceptGig=()=>{
-  const pendingId=getPendingGigId();
-  if(!pendingId){toast("No gig available");return;}
+  const pendingId=getPendingGigId();if(!pendingId){toast("No gig available");return;}
   const p=profile||{};
   get(ref(db,"jobs/"+pendingId)).then(snap=>{
     const job=snap.val();
-    if(!job){toast("Job no longer exists");hideGigBanner();shownGig=false;setPendingGigId(null);return;}
-    if(job.status!=="searching_mechanic"||job.mechanicId){toast("⚠️ Job already taken");hideGigBanner();shownGig=false;setPendingGigId(null);back();return;}
-    // Lock to this mechanic
-    update(ref(db,"jobs/"+pendingId),{status:"mechanic_assigned",mechanic:p.name,mechanicId:uid,mechanicPhone:p.phone||"—",updatedAt:Date.now()});
+    if(!job){toast("Job no longer exists");hideGigBanner();shownGig=false;return;}
+    if(job.status!=="searching_mechanic"||job.mechanicId){toast("⚠️ Job already taken");hideGigBanner();shownGig=false;back();return;}
+    update(ref(db,"jobs/"+pendingId),{status:"mechanic_assigned",mechanic:p.name,mechanicId:uid,mechanicPhone:p.phone||"—",mechanicVehicleType:p.vehicleType||"car",updatedAt:Date.now()});
     setTimeout(()=>update(ref(db,"jobs/"+pendingId),{status:"enroute"}),800);
     update(ref(db,"mechanics/"+uid),{status:"enroute",activeJob:pendingId,eta:4});
     setJobId(pendingId);setPendingGigId(null);
-    tx("active-job",job.issue||"Active job");
-    hideGigBanner();shownGig=false;
-    toast("✅ Gig accepted! Head to customer.");
-    go("m-nav");
+    tx("active-job",job.issue||"Active job");hideGigBanner();shownGig=false;
+    toast("✅ Gig accepted! Head to customer.");go("m-nav");
   });
 };
 window.declineGig=()=>{shownGig=false;setPendingGigId(null);hideGigBanner();back();};
 
-// FIX 1: both must confirm done
 window.completeJob=()=>{
   const jid=getJobId();if(!jid)return;
   const earn=820;
@@ -246,61 +258,41 @@ window.completeJob=()=>{
       update(ref(db,"mechanics/"+uid),{status:"online",activeJob:null,totalJobs:(profile&&profile.totalJobs||0)+1,totalEarned:(profile&&profile.totalEarned||0)+earn});
       setJobId(null);shownGig=false;go("m-done");
     } else {
-      // Mark done on mechanic side, wait for customer
       update(ref(db,"mechanics/"+uid),{status:"online",activeJob:null,totalJobs:(profile&&profile.totalJobs||0)+1,totalEarned:(profile&&profile.totalEarned||0)+earn});
-      setJobId(null);shownGig=false;
-      toast("Marked done — waiting for customer confirmation");
-      go("m-done");
+      setJobId(null);shownGig=false;toast("Marked done — waiting for customer");go("m-done");
     }
   });
 };
 
 window.toggleOnline=()=>{
-  if(!uid)return;
-  const tt=ge("tt"),on=tt.classList.contains("on");
+  if(!uid)return;const tt=ge("tt"),on=tt.classList.contains("on");
   tt.classList.toggle("on",!on);
   tx("tlbl",!on?"You are online":"You are offline");
   tx("tsub",!on?"Accepting gig requests":"Not receiving gigs");
   const b=ge("tbdg");if(b){b.className="bdg "+(!on?"b-g":"b-off");b.textContent=!on?"● Active":"○ Offline";}
   update(ref(db,"mechanics/"+uid),{status:!on?"online":"offline"});
-  // FIX 29: persist online state
   localStorage.setItem("mrf_online",!on?"1":"0");
 };
 
 window.mechSOS=()=>{
   ge("msos-ov").style.display="flex";if(!uid)return;
-  const p=profile||{};
-  const sos={type:"mechanic_sos",uid,name:p.name||"Mechanic",phone:p.phone||"—",location:"Getting GPS...",time:Date.now(),status:"active",app:"mechanic"};
+  const p=profile||{};const sos={type:"mechanic_sos",uid,name:p.name||"Mechanic",phone:p.phone||"—",location:"Getting GPS...",time:Date.now(),status:"active",app:"mechanic"};
   if(navigator.geolocation)navigator.geolocation.getCurrentPosition(pos=>{sos.location=pos.coords.latitude.toFixed(5)+"°N, "+pos.coords.longitude.toFixed(5)+"°E";sos.lat=pos.coords.latitude;sos.lng=pos.coords.longitude;sos.mapsLink="https://maps.google.com/?q="+pos.coords.latitude+","+pos.coords.longitude;push(ref(db,"alerts"),sos);},()=>push(ref(db,"alerts"),sos),{enableHighAccuracy:true});
   else push(ref(db,"alerts"),sos);
 };
-window.callCustomer=()=>{
-  const jid=getJobId();
-  if(!jid){toast("No active job");return;}
-  get(ref(db,"jobs/"+jid)).then(s=>{const j=s.val();const ph=(j&&j.customerPhone)||"";if(ph)window.location.href="tel:"+ph.replace(/\s/g,"");else toast("No customer phone");});
-};
+window.callCustomer=()=>{const jid=getJobId();if(!jid)return;get(ref(db,"jobs/"+jid)).then(s=>{const j=s.val();const ph=(j&&j.customerPhone)||"";if(ph)window.location.href="tel:"+ph.replace(/\s/g,"");else toast("No customer phone");});};
 
-// FIX 3: chat uses same /chats/jobId path as customer
 window.openMechChat=()=>{
-  const jid=getJobId();if(!jid){toast("No active job");return;}
-  go("m-chat");
+  const jid=getJobId();if(!jid){toast("No active job");return;}go("m-chat");
   if(chatUnsub)chatUnsub();
   chatUnsub=onValue(ref(db,"chats/"+jid),snap=>{
     const box=ge("m-chat-box");if(!box)return;
     const msgs=Object.values(snap.val()||{}).sort((a,b)=>a.time-b.time);
-    box.innerHTML=msgs.length?msgs.map(m=>{
-      const mine=m.senderId===uid;
-      return `<div style="display:flex;justify-content:${mine?"flex-end":"flex-start"};margin-bottom:8px"><div style="max-width:78%;background:${mine?"var(--gn)":"var(--card)"};color:${mine?"#060D08":"var(--tx)"};border-radius:${mine?"14px 14px 4px 14px":"14px 14px 14px 4px"};padding:9px 12px;font-size:13px;line-height:1.4"><div style="font-size:10px;opacity:.6;margin-bottom:3px">${mine?"You":m.senderName||"Customer"}</div>${m.text}<div style="font-size:9px;opacity:.5;margin-top:3px;text-align:right">${new Date(m.time).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}</div></div></div>`;
-    }).join(""):"<div style='text-align:center;color:var(--tx3);padding:20px;font-size:12px'>No messages yet — say hello!</div>";
+    box.innerHTML=msgs.length?msgs.map(m=>{const mine=m.senderId===uid;return`<div style="display:flex;justify-content:${mine?"flex-end":"flex-start"};margin-bottom:8px"><div style="max-width:78%;background:${mine?"var(--gn)":"var(--card)"};color:${mine?"#060D08":"var(--tx)"};border-radius:${mine?"14px 14px 4px 14px":"14px 14px 14px 4px"};padding:9px 12px;font-size:13px;line-height:1.4"><div style="font-size:10px;opacity:.6;margin-bottom:3px">${mine?"You":m.senderName||"Customer"}</div>${m.text}<div style="font-size:9px;opacity:.5;margin-top:3px;text-align:right">${new Date(m.time).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}</div></div></div>`;}).join(""):"<div style='text-align:center;color:var(--tx3);padding:20px;font-size:12px'>No messages yet</div>";
     box.scrollTop=box.scrollHeight;
   });
 };
-window.sendMechMsg=()=>{
-  const inp=ge("m-chat-inp"),jid=getJobId();
-  if(!inp||!inp.value.trim()||!jid)return;
-  push(ref(db,"chats/"+jid),{senderId:uid,senderName:(profile&&profile.name)||"Mechanic",senderRole:"mechanic",text:inp.value.trim(),time:Date.now()});
-  inp.value="";
-};
+window.sendMechMsg=()=>{const inp=ge("m-chat-inp"),jid=getJobId();if(!inp||!inp.value.trim()||!jid)return;push(ref(db,"chats/"+jid),{senderId:uid,senderName:(profile&&profile.name)||"Mechanic",senderRole:"mechanic",text:inp.value.trim(),time:Date.now()});inp.value="";};
 
 window.uploadMechPfp=async(inp)=>{if(!uid||!inp.files[0])return;const d=await b64(inp.files[0]);await update(ref(db,"mechanics/"+uid),{pfp:d});toast("✅ Photo updated");};
 window.prevPfp=(inp,imgId,icoId)=>{const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{const img=ge(imgId),ico=ge(icoId);if(img){img.src=e.target.result;img.style.display="block";}if(ico)ico.style.display="none";};r.readAsDataURL(f);};
@@ -315,8 +307,8 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
 <body>
 <div class="msos-ov" id="msos-ov">
   <div style="font-size:64px;margin-bottom:11px;animation:pp 1s infinite">🆘</div>
-  <div style="font-family:var(--fh);font-size:21px;font-weight:800;color:var(--rd);margin-bottom:7px">SOS Sent Live!</div>
-  <div style="font-size:12px;color:var(--tx2);margin-bottom:18px;line-height:1.8">✅ GPS · ✅ Admin alerted · ✅ Emergency team</div>
+  <div style="font-family:var(--fh);font-size:21px;font-weight:800;color:var(--rd);margin-bottom:7px">SOS Sent!</div>
+  <div style="font-size:12px;color:var(--tx2);margin-bottom:18px;line-height:1.8">✅ GPS · ✅ Admin alerted</div>
   <button class="btn b-rd" style="max-width:200px" onclick="ge('msos-ov').style.display='none'">✓ OK</button>
 </div>
 <div id="m-loading" class="scr on" style="justify-content:center;align-items:center">
@@ -325,11 +317,11 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
 </div>
 <div id="m-login" class="scr auth">
   <div class="logo">Mech<em>Pro</em></div>
-  <div style="font-size:12px;color:var(--tx2);margin-bottom:16px;text-align:center">Mechanic app — sign in</div>
+  <div style="font-size:12px;color:var(--tx2);margin-bottom:16px;text-align:center">Mechanic sign in</div>
   <div class="ac">
     <div class="at">Sign in</div>
     <div class="f"><label>Email</label><input id="mlem" type="email" placeholder="your@email.com" autocomplete="email"></div>
-    <div class="f"><label>Password</label><input id="mlpw" type="password" placeholder="••••••••" autocomplete="current-password"></div>
+    <div class="f"><label>Password</label><input id="mlpw" type="password" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()"></div>
     <div class="err" id="ml-err"></div>
     <button class="btn b-gn" onclick="doLogin()">Sign in →</button>
   </div>
@@ -337,32 +329,50 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
 </div>
 <div id="m-register" class="scr auth">
   <div class="logo">Mech<em>Pro</em></div>
-  <div style="font-size:12px;color:var(--tx2);margin-bottom:16px;text-align:center">Join as a verified mechanic</div>
   <div class="ac">
-    <div class="at">Registration</div>
+    <div class="at">Mechanic Registration</div>
+    <!-- VEHICLE TYPE SELECTION - MANDATORY -->
+    <div style="margin-bottom:11px">
+      <div class="f"><label style="color:var(--rd)">I am a * (select one)</label></div>
+      <div class="vtype-sel">
+        <div class="vtype-btn" id="vtype-car" onclick="setVType('car')">
+          <div class="ico">🚗</div>
+          <div class="lbl">Car Mechanic</div>
+          <div class="sub">All car brands</div>
+        </div>
+        <div class="vtype-btn" id="vtype-luxbike" style="display:none">
+          <!-- Hidden - no bike mechanics per requirement -->
+        </div>
+      </div>
+      <div style="background:var(--gn2);border:1px solid rgba(74,222,128,.2);border-radius:var(--r);padding:8px 11px;font-size:10px;color:var(--gn)">ℹ️ RoadFix currently supports car mechanics only. Luxury bike mechanics coming soon.</div>
+    </div>
     <div class="pfp-up">
       <div class="pfp-ring" onclick="document.getElementById('m-pfp-inp').click()"><img id="mreg-img" src="" alt=""><span id="mreg-ico">📷</span></div>
-      <div><div style="font-size:12px;color:var(--tx2)">Profile photo</div><div style="font-size:10px;color:var(--tx3)">Optional</div></div>
+      <div><div style="font-size:12px;color:var(--tx2)">Profile photo (optional)</div></div>
       <input type="file" id="m-pfp-inp" accept="image/*" style="display:none" onchange="prevPfp(this,'mreg-img','mreg-ico')">
     </div>
     <div class="f"><label>Full name ✱</label><input id="mn" type="text" placeholder="Arjun Kalita"></div>
     <div class="f"><label>Phone ✱</label><input id="mph" type="tel" placeholder="+91 94351 77810"></div>
     <div class="f"><label>City</label><input id="mci" type="text" placeholder="Guwahati"></div>
-    <div class="f"><label>Skills (comma separated)</label><input id="msk" type="text" placeholder="CV joint, Brakes, Engine, Tyres"></div>
+    <div class="f"><label>Skills (comma separated)</label><input id="msk" type="text" placeholder="Engine, Brakes, Suspension, Electrical"></div>
+    <div class="f" id="brand-field" style="display:block">
+      <label id="brand-label">Car brands you specialise in</label>
+      <input id="mbrand" type="text" placeholder="e.g. Maruti, Honda, Hyundai — or All brands">
+    </div>
     <div class="f"><label>Email ✱</label><input id="mem" type="email" placeholder="your@email.com"></div>
     <div class="f"><label>Password ✱</label><input id="mpw" type="password" placeholder="Min 6 characters"></div>
     <div class="err" id="mr-err"></div>
-    <button class="btn b-gn" onclick="doReg()">Register & start earning →</button>
+    <button class="btn b-gn" onclick="selVehicleType='car';doReg()">Register as Car Mechanic →</button>
   </div>
   <div class="sw">Already registered? <span onclick="go('m-login')">Sign in</span></div>
 </div>
 <div id="m-pending" class="scr pending">
   <div style="font-size:60px;margin-bottom:14px;animation:pp 2s infinite">⏳</div>
   <div style="font-family:var(--fh);font-size:20px;font-weight:800;color:var(--am);margin-bottom:7px">Verification Pending</div>
-  <div style="font-size:12px;color:var(--tx2);margin-bottom:22px;line-height:1.8;max-width:280px">Your account is created.<br><strong style="color:var(--gn)">You will automatically enter the app the moment admin verifies you — no refresh needed.</strong></div>
+  <div style="font-size:12px;color:var(--tx2);margin-bottom:22px;line-height:1.8;max-width:280px">Account created.<br><strong style="color:var(--gn)">Admin verifies you → you auto-enter instantly.</strong></div>
   <div style="background:var(--am2);border:1px solid rgba(251,191,36,.25);border-radius:var(--r2);padding:13px;width:100%;max-width:290px;text-align:center;margin-bottom:18px">
     <div style="font-size:10px;color:var(--am);font-weight:700;margin-bottom:4px">HOW IT WORKS</div>
-    <div style="font-size:11px;color:var(--tx2);line-height:1.6">Admin opens panel → Mechanics tab → clicks Verify → you auto-enter instantly</div>
+    <div style="font-size:11px;color:var(--tx2);line-height:1.6">Admin → Mechanics tab → Verify ✓ → you auto-enter</div>
   </div>
   <button class="btn b-ghost" style="max-width:240px" onclick="doLogout()">Sign out</button>
 </div>
@@ -370,7 +380,7 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
   <div class="topbar">
     <div class="lgo">Mech<em>Pro</em></div>
     <div style="display:flex;gap:7px;align-items:center">
-      <button style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:5px 9px;font-family:var(--fh);font-size:11px;font-weight:700;color:var(--rd);cursor:pointer" onclick="mechSOS()">🆘 SOS</button>
+      <button style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:5px 9px;font-family:var(--fh);font-size:11px;font-weight:700;color:var(--rd);cursor:pointer" onclick="mechSOS()">🆘</button>
       <div class="m-avi" onclick="go('m-profile')"><img class="m-pfp" src="" alt="" style="display:none"><span class="m-ini">AK</span></div>
     </div>
   </div>
@@ -379,11 +389,10 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
       <div id="sos-bar" style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:8px 11px;display:none;align-items:center;gap:7px;margin-bottom:10px;cursor:pointer" onclick="go('m-gig')">
         <div style="width:7px;height:7px;border-radius:50%;background:var(--rd);animation:dd 1s infinite;flex-shrink:0"></div>
         <div style="font-size:12px;font-weight:700;color:var(--rd);flex:1" id="sos-bar-txt">Customer SOS</div>
-        <span style="font-size:11px;color:var(--rd)">View →</span>
       </div>
       <div style="display:flex;gap:7px;margin-bottom:10px">
         <div class="sb-it"><div class="sb-dot"></div><span id="gps-stat">📍 GPS: Active</span></div>
-        <div class="sb-it"><div class="sb-dot"></div>✅ Verified</div>
+        <div class="sb-it"><div class="sb-dot"></div><span id="vtype-badge">🚗 Car mechanic</span></div>
       </div>
       <div class="onl-tog" onclick="toggleOnline()">
         <div class="tt on" id="tt"><div class="tth"></div></div>
@@ -392,7 +401,7 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
       </div>
       <div id="gig-prev" class="gig-prev" onclick="go('m-gig')">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:5px">
-          <div><div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--gn)" id="gig-prev-title">🔔 New gig available!</div><div style="font-size:11px;color:var(--tx2);margin-top:2px">Tap to view and accept</div></div>
+          <div><div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--gn)" id="gig-prev-title">🔔 New gig!</div><div style="font-size:11px;color:var(--tx2);margin-top:2px">Tap to view</div></div>
           <div style="font-family:var(--fh);font-size:19px;font-weight:800" id="gig-prev-price">—</div>
         </div>
       </div>
@@ -417,22 +426,26 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
   <div class="sb">
     <div class="sec">
       <div style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:8px 11px;display:flex;align-items:center;gap:7px;margin-bottom:11px;animation:bi 1.5s 3"><span style="font-size:17px">🚨</span><span style="font-size:12px;font-weight:700;color:var(--rd);font-family:var(--fh)">New job — respond quickly!</span></div>
-      <div style="background:linear-gradient(135deg,rgba(96,165,250,.1),rgba(96,165,250,.03));border:1.5px solid rgba(96,165,250,.28);border-radius:var(--r2);padding:15px;margin-bottom:10px">
+      <div style="background:var(--card);border:1.5px solid rgba(96,165,250,.28);border-radius:var(--r2);padding:15px;margin-bottom:10px">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:11px">
           <div><div style="font-family:var(--fh);font-size:14px;font-weight:700" id="gig-issue">—</div><div style="font-size:11px;color:var(--tx2);margin-top:2px" id="gig-loc">—</div></div>
-          <div style="text-align:right"><div style="font-family:var(--fh);font-size:22px;font-weight:800;color:var(--gn)" id="gig-price">₹—</div><div style="font-size:10px;color:var(--tx3)">Est.</div></div>
+          <div style="text-align:right"><div style="font-family:var(--fh);font-size:22px;font-weight:800;color:var(--gn)" id="gig-price">₹—</div></div>
         </div>
+        <!-- CUSTOMER GPS LINK -->
+        <a id="cust-gps-link" href="#" target="_blank" style="display:none;background:var(--bl2);border:1px solid rgba(96,165,250,.3);border-radius:var(--r);padding:8px 11px;text-align:center;font-size:12px;color:var(--bl);text-decoration:none;font-weight:600;display:block;margin-bottom:9px">📍 Navigate to customer — Google Maps →</a>
+        <div style="font-size:10px;color:var(--tx3);margin-bottom:9px" id="cust-coords"></div>
         <div class="veh-box">
-          <div style="font-family:var(--fh);font-size:11px;font-weight:700;color:var(--am);margin-bottom:5px">🚗 Vehicle details</div>
+          <div style="font-family:var(--fh);font-size:11px;font-weight:700;color:var(--am);margin-bottom:5px">🚗 Vehicle</div>
           <div class="veh-row"><span class="vl">Vehicle</span><span class="vv" id="gig-veh">—</span></div>
-          <div class="veh-row"><span class="vl">Parts chosen</span><span class="vv" id="gig-parts">—</span></div>
+          <div class="veh-row"><span class="vl">Parts type</span><span class="vv" id="gig-parts">—</span></div>
           <div class="veh-row"><span class="vl">Categories</span><span class="vv" id="gig-cats">—</span></div>
         </div>
+        <!-- PARTS TO CARRY -->
+        <div id="parts-to-carry" class="parts-box" style="display:none"></div>
         <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r);padding:10px;margin-bottom:9px">
           <div style="font-size:11px;font-weight:600;margin-bottom:3px">Customer: <span id="gig-cust" style="color:var(--gn)">—</span></div>
           <div style="font-size:11px;color:var(--tx2)">Phone: <span id="gig-cph">—</span></div>
         </div>
-        <div style="background:var(--rd2);border:1px solid rgba(248,113,113,.2);border-radius:var(--r);padding:8px 11px;font-size:11px;color:var(--rd)">⚠️ GPS must stay ON throughout the job</div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
         <button class="btn b-gn" onclick="acceptGig()">✅ Accept gig</button>
@@ -481,9 +494,9 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
       <div class="sl">Checklist</div>
       <div class="card" style="padding:7px 12px;margin-bottom:9px">
         <div class="cr" onclick="chk(this)"><div style="font-size:16px;width:20px">⬜</div><div style="font-size:13px">Inspect and confirm fault</div></div>
-        <div class="cr" onclick="chk(this)"><div style="font-size:16px;width:20px">⬜</div><div style="font-size:13px">Confirm correct part</div></div>
+        <div class="cr" onclick="chk(this)"><div style="font-size:16px;width:20px">⬜</div><div style="font-size:13px">Confirm parts match job specification</div></div>
         <div class="cr" onclick="chk(this)"><div style="font-size:16px;width:20px">⬜</div><div style="font-size:13px">Install new part</div></div>
-        <div class="cr" onclick="chk(this)" style="border-bottom:none"><div style="font-size:16px;width:20px">⬜</div><div style="font-size:13px">Test and confirm repair</div></div>
+        <div class="cr" onclick="chk(this)" style="border-bottom:none"><div style="font-size:16px;width:20px">⬜</div><div style="font-size:13px">Test and confirm repair complete</div></div>
       </div>
       <button class="btn b-gn" onclick="completeJob()">✅ Mark job complete</button>
     </div>
@@ -493,7 +506,7 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
   <div class="topbar"><div class="back" onclick="go('m-home')">← Home</div><div class="pgt">Job done!</div><div class="sp"></div></div>
   <div class="sb">
     <div class="sec">
-      <div style="text-align:center;padding:14px 0"><div style="font-size:52px;margin-bottom:9px">💰</div><div style="font-family:var(--fh);font-size:22px;font-weight:800;color:var(--gn)">Job complete!</div><div style="font-size:11px;color:var(--tx2);margin-top:3px">Admin panel updated live ✓</div></div>
+      <div style="text-align:center;padding:14px 0"><div style="font-size:52px;margin-bottom:9px">💰</div><div style="font-family:var(--fh);font-size:22px;font-weight:800;color:var(--gn)">Job complete!</div><div style="font-size:11px;color:var(--tx2);margin-top:3px">Admin panel updated ✓</div></div>
       <button class="btn b-gn" onclick="go('m-home')">🏠 Back to home</button>
     </div>
   </div>
@@ -503,14 +516,15 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
   <div class="sb">
     <div class="sec">
       <div style="background:linear-gradient(135deg,rgba(74,222,128,.12),rgba(74,222,128,.04));border:1px solid rgba(74,222,128,.18);border-radius:var(--r2);padding:16px;text-align:center;margin-bottom:11px">
-        <div style="font-size:11px;color:var(--tx2);margin-bottom:3px">Total earned</div>
+        <div style="font-size:11px;color:var(--tx2);margin-bottom:3px">Total earned (keep 100%)</div>
         <div style="font-family:var(--fh);font-size:36px;font-weight:800;color:var(--gn)" id="earn-total">₹0</div>
       </div>
       <div class="card" style="padding:10px 12px">
         <div class="er"><div style="color:var(--tx2)">Total gigs</div><div style="font-weight:600" id="earn-jobs">0</div></div>
         <div class="er"><div style="color:var(--tx2)">Rating</div><div style="font-weight:600;color:var(--am)" id="earn-rat">5.0 ⭐</div></div>
-        <div class="er"><div style="color:var(--tx2)">Platform cut (8%)</div><div style="font-weight:600;color:var(--rd)" id="earn-cut">₹0</div></div>
+        <div class="er"><div style="color:var(--tx2)">Platform fee (1-2%)</div><div style="font-weight:600;color:var(--rd)" id="earn-cut">₹0</div></div>
       </div>
+      <div style="background:var(--gn2);border:1px solid rgba(74,222,128,.2);border-radius:var(--r);padding:9px 11px;font-size:11px;color:var(--gn)">💚 No middleman. You earn directly from customers. RoadFix takes 1-2% only.</div>
     </div>
   </div>
   <div class="bnav">
@@ -530,18 +544,19 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
       <input type="file" id="m-pfp-up" accept="image/*" style="display:none" onchange="uploadMechPfp(this)">
       <div style="font-family:var(--fh);font-size:16px;font-weight:700" class="m-name">Loading...</div>
       <div style="font-size:11px;color:var(--tx2)" class="m-phone">—</div>
-      <span class="bdg b-g">✅ Verified mechanic</span>
+      <span class="bdg b-g" id="vtype-badge-profile">✅ Car mechanic</span>
     </div>
     <div class="psts">
       <div class="pst"><div class="pstn" id="p-jobs">0</div><div class="pstl">Jobs</div></div>
       <div class="pst"><div class="pstn" style="color:var(--am)" id="p-rat">5.0⭐</div><div class="pstl">Rating</div></div>
       <div class="pst"><div class="pstn" style="color:var(--gn)" id="p-earn">₹0</div><div class="pstl">Lifetime</div></div>
     </div>
+    <div style="padding:8px 13px 4px;font-size:11px;color:var(--tx3);font-family:var(--fh);font-weight:700;letter-spacing:.05em;text-transform:uppercase">Brand speciality</div>
     <div id="skills-wrap" class="sw2"></div>
     <div class="mit"><span style="font-size:15px">📍</span><span style="flex:1">GPS & tracking</span><span style="color:var(--tx3)">›</span></div>
     <div class="mit"><span style="font-size:15px">🏦</span><span style="flex:1">Bank account</span><span style="color:var(--tx3)">›</span></div>
     <div class="mit" onclick="doLogout()"><span style="font-size:15px">🚪</span><span style="flex:1">Sign out</span><span style="color:var(--tx3)">›</span></div>
-    <div style="padding:13px;text-align:center;font-size:11px;color:var(--tx3)">MechPro v7 · 52 bugs fixed · Firebase live</div>
+    <div style="padding:13px;text-align:center;font-size:11px;color:var(--tx3)">MechPro v8 · GPS radius · Parts-to-carry · Firebase live</div>
   </div>
   <div class="bnav">
     <div class="bn" onclick="go('m-home')"><div class="bn-i">🏠</div><div class="bn-l">Home</div></div>
@@ -553,15 +568,22 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
 <script>
 var stk=["m-loading"],cur="m-loading";
 function go(id){var o=document.getElementById(cur),n=document.getElementById(id);if(!n)return;o.classList.remove("on");n.classList.add("on");if(stk[stk.length-1]!==id)stk.push(id);cur=id;var sb=n.querySelector(".sb");if(sb)sb.scrollTop=0;
-  if(id==="m-gig"){const pid=localStorage.getItem("mrf_pendingGigId");if(pid){const db=window._db_ref;if(db)db(pid);}}
-  if(id==="m-earn"&&typeof profile!=="undefined"&&profile){document.getElementById("earn-total").textContent="₹"+(profile.totalEarned||0).toLocaleString("en-IN");document.getElementById("earn-jobs").textContent=String(profile.totalJobs||0);document.getElementById("earn-rat").textContent=(profile.rating||5.0).toString().substr(0,3)+" ⭐";document.getElementById("earn-cut").textContent="-₹"+Math.round((profile.totalEarned||0)*.08).toLocaleString("en-IN");document.getElementById("p-jobs").textContent=String(profile.totalJobs||0);document.getElementById("p-rat").textContent=(profile.rating||5.0).toString().substr(0,3)+"⭐";document.getElementById("p-earn").textContent="₹"+Math.round((profile.totalEarned||0)/1000)+"k";}
+  if(id==="m-gig"){const pid=localStorage.getItem("mrf_pendingGigId");if(pid){get(ref(db,"jobs/"+pid)).then(snap=>{const j=snap.val();if(j)populateGig(pid,j);});}}
+  if(id==="m-earn"&&typeof profile!=="undefined"&&profile){
+    document.getElementById("earn-total").textContent="₹"+(profile.totalEarned||0).toLocaleString("en-IN");
+    document.getElementById("earn-jobs").textContent=String(profile.totalJobs||0);
+    document.getElementById("earn-rat").textContent=(profile.rating||5.0).toString().substr(0,3)+" ⭐";
+    document.getElementById("earn-cut").textContent="-₹"+Math.round((profile.totalEarned||0)*.015).toLocaleString("en-IN");
+    document.getElementById("p-jobs").textContent=String(profile.totalJobs||0);
+    document.getElementById("p-rat").textContent=(profile.rating||5.0).toString().substr(0,3)+"⭐";
+    document.getElementById("p-earn").textContent="₹"+Math.round((profile.totalEarned||0)/1000)+"k";
+    if(document.getElementById("vtype-badge-profile"))document.getElementById("vtype-badge-profile").textContent="✅ "+(profile.vehicleType==="luxbike"?"Luxury bike":"Car")+" mechanic";
+  }
 }
 function back(){if(stk.length<2)return;stk.pop();var p=stk[stk.length-1];document.getElementById(cur).classList.remove("on");document.getElementById(p).classList.add("on");cur=p;}
-function chk(r){var i=r.querySelector("[style*=\"width:20px\"]");if(i&&i.textContent.trim()==="⬜")i.textContent="✅";}
+function chk(r){var i=r.querySelector("[style*='width:20px']");if(i&&i.textContent.trim()==="⬜")i.textContent="✅";}
 function ge(id){return document.getElementById(id);}
 function tx(id,v){var e=document.getElementById(id);if(e)e.textContent=v;}
-function declineGig(){window.declineGig&&window.declineGig();}
-function acceptGig(){window.acceptGig&&window.acceptGig();}
 </script>
 </body>
 </html>

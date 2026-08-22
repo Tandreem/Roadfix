@@ -7,36 +7,52 @@
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
 <script type="module">
 import{initializeApp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import{getAuth,signInWithEmailAndPassword,signOut,onAuthStateChanged,setPersistence,browserSessionPersistence}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import{getAuth,signInWithEmailAndPassword,signOut,onAuthStateChanged}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import{getDatabase,ref,onValue,update,remove,get}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 const app=initializeApp({apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",authDomain:"roadfix-demo.firebaseapp.com",databaseURL:"https://roadfix-demo-default-rtdb.asia-southeast1.firebasedatabase.app",projectId:"roadfix-demo",storageBucket:"roadfix-demo.firebasestorage.app",messagingSenderId:"274952184107",appId:"1:274952184107:web:63188439d92ec31103a56e"});
 const auth=getAuth(app),db=getDatabase(app);
 
 // Admin emails — only these can access
 // SECURITY: Only these emails can access admin
-// Admin access — kept private
+// Admin access
 const ADMIN_EMAILS=["manojkalita232@gmail.com","admin@roadfix.in"];
 let _listenersStarted=false;
-let _manualLogin=false; // only allow entry after manual login button click
 
-// Always show login screen on load — sign out any saved session silently
-auth.signOut().catch(()=>{});
+// Simple rule:
+// - sessionStorage flag 'rf_admin_ok' = user logged in this browser session
+// - Without this flag, always show login screen even if Firebase has a session
+// - This way tab close = logged out, but within same session stays logged in
 
+function showLogin(){
+  document.getElementById("login-screen").style.display="flex";
+  document.getElementById("admin-app").style.display="none";
+}
+function showAdmin(){
+  document.getElementById("login-screen").style.display="none";
+  document.getElementById("admin-app").style.display="flex";
+  setEl("admin-email","Admin ●●●");
+  if(!_listenersStarted){_listenersStarted=true;startListeners();}
+}
+
+// On page load — check sessionStorage first
+if(!sessionStorage.getItem('rf_admin_ok')){
+  // No session flag — show login, silently sign out Firebase
+  showLogin();
+  auth.signOut().catch(()=>{});
+}
+
+// Firebase auth state — only acts if session flag is set
 onAuthStateChanged(auth,user=>{
-  if(user&&_manualLogin){
-    // Only enter admin if login button was clicked (not auto session)
-    document.getElementById("login-screen").style.display="none";
-    document.getElementById("admin-app").style.display="flex";
-    setEl("admin-email","Admin ●●●");
-    if(!_listenersStarted){_listenersStarted=true;startListeners();}
-  } else if(user&&!_manualLogin){
-    // Auto session — sign out and show login
-    auth.signOut().catch(()=>{});
-  } else {
+  const hasSession=sessionStorage.getItem('rf_admin_ok');
+  if(user&&hasSession&&ADMIN_EMAILS.includes(user.email)){
+    showAdmin();
+  } else if(!user&&hasSession){
+    // Firebase signed out but we still have flag — clear and show login
+    sessionStorage.removeItem('rf_admin_ok');
     _listenersStarted=false;
-    document.getElementById("login-screen").style.display="flex";
-    document.getElementById("admin-app").style.display="none";
+    showLogin();
   }
+  // If no hasSession, do nothing — login screen already showing
 });
 
 window.adminLogin=async()=>{
@@ -46,28 +62,27 @@ window.adminLogin=async()=>{
   if(!e||!p){err.textContent="Enter email and password";return;}
   err.textContent="Signing in...";
   try{
-    // Set flag BEFORE sign in so onAuthStateChanged allows entry
-    _manualLogin=true;
     const cred=await signInWithEmailAndPassword(auth,e,p);
-    // Check email after successful auth
     if(!ADMIN_EMAILS.includes(cred.user.email)){
-      _manualLogin=false;
       await auth.signOut();
-      err.textContent="Access denied.";
+      err.textContent="Access denied — not an admin account.";
       return;
     }
+    // Set session flag — this is what allows entry
+    sessionStorage.setItem('rf_admin_ok','1');
     update(ref(db,"admins/"+cred.user.uid),{lastLogin:Date.now()});
     err.textContent="";
-  }
-  catch(ex){
-    _manualLogin=false;
-    const m=ex.message||"";
-    if(m.includes("wrong-password")||m.includes("invalid-credential"))err.textContent="Wrong password";
+    showAdmin();
+  }catch(ex){
+    sessionStorage.removeItem('rf_admin_ok');
+    const m=ex.code||"";
+    if(m.includes("wrong-password")||m.includes("invalid-credential"))err.textContent="Wrong password — try again";
     else if(m.includes("user-not-found"))err.textContent="Email not found";
-    else if(m.includes("too-many-requests"))err.textContent="Too many attempts — try again later";
+    else if(m.includes("too-many-requests"))err.textContent="Too many attempts — wait a few minutes";
     else err.textContent="Login failed — check email and password";
   }
 };
+
 
 window.adminLogout=()=>{
   _listenersStarted=false;

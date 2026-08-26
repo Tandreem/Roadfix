@@ -71,10 +71,11 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 </style>
 <script type="module">
 import{initializeApp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import{getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,onAuthStateChanged}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import{getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,onAuthStateChanged,sendPasswordResetEmail}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import{getDatabase,ref,set,push,onValue,update,get}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+import{getStorage,ref as sref,uploadString,getDownloadURL}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
 const app=initializeApp({apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",authDomain:"roadfix-demo.firebaseapp.com",databaseURL:"https://roadfix-demo-default-rtdb.asia-southeast1.firebasedatabase.app",projectId:"roadfix-demo",storageBucket:"roadfix-demo.firebasestorage.app",messagingSenderId:"274952184107",appId:"1:274952184107:web:63188439d92ec31103a56e"});
-const auth=getAuth(app),db=getDatabase(app);
+const auth=getAuth(app),db=getDatabase(app),storage=getStorage(app);
 
 let uid=null,profile=null,chatUnsub=null,shownGig=false;
 let jobsUnsub=null,profUnsub=null,alertsUnsub=null,_listenersStarted=false;
@@ -199,6 +200,27 @@ function populateGig(id,job){
   }
 }
 
+// Map Firebase auth error codes to friendly, specific messages (used by login/register/reset).
+function authErrMsg(e){
+  const c=e.code||"";
+  const map={
+    "auth/email-already-in-use":"Email already registered — sign in instead",
+    "auth/weak-password":"Use at least 6 characters",
+    "auth/invalid-email":"That email address doesn't look valid",
+    "auth/wrong-password":"Wrong password",
+    "auth/invalid-credential":"Wrong email or password",
+    "auth/user-not-found":"No account with this email",
+    "auth/too-many-requests":"Too many attempts — wait a bit and try again",
+    "auth/network-request-failed":"Network error — check your connection"
+  };
+  return map[c]||(e.message||"").replace("Firebase: ","").replace(/\(.*\)/,"").trim()||"Something went wrong";
+}
+// Disable a button + swap its label while an async action runs, restoring it afterwards either way.
+async function withBusy(btnId,busyLabel,fn){
+  const b=ge(btnId);const orig=b?b.innerHTML:"";
+  if(b){b.disabled=true;b.style.opacity=".6";b.innerHTML=busyLabel;}
+  try{await fn();}finally{if(b){b.disabled=false;b.style.opacity="1";b.innerHTML=orig;}}
+}
 // REGISTER
 window.doReg=async()=>{
   const n=gv("mn"),ph=gv("mph"),ci=gv("mci"),sk=gv("msk"),brand=gv("mbrand"),em=gv("mem"),pw=gv("mpw");
@@ -207,14 +229,18 @@ window.doReg=async()=>{
   if(pw.length<6){err.textContent="Password must be at least 6 characters";return;}
   if(!selVehicleType){err.textContent="Please select car or luxury bike mechanic";return;}
   err.textContent="Creating account...";
-  try{
-    const c=await createUserWithEmailAndPassword(auth,em,pw);
-    const pfpF=ge("m-pfp-inp").files[0];const pfp=pfpF?await b64(pfpF):"";
+  await withBusy("mreg-btn","Creating account...",async()=>{
     try{
-      await set(ref(db,"mechanics/"+c.user.uid),{name:n,phone:ph,city:ci||"",skills:sk||"General",brandSpeciality:brand||sk||"General",vehicleType:selVehicleType,email:em,role:"mechanic",status:"online",gpsOn:true,rating:5.0,verified:false,createdAt:Date.now(),pfp,totalJobs:0,totalEarned:0});
-    }catch(dbErr){try{await set(ref(db,"mechanics/"+c.user.uid),{name:n,phone:ph,email:em,role:"mechanic",vehicleType:selVehicleType,verified:false,createdAt:Date.now()});}catch(e2){}}
-    err.textContent="";
-  }catch(e){const m=e.message||"";if(m.includes("email-already-in-use"))err.textContent="Email already registered";else if(m.includes("weak-password"))err.textContent="Use at least 6 characters";else err.textContent=m.replace("Firebase: ","").replace(/\(.*\)/,"")||"Registration failed";}
+      const c=await createUserWithEmailAndPassword(auth,em,pw);
+      const pfpF=ge("m-pfp-inp").files[0];
+      let pfp="";
+      if(pfpF){try{pfp=await uploadPfp(pfpF,"mechanics/"+c.user.uid+"/pfp.jpg");}catch(upErr){pfp="";}}
+      try{
+        await set(ref(db,"mechanics/"+c.user.uid),{name:n,phone:ph,city:ci||"",skills:sk||"General",brandSpeciality:brand||sk||"General",vehicleType:selVehicleType,email:em,role:"mechanic",status:"online",gpsOn:true,rating:5.0,verified:false,createdAt:Date.now(),pfp,totalJobs:0,totalEarned:0});
+      }catch(dbErr){try{await set(ref(db,"mechanics/"+c.user.uid),{name:n,phone:ph,email:em,role:"mechanic",vehicleType:selVehicleType,verified:false,createdAt:Date.now()});}catch(e2){}}
+      err.textContent="";
+    }catch(e){err.textContent=authErrMsg(e);}
+  });
 };
 window.setVType=(t)=>{
   selVehicleType=t;
@@ -236,10 +262,34 @@ window.setVType=(t)=>{
     if(bh)bh.style.color='var(--pu)';bh.style.background='var(--pu2)';bh.style.border='1px solid rgba(168,85,247,.2)';
   }
 };
+// General "always carry" kit — separate from the per-gig AI parts list. Helps
+// mechanics stock up before going online, not just react to a specific job.
+const GENERAL_KIT={
+  car:["Basic tool kit (spanners, screwdrivers, pliers)","Jump starter / booster cables","Tyre inflator + puncture repair kit","Multimeter","OBD-II scanner","Engine oil top-up (1L)","Coolant top-up (1L)","Brake fluid (DOT4)","Spare fuses & relays","Torque wrench","Wheel wrench + jack","Spare spark plugs (common sizes)"],
+  luxbike:["Bike-specific metric tool kit","Chain lube & cleaner","12V jump pack (bike-rated)","Multimeter","Brand diagnostic scanner (if available)","Brake fluid (DOT4)","Coolant (liquid-cooled models)","Spare fuses & relays","Tubeless tyre puncture kit","Small-range torque wrench (Nm)"]
+};
+window.togglePartsKit=()=>{
+  const p=ge("parts-kit-panel"),chev=ge("pk-chevron");
+  const showing=p.style.display!=="none";
+  if(showing){p.style.display="none";chev.textContent="›";return;}
+  const kind=(profile&&(profile.vehicleType==="bike"||profile.vehicleType==="luxbike"))?"luxbike":"car";
+  const list=GENERAL_KIT[kind];
+  p.innerHTML='<div style="font-size:10px;color:var(--tx3);margin-bottom:6px">Recommended kit for '+(kind==="luxbike"?"luxury bike":"car")+' mechanics — keep these stocked:</div>'+
+    list.map(item=>'<div style="font-size:12px;padding:5px 0;border-bottom:1px solid var(--bdr)">• '+item+'</div>').join('');
+  p.style.display="block";chev.textContent="⌄";
+};
 window.doLogin=async()=>{
   const err=ge("ml-err");err.textContent="Signing in...";
-  try{await signInWithEmailAndPassword(auth,gv("mlem"),gv("mlpw"));err.textContent="";}
-  catch(e){err.textContent="Invalid email or password";}
+  await withBusy("mlogin-btn","Signing in...",async()=>{
+    try{await signInWithEmailAndPassword(auth,gv("mlem"),gv("mlpw"));err.textContent="";}
+    catch(e){err.textContent=authErrMsg(e);}
+  });
+};
+window.doForgotPw=async()=>{
+  const err=ge("ml-err"),em=gv("mlem");
+  if(!em){err.textContent="Enter your email above first, then tap Forgot password";return;}
+  try{await sendPasswordResetEmail(auth,em);err.textContent="";toast("📧 Password reset link sent to "+em);}
+  catch(e){err.textContent=authErrMsg(e);}
 };
 
 // ── PRE-BOOKING LISTENER ──────────────────────────────
@@ -386,7 +436,12 @@ window.openMechChat=()=>{
 };
 window.sendMechMsg=()=>{const inp=ge("m-chat-inp"),jid=getJobId();if(!inp||!inp.value.trim()||!jid)return;push(ref(db,"chats/"+jid),{senderId:uid,senderName:(profile&&profile.name)||"Mechanic",senderRole:"mechanic",text:inp.value.trim(),time:Date.now()});inp.value="";};
 
-window.uploadMechPfp=async(inp)=>{if(!uid||!inp.files[0])return;const d=await b64(inp.files[0]);await update(ref(db,"mechanics/"+uid),{pfp:d});toast("✅ Photo updated");};
+window.uploadMechPfp=async(inp)=>{
+  if(!uid||!inp.files[0])return;
+  toast("Uploading photo...");
+  try{const url=await uploadPfp(inp.files[0],"mechanics/"+uid+"/pfp.jpg");await update(ref(db,"mechanics/"+uid),{pfp:url});toast("✅ Photo updated");}
+  catch(e){toast("⚠️ Photo upload failed — try a smaller image");}
+};
 window.prevPfp=(inp,imgId,icoId)=>{const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{const img=ge(imgId),ico=ge(icoId);if(img){img.src=e.target.result;img.style.display="block";}if(ico)ico.style.display="none";};r.readAsDataURL(f);};
 function gv(id){const e=ge(id);return e?e.value.trim():"";}
 function ge(id){return document.getElementById(id);}
@@ -394,6 +449,10 @@ function qsa(s){return Array.from(document.querySelectorAll(s));}
 function tx(id,v){const e=ge(id);if(e)e.textContent=v;}
 function toast(msg){let t=ge("m-toast");if(!t){t=document.createElement("div");t.id="m-toast";t.style.cssText="position:fixed;bottom:85px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.9);color:#fff;padding:9px 18px;border-radius:99px;font-size:13px;z-index:9999;transition:opacity .3s;pointer-events:none;white-space:nowrap;max-width:90vw;text-align:center";document.body.appendChild(t);}t.textContent=msg;t.style.opacity="1";clearTimeout(window._mt);window._mt=setTimeout(()=>{t.style.opacity="0";},2800);}
 function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>r(e.target.result);x.onerror=j;x.readAsDataURL(f);});}
+// Resize + compress an image file down to a small JPEG data URL (max 480px, ~q0.7) before it ever touches Storage/DB.
+function resizeImg(file,maxDim=480,quality=0.7){return new Promise((res,rej)=>{const img=new Image();const url=URL.createObjectURL(file);img.onload=()=>{let{width:w,height:h}=img;if(w>h&&w>maxDim){h=Math.round(h*maxDim/w);w=maxDim;}else if(h>maxDim){w=Math.round(w*maxDim/h);h=maxDim;}const c=document.createElement("canvas");c.width=w;c.height=h;c.getContext("2d").drawImage(img,0,0,w,h);URL.revokeObjectURL(url);res(c.toDataURL("image/jpeg",quality));};img.onerror=rej;img.src=url;});}
+// Upload a resized data-URL to Firebase Storage and return its public download URL (keeps the Realtime DB light).
+async function uploadPfp(file,path){const small=await resizeImg(file);const r=sref(storage,path);await uploadString(r,small,"data_url");return await getDownloadURL(r);}
 </script>
 </head>
 <body>
@@ -415,7 +474,8 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
     <div class="f"><label>Email</label><input id="mlem" type="email" placeholder="your@email.com" autocomplete="email"></div>
     <div class="f"><label>Password</label><input id="mlpw" type="password" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()"></div>
     <div class="err" id="ml-err"></div>
-    <button class="btn b-gn" onclick="doLogin()">Sign in →</button>
+    <button class="btn b-gn" id="mlogin-btn" onclick="doLogin()">Sign in →</button>
+    <div class="sw" style="margin-top:2px" onclick="doForgotPw()">Forgot password?</div>
   </div>
   <div class="sw">New mechanic? <span onclick="go('m-register')">Register here</span></div>
 </div>
@@ -458,7 +518,7 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
     <div class="f"><label>Email ✱</label><input id="mem" type="email" placeholder="your@email.com"></div>
     <div class="f"><label>Password ✱</label><input id="mpw" type="password" placeholder="Min 6 characters"></div>
     <div class="err" id="mr-err"></div>
-    <button class="btn b-gn" onclick="doReg()">Register →</button>
+    <button class="btn b-gn" id="mreg-btn" onclick="doReg()">Register →</button>
   </div>
   <div class="sw">Already registered? <span onclick="go('m-login')">Sign in</span></div>
 </div>
@@ -653,6 +713,8 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
     </div>
     <div style="padding:8px 13px 4px;font-size:11px;color:var(--tx3);font-family:var(--fh);font-weight:700;letter-spacing:.05em;text-transform:uppercase">Brand speciality</div>
     <div id="skills-wrap" class="sw2"></div>
+    <div class="mit" onclick="togglePartsKit()"><span style="font-size:15px">🧰</span><span style="flex:1">Parts kit to carry</span><span style="color:var(--tx3)" id="pk-chevron">›</span></div>
+    <div id="parts-kit-panel" style="display:none;padding:4px 13px 10px"></div>
     <div class="mit"><span style="font-size:15px">📍</span><span style="flex:1">GPS & tracking</span><span style="color:var(--tx3)">›</span></div>
     <div class="mit"><span style="font-size:15px">🏦</span><span style="flex:1">Bank account</span><span style="color:var(--tx3)">›</span></div>
     <div class="mit" onclick="doLogout()"><span style="font-size:15px">🚪</span><span style="flex:1">Sign out</span><span style="color:var(--tx3)">›</span></div>

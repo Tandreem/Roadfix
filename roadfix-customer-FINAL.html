@@ -86,10 +86,11 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 </style>
 <script type="module">
 import{initializeApp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import{getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,onAuthStateChanged}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import{getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,onAuthStateChanged,sendPasswordResetEmail}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import{getDatabase,ref,set,push,onValue,update,get}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+import{getStorage,ref as sref,uploadString,getDownloadURL}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
 const app=initializeApp({apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",authDomain:"roadfix-demo.firebaseapp.com",databaseURL:"https://roadfix-demo-default-rtdb.asia-southeast1.firebasedatabase.app",projectId:"roadfix-demo",storageBucket:"roadfix-demo.firebasestorage.app",messagingSenderId:"274952184107",appId:"1:274952184107:web:63188439d92ec31103a56e"});
-const auth=getAuth(app),db=getDatabase(app);
+const auth=getAuth(app),db=getDatabase(app),storage=getStorage(app);
 
 // ── LUXURY BIKE CHECKER ────────────────────────────────
 const LUXURY_KEYWORDS=['ninja zx','hayabusa','ducati','s1000rr','panigale','multistrada','diavel','hypermotard','streetfighter','gold wing','africa twin','cbr1000','gsxr1000','gsx-r1000','r1 ','mt-10','mt10','kawasaki h2','z900','versys 1000','triumph rocket','tiger 900','ktm 1290','ktm 890','super duke','harley','indian chief','indian scout','mv agusta','aprilia rsv','aprilia tuono','k1600','r1250','r18','bmw s1000','bmw m1000','bmw r1','cvo road','cvo street','road glide','street glide ultra','svartpilen 801','super meteor 650','shotgun 650','ninja h2','zx-10','zx-6r','zx-14','z650rs','kawasaki zx'];
@@ -154,6 +155,11 @@ function startApp(){
     tx('lf-jobs',String(active));
     jobHistory=Object.values(all).filter(j=>j.customerId===uid&&j.status==='done').sort((a,b)=>(b.completedAt||0)-(a.completedAt||0));
     renderHistory();
+    // Self-heal: if the locally cached job id doesn't belong to this signed-in customer
+    // (stale cache, shared device, incomplete earlier logout, etc.), drop it so we never
+    // show or act on someone else's job.
+    const cachedId=getJobId();
+    if(cachedId&&all[cachedId]&&all[cachedId].customerId!==uid){setJobId(null);}
     const myJob=Object.values(all).find(j=>j.customerId===uid&&j.status!=='done');
     if(myJob){
       if(!getJobId())setJobId(myJob.id);
@@ -205,29 +211,31 @@ window.doReg=async()=>{
   if(!n||!ph||!em||!pw){err.textContent='Fill all required fields';return;}
   if(pw.length<6){err.textContent='Password must be at least 6 characters';return;}
   err.textContent='Creating account...';
-  try{
-    const c=await createUserWithEmailAndPassword(auth,em,pw);
+  await withBusy('creg-btn','Creating account...',async()=>{
     try{
-      const pfpF=ge('r-pfp').files[0];const pfp=pfpF?await b64(pfpF):'';
-      await set(ref(db,'customers/'+c.user.uid),{name:n,phone:ph,city:ci||'',email:em,role:'customer',createdAt:Date.now(),pfp,totalJobs:0,totalSpend:0,rating:'5.0'});
-    }catch(dbErr){try{await set(ref(db,'customers/'+c.user.uid),{name:n,phone:ph,email:em,role:'customer',createdAt:Date.now()});}catch(e2){console.error(e2);}}
-    err.textContent='';
-  }catch(e){
-    const m=e.code||'';
-    if(m.includes('email-already-in-use'))err.textContent='Email already registered — sign in instead';
-    else if(m.includes('weak-password'))err.textContent='Use at least 6 characters';
-    else err.textContent='Registration failed — check connection';
-  }
+      const c=await createUserWithEmailAndPassword(auth,em,pw);
+      const pfpF=ge('r-pfp').files[0];
+      let pfp='';
+      if(pfpF){try{pfp=await uploadPfpFile(pfpF,'customers/'+c.user.uid+'/pfp.jpg');}catch(upErr){pfp='';}}
+      try{
+        await set(ref(db,'customers/'+c.user.uid),{name:n,phone:ph,city:ci||'',email:em,role:'customer',createdAt:Date.now(),pfp,totalJobs:0,totalSpend:0,rating:'5.0'});
+      }catch(dbErr){try{await set(ref(db,'customers/'+c.user.uid),{name:n,phone:ph,email:em,role:'customer',createdAt:Date.now()});}catch(e2){console.error(e2);}}
+      err.textContent='';
+    }catch(e){err.textContent=authErrMsg(e);}
+  });
 };
 window.doLogin=async()=>{
   const err=ge('l-err');err.textContent='Signing in...';
-  try{await signInWithEmailAndPassword(auth,gv('lem'),gv('lpw'));err.textContent='';}
-  catch(e){
-    const m=e.code||'';
-    if(m.includes('wrong-password')||m.includes('invalid-credential'))err.textContent='Wrong password';
-    else if(m.includes('user-not-found'))err.textContent='No account with this email';
-    else err.textContent='Login failed — check email and password';
-  }
+  await withBusy('clogin-btn','Signing in...',async()=>{
+    try{await signInWithEmailAndPassword(auth,gv('lem'),gv('lpw'));err.textContent='';}
+    catch(e){err.textContent=authErrMsg(e);}
+  });
+};
+window.doForgotPw=async()=>{
+  const err=ge('l-err'),em=gv('lem');
+  if(!em){err.textContent='Enter your email above first, then tap Forgot password';return;}
+  try{await sendPasswordResetEmail(auth,em);err.textContent='';toast('📧 Password reset link sent to '+em);}
+  catch(e){err.textContent=authErrMsg(e);}
 };
 // Open the correct screen based on active job status
 window.openActiveJob=()=>{
@@ -410,6 +418,7 @@ window.startAI=()=>{
   tx('ai-veh-txt','Analysing: '+selVeh.make+' '+selVeh.model+' '+selVeh.year+' '+selVeh.fuel);
   runAI(selVeh,gv('ptxt')||'Vehicle problem',cats.length?cats.join(', '):'General');
 };
+function round50(n){return Math.round(n/50)*50;}
 async function runAI(veh,issue,catStr){
   const KEY=window._geminiKey||'';
   const isEV=veh.fuel==='Electric';
@@ -476,7 +485,7 @@ function showAI(a){
   if(fb)fb.innerHTML=a.faults.map(f=>`<div class="fault"><div class="fh2"><span class="fn">${f.name}</span><span class="fp" style="color:var(--${f.col||'bl'})">${f.pct}%</span></div><div class="ft"><div class="fb" style="background:var(--${f.col||'bl'});width:${f.pct}%"></div></div><div style="font-size:11px;color:var(--tx2);margin-top:4px">${f.desc}</div></div>`).join('');
   const sw=ge('s-warn');if(sw&&a.warn){sw.textContent=a.warn;ge('swb').style.display='flex';}
   tx('parts-n',a.parts||'—');
-  tx('price-r','₹'+Math.round(a.low)+' – ₹'+Math.round(a.high));
+  tx('price-r','Approx ₹'+round50(a.low)+' – ₹'+round50(a.high));
   tx('ai-veh-res','For: '+selVeh.make+' '+selVeh.model+' '+selVeh.year+' '+selVeh.fuel);
   window._aiResult=a;
   // Show parts detail for mechanic
@@ -690,7 +699,20 @@ window.selPD2=(i,n)=>{selPD=n;[0,1,2,3].forEach(j=>{const e=ge('pd'+j);if(e)e.cl
 window.togCat=(el,n)=>{el.classList.toggle('sel');if(el.classList.contains('sel')){if(!cats.includes(n))cats.push(n);}else cats=cats.filter(c=>c!==n);};
 window.rateStar=i=>qsa('.star').forEach((s,j)=>s.classList.toggle('on',j<=i));
 window.saveGeminiKey=()=>{const inp=ge('gemini-key-inp');if(!inp)return;const k=inp.value.trim();window._geminiKey=k;localStorage.setItem('rf_gemini_key',k);const st=ge('ai-key-status');if(k){toast('✅ Gemini key saved');if(st)st.textContent='(Gemini live ✅)';}else{toast('Key cleared');if(st)st.textContent='(Smart mode)';}};
-window.uploadPfp=async(inp)=>{if(!uid||!inp.files[0])return;const d=await b64(inp.files[0]);await update(ref(db,'customers/'+uid),{pfp:d});toast('✅ Photo updated');};
+// Save OBD+ waitlist interest against this customer so it's a real lead list, not just a toast.
+window.notifyObdInterest=async()=>{
+  if(!uid){toast('Please sign in first');return;}
+  try{
+    await set(ref(db,'obd_interest/'+uid),{name:(profile&&profile.name)||'',phone:(profile&&profile.phone)||'',email:(profile&&profile.email)||'',time:Date.now()});
+    toast('✅ Notified! We will alert you when OBD+ launches.');
+  }catch(e){toast('✅ Noted — we will reach out when OBD+ launches.');}
+};
+window.uploadPfp=async(inp)=>{
+  if(!uid||!inp.files[0])return;
+  toast('Uploading photo...');
+  try{const url=await uploadPfpFile(inp.files[0],'customers/'+uid+'/pfp.jpg');await update(ref(db,'customers/'+uid),{pfp:url});toast('✅ Photo updated');}
+  catch(e){toast('⚠️ Photo upload failed — try a smaller image');}
+};
 window.prevPfp=(inp,imgId,icoId)=>{const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{const img=ge(imgId),ico=ge(icoId);if(img){img.src=e.target.result;img.style.display='block';}if(ico)ico.style.display='none';};r.readAsDataURL(f);};
 function gv(id){const e=ge(id);return e?e.value.trim():'';}
 function ge(id){return document.getElementById(id);}
@@ -698,6 +720,31 @@ function qsa(s){return Array.from(document.querySelectorAll(s));}
 function tx(id,v){const e=ge(id);if(e)e.textContent=v;}
 function toast(msg){let t=ge('rf-toast');if(!t){t=document.createElement('div');t.id='rf-toast';t.style.cssText='position:fixed;bottom:85px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.9);color:#fff;padding:9px 18px;border-radius:99px;font-size:13px;z-index:9999;transition:opacity .3s;pointer-events:none;white-space:nowrap;max-width:90vw;text-align:center';document.body.appendChild(t);}t.textContent=msg;t.style.opacity='1';clearTimeout(window._tt);window._tt=setTimeout(()=>{t.style.opacity='0';},2800);}
 function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>r(e.target.result);x.onerror=j;x.readAsDataURL(f);});}
+// Resize + compress an image file down to a small JPEG data URL (max 480px, ~q0.7) before it ever touches Storage/DB.
+function resizeImg(file,maxDim=480,quality=0.7){return new Promise((res,rej)=>{const img=new Image();const url=URL.createObjectURL(file);img.onload=()=>{let{width:w,height:h}=img;if(w>h&&w>maxDim){h=Math.round(h*maxDim/w);w=maxDim;}else if(h>maxDim){w=Math.round(w*maxDim/h);h=maxDim;}const c=document.createElement("canvas");c.width=w;c.height=h;c.getContext("2d").drawImage(img,0,0,w,h);URL.revokeObjectURL(url);res(c.toDataURL("image/jpeg",quality));};img.onerror=rej;img.src=url;});}
+// Upload a resized data-URL to Firebase Storage and return its public download URL (keeps the Realtime DB light).
+async function uploadPfpFile(file,path){const small=await resizeImg(file);const r=sref(storage,path);await uploadString(r,small,"data_url");return await getDownloadURL(r);}
+// Map Firebase auth error codes to friendly, specific messages (used by login/register/reset).
+function authErrMsg(e){
+  const c=e.code||"";
+  const map={
+    "auth/email-already-in-use":"Email already registered — sign in instead",
+    "auth/weak-password":"Use at least 6 characters",
+    "auth/invalid-email":"That email address doesn't look valid",
+    "auth/wrong-password":"Wrong password",
+    "auth/invalid-credential":"Wrong email or password",
+    "auth/user-not-found":"No account with this email",
+    "auth/too-many-requests":"Too many attempts — wait a bit and try again",
+    "auth/network-request-failed":"Network error — check your connection"
+  };
+  return map[c]||(e.message||"").replace("Firebase: ","").replace(/\(.*\)/,"").trim()||"Something went wrong";
+}
+// Disable a button + swap its label while an async action runs, restoring it afterwards either way.
+async function withBusy(btnId,busyLabel,fn){
+  const b=ge(btnId);const orig=b?b.innerHTML:"";
+  if(b){b.disabled=true;b.style.opacity=".6";b.innerHTML=busyLabel;}
+  try{await fn();}finally{if(b){b.disabled=false;b.style.opacity="1";b.innerHTML=orig;}}
+}
 </script>
 </head>
 <body>
@@ -721,7 +768,8 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
     <div class="f"><label>Email</label><input id="lem" type="email" placeholder="your@email.com" autocomplete="email"></div>
     <div class="f"><label>Password</label><input id="lpw" type="password" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"></div>
     <div class="err" id="l-err"></div>
-    <button class="btn b-or" onclick="doLogin()">Sign in →</button>
+    <button class="btn b-or" id="clogin-btn" onclick="doLogin()">Sign in →</button>
+    <div class="sw" style="margin-top:2px" onclick="doForgotPw()">Forgot password?</div>
   </div>
   <div class="sw">New here? <span onclick="go('s-reg')">Create account</span></div>
 </div>
@@ -740,7 +788,7 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
     <div class="f"><label>Email *</label><input id="rem" type="email" placeholder="your@email.com"></div>
     <div class="f"><label>Password *</label><input id="rpw" type="password" placeholder="Min 6 characters"></div>
     <div class="err" id="r-err"></div>
-    <button class="btn b-or" onclick="doReg()">Create account →</button>
+    <button class="btn b-or" id="creg-btn" onclick="doReg()">Create account →</button>
   </div>
   <div class="sw">Already have account? <span onclick="go('s-login')">Sign in</span></div>
 </div>
@@ -879,7 +927,7 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
         </div>
         <div style="background:var(--gn2);border:1px solid rgba(34,197,94,.2);border-radius:var(--r);padding:7px 10px;font-size:11px;color:var(--gn);margin-bottom:10px">💡 OBD+ only suggests mechanics. It never forces you to book. You stay in full control.</div>
         
-        <button class="btn b-pu" style="margin-bottom:0" onclick="toast('✅ Notified! We will alert you when OBD+ launches.')">🔔 Notify me when available</button>
+        <button class="btn b-pu" style="margin-bottom:0" onclick="notifyObdInterest()">🔔 Notify me when available</button>
       </div>
       <!-- Hidden fallback for runPreventiveCheck — keeps function working -->
       <div id="prev-results" style="display:none"></div>
@@ -897,7 +945,7 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
           <div style="background:var(--bg3);border-radius:var(--r);padding:7px;display:flex;align-items:center;gap:6px"><span style="font-size:14px">🤖</span><span style="font-size:10px;color:var(--tx2)">AI fault alerts</span></div>
         </div>
         <div style="background:var(--pu2);border:1px solid rgba(168,85,247,.2);border-radius:var(--r);padding:8px 10px;font-size:11px;color:var(--pu);margin-bottom:8px">💡 OBD+ suggests mechanics — never forces you to book. You stay in full control.</div>
-        <button class="btn b-pu" style="margin-bottom:0">Notify me when available →</button>
+        <button class="btn b-pu" style="margin-bottom:0" onclick="notifyObdInterest()">Notify me when available →</button>
       </div>
     </div>
   </div>
@@ -923,6 +971,7 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
         <div class="card">
           <div style="background:var(--yw2);border:1px solid rgba(234,179,8,.2);border-radius:var(--r);padding:8px 11px;font-size:11px;color:var(--yw);margin-bottom:9px">⚠️ Estimate only — final after job completion</div>
           <div style="font-family:var(--fh);font-size:26px;font-weight:800;color:var(--or)" id="price-r">₹—</div>
+          <div style="font-size:10px;color:var(--rd);margin-top:5px">AI analysis is not certain and can be wrong — treat this as a rough guide only</div>
         </div>
         <button class="btn b-or" onclick="go('s-parts')">Choose parts type →</button>
       </div>

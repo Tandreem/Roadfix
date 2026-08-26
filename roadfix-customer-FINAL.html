@@ -86,7 +86,7 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 </style>
 <script type="module">
 import{initializeApp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import{getAuth,sendSignInLinkToEmail,signInWithEmailLink,isSignInWithEmailLink,signOut,onAuthStateChanged}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import{getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,onAuthStateChanged}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import{getDatabase,ref,set,push,onValue,update,get}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 const app=initializeApp({apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",authDomain:"roadfix-demo.firebaseapp.com",databaseURL:"https://roadfix-demo-default-rtdb.asia-southeast1.firebasedatabase.app",projectId:"roadfix-demo",storageBucket:"roadfix-demo.firebasestorage.app",messagingSenderId:"274952184107",appId:"1:274952184107:web:63188439d92ec31103a56e"});
 const auth=getAuth(app),db=getDatabase(app);
@@ -109,23 +109,19 @@ function getJobId(){return localStorage.getItem('rf_jobId')||null;}
 function setJobId(id){if(id)localStorage.setItem('rf_jobId',id);else localStorage.removeItem('rf_jobId');}
 
 // ── AUTH ──────────────────────────────────────────────
-// Main auth state listener
+// Auth state listener with retry
 onAuthStateChanged(auth,async user=>{
   if(user){
     uid=user.uid;
-    // Check if customer record exists (retry — magic link may fire before DB write)
     let snap=null;
     for(let i=0;i<4;i++){
       snap=await get(ref(db,'customers/'+uid));
       if(snap.exists())break;
-      if(i<3)await new Promise(r=>setTimeout(r,700));
+      if(i<3)await new Promise(r=>setTimeout(r,800));
     }
     if(!snap||!snap.exists()){
-      // Check if mechanic trying wrong app
       const mechSnap=await get(ref(db,'mechanics/'+uid));
-      if(mechSnap.exists()){toast('⚠️ Use the Mechanic app instead.');await signOut(auth);go('s-login');return;}
-      // New user coming from magic link — show register to collect name/phone
-      go('s-reg');return;
+      if(mechSnap.exists()){toast('⚠️ This is the Customer app. Use the Mechanic app.');await signOut(auth);go('s-login');return;}
     }
     startApp();
   } else {uid=null;profile=null;go('s-login');}
@@ -203,97 +199,36 @@ function startApp(){
 }
 
 // ── REGISTER/LOGIN ────────────────────────────────────
-// ── MAGIC LINK AUTH ──────────────────────────────────
-const CUST_URL='https://tandreem.github.io/Roadfix/roadfix-customer-FINAL.html';
-const actionCodeSettings={url:CUST_URL,handleCodeInApp:true};
-
-// On page load — check if this is a magic link redirect
-(async()=>{
-  if(isSignInWithEmailLink(auth,window.location.href)){
-    let email=localStorage.getItem('rf_cust_email');
-    if(!email)email=window.prompt('Please confirm your email to complete sign in:');
-    if(!email)return;
-    const err=ge('l-err')||ge('r-err');
-    try{
-      const result=await signInWithEmailLink(auth,email,window.location.href);
-      localStorage.removeItem('rf_cust_email');
-      // If new user, show profile setup
-      const snap=await get(ref(db,'customers/'+result.user.uid));
-      if(!snap.exists()){
-        // Pre-fill email, show register form to collect name/phone
-        const em=ge('rem');if(em)em.value=email;
-        window._pendingMagicEmail=email;
-        go('s-reg');
-      }
-    }catch(e){if(err)err.textContent='Link expired or already used. Request a new one.';}
-  }
-})();
-
-// SEND MAGIC LINK - for both login and register
-window.sendMagicLink=async(isReg)=>{
-  const emailInp=isReg?ge('rem'):ge('lem');
-  const err=isReg?ge('r-err'):ge('l-err');
-  const em=(emailInp&&emailInp.value.trim())||'';
-  if(!em||!em.includes('@')){err.textContent='Enter a valid email address';return;}
-  err.textContent='Sending magic link...';
-  try{
-    await sendSignInLinkToEmail(auth,em,actionCodeSettings);
-    localStorage.setItem('rf_cust_email',em);
-    err.style.color='var(--gn)';
-    err.textContent='✅ Magic link sent! Check your email and click the link.';
-    // Show waiting state
-    const btn=isReg?ge('reg-btn'):ge('login-btn');
-    if(btn){btn.textContent='📧 Check your email →';btn.disabled=true;}
-  }catch(e){
-    err.style.color='var(--rd)';
-    const m=e.code||'';
-    if(m.includes('invalid-email'))err.textContent='Invalid email address';
-    else if(m.includes('too-many-requests'))err.textContent='Too many requests — try again later';
-    else err.textContent='Failed to send — check connection';
-  }
-};
-
-// After magic link sign-in, save profile details
 window.doReg=async()=>{
-  const n=gv('rn'),ph=gv('rph'),ci=gv('rci');
+  const n=gv('rn'),ph=gv('rph'),ci=gv('rci'),em=gv('rem'),pw=gv('rpw');
   const err=ge('r-err');
-  if(!n||!ph){err.textContent='Fill name and phone';return;}
-  const user=auth.currentUser;
-  if(!user){
-    // No session yet — send magic link first
-    const em=gv('rem');
-    if(!em){err.textContent='Enter your email first';return;}
-    await sendMagicLink(true);
-    // Store reg details to apply after magic link
-    localStorage.setItem('rf_cust_regname',n);
-    localStorage.setItem('rf_cust_regphone',ph);
-    localStorage.setItem('rf_cust_regcity',ci||'');
-    return;
-  }
-  // User is signed in via magic link — save profile
-  err.textContent='Saving profile...';
+  if(!n||!ph||!em||!pw){err.textContent='Fill all required fields';return;}
+  if(pw.length<6){err.textContent='Password must be at least 6 characters';return;}
+  err.textContent='Creating account...';
   try{
-    const pfpF=ge('r-pfp').files[0];const pfp=pfpF?await b64(pfpF):'';
-    await set(ref(db,'customers/'+user.uid),{name:n,phone:ph,city:ci||'',email:user.email,role:'customer',createdAt:Date.now(),pfp,totalJobs:0,totalSpend:0,rating:'5.0'});
+    const c=await createUserWithEmailAndPassword(auth,em,pw);
+    try{
+      const pfpF=ge('r-pfp').files[0];const pfp=pfpF?await b64(pfpF):'';
+      await set(ref(db,'customers/'+c.user.uid),{name:n,phone:ph,city:ci||'',email:em,role:'customer',createdAt:Date.now(),pfp,totalJobs:0,totalSpend:0,rating:'5.0'});
+    }catch(dbErr){try{await set(ref(db,'customers/'+c.user.uid),{name:n,phone:ph,email:em,role:'customer',createdAt:Date.now()});}catch(e2){console.error(e2);}}
     err.textContent='';
-    startApp();
-  }catch(e){err.textContent='Failed to save profile';}
-};
-
-// Also apply saved reg details if coming back from magic link
-onAuthStateChanged(auth,async user=>{
-  const savedName=localStorage.getItem('rf_cust_regname');
-  const savedPhone=localStorage.getItem('rf_cust_regphone');
-  if(user&&savedName&&savedPhone){
-    const snap=await get(ref(db,'customers/'+user.uid));
-    if(!snap.exists()){
-      await set(ref(db,'customers/'+user.uid),{name:savedName,phone:savedPhone,city:localStorage.getItem('rf_cust_regcity')||'',email:user.email,role:'customer',createdAt:Date.now(),totalJobs:0,totalSpend:0,rating:'5.0'});
-      localStorage.removeItem('rf_cust_regname');localStorage.removeItem('rf_cust_regphone');localStorage.removeItem('rf_cust_regcity');
-    }
+  }catch(e){
+    const m=e.code||'';
+    if(m.includes('email-already-in-use'))err.textContent='Email already registered — sign in instead';
+    else if(m.includes('weak-password'))err.textContent='Use at least 6 characters';
+    else err.textContent='Registration failed — check connection';
   }
-});
-
-window.doLogin=async()=>{await sendMagicLink(false);};
+};
+window.doLogin=async()=>{
+  const err=ge('l-err');err.textContent='Signing in...';
+  try{await signInWithEmailAndPassword(auth,gv('lem'),gv('lpw'));err.textContent='';}
+  catch(e){
+    const m=e.code||'';
+    if(m.includes('wrong-password')||m.includes('invalid-credential'))err.textContent='Wrong password';
+    else if(m.includes('user-not-found'))err.textContent='No account with this email';
+    else err.textContent='Login failed — check email and password';
+  }
+};
 // Open the correct screen based on active job status
 window.openActiveJob=()=>{
   const jid=getJobId();
@@ -783,12 +718,10 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
   <div style="font-size:12px;color:var(--tx2);margin-bottom:16px;text-align:center">Customer app</div>
   <div class="ac">
     <div class="at">Sign in</div>
-    <div style="background:var(--or2);border:1px solid rgba(249,115,22,.25);border-radius:var(--r);padding:10px 12px;font-size:11px;color:var(--tx2);margin-bottom:11px;line-height:1.6">
-      📧 Enter your email — we'll send a <strong style="color:var(--or)">magic link</strong>. Click it to sign in instantly. No password needed.
-    </div>
-    <div class="f"><label>Your email address</label><input id="lem" type="email" placeholder="your@email.com" autocomplete="email" onkeydown="if(event.key==='Enter')doLogin()"></div>
+    <div class="f"><label>Email</label><input id="lem" type="email" placeholder="your@email.com" autocomplete="email"></div>
+    <div class="f"><label>Password</label><input id="lpw" type="password" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"></div>
     <div class="err" id="l-err"></div>
-    <button class="btn b-or" id="login-btn" onclick="doLogin()">📧 Send magic link →</button>
+    <button class="btn b-or" onclick="doLogin()">Sign in →</button>
   </div>
   <div class="sw">New here? <span onclick="go('s-reg')">Create account</span></div>
 </div>
@@ -796,9 +729,6 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
   <div class="logo">Road<em>Fix</em></div>
   <div class="ac">
     <div class="at">Create account</div>
-    <div style="background:var(--or2);border:1px solid rgba(249,115,22,.25);border-radius:var(--r);padding:10px 12px;font-size:11px;color:var(--tx2);margin-bottom:11px;line-height:1.6">
-      📧 We'll send a <strong style="color:var(--or)">magic link</strong> to your email. Click it to verify and create your account instantly.
-    </div>
     <div class="pfp-up">
       <div class="pfp-ring" onclick="document.getElementById('r-pfp').click()"><img id="rpfp-img" src="" alt=""><span id="rpfp-ico">📷</span></div>
       <div><div style="font-size:12px;color:var(--tx2)">Profile photo (optional)</div></div>
@@ -807,9 +737,10 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
     <div class="f"><label>Full name *</label><input id="rn" type="text" placeholder="Rajesh Kumar"></div>
     <div class="f"><label>Phone *</label><input id="rph" type="tel" placeholder="+91 98765 43210"></div>
     <div class="f"><label>City</label><input id="rci" type="text" placeholder="Guwahati"></div>
-    <div class="f"><label>Email address *</label><input id="rem" type="email" placeholder="your@email.com"></div>
+    <div class="f"><label>Email *</label><input id="rem" type="email" placeholder="your@email.com"></div>
+    <div class="f"><label>Password *</label><input id="rpw" type="password" placeholder="Min 6 characters"></div>
     <div class="err" id="r-err"></div>
-    <button class="btn b-or" id="reg-btn" onclick="doReg()">📧 Send magic link →</button>
+    <button class="btn b-or" onclick="doReg()">Create account →</button>
   </div>
   <div class="sw">Already have account? <span onclick="go('s-login')">Sign in</span></div>
 </div>
@@ -947,7 +878,7 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
           <div style="background:var(--bg3);border-radius:var(--r);padding:8px;display:flex;gap:6px;align-items:center"><span>🤖</span><span style="font-size:10px;color:var(--tx2)">AI fault alerts</span></div>
         </div>
         <div style="background:var(--gn2);border:1px solid rgba(34,197,94,.2);border-radius:var(--r);padding:7px 10px;font-size:11px;color:var(--gn);margin-bottom:10px">💡 OBD+ only suggests mechanics. It never forces you to book. You stay in full control.</div>
-        <div style="font-family:var(--fh);font-size:18px;font-weight:800;color:var(--pu);margin-bottom:8px">₹2,499 <span style="font-size:11px;font-weight:400;color:var(--tx3)">one-time · optional</span></div>
+        
         <button class="btn b-pu" style="margin-bottom:0" onclick="toast('✅ Notified! We will alert you when OBD+ launches.')">🔔 Notify me when available</button>
       </div>
       <!-- Hidden fallback for runPreventiveCheck — keeps function working -->
@@ -966,7 +897,6 @@ function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>
           <div style="background:var(--bg3);border-radius:var(--r);padding:7px;display:flex;align-items:center;gap:6px"><span style="font-size:14px">🤖</span><span style="font-size:10px;color:var(--tx2)">AI fault alerts</span></div>
         </div>
         <div style="background:var(--pu2);border:1px solid rgba(168,85,247,.2);border-radius:var(--r);padding:8px 10px;font-size:11px;color:var(--pu);margin-bottom:8px">💡 OBD+ suggests mechanics — never forces you to book. You stay in full control.</div>
-        <div style="font-family:var(--fh);font-size:16px;font-weight:800;color:var(--pu);margin-bottom:6px">₹2,499 <span style="font-size:11px;font-weight:400;color:var(--tx3)">one-time · optional</span></div>
         <button class="btn b-pu" style="margin-bottom:0">Notify me when available →</button>
       </div>
     </div>

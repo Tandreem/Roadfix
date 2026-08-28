@@ -162,9 +162,23 @@ function startListeners(){
     if(!anyOpen&&shownGig&&!getJobId()){shownGig=false;setPendingGigId(null);hideGigBanner();}
   });
   alertsUnsub=onValue(ref(db,"alerts"),snap=>{
-    const active=Object.values(snap.val()||{}).filter(a=>a.status==="active"&&a.type==="customer_sos");
+    const all=Object.values(snap.val()||{});
+    const customerActive=all.filter(a=>a.status==="active"&&a.type==="customer_sos");
+    // Peer alert: other mechanics' own SOS calls (not this mechanic's own) also show here,
+    // so nearby mechanics can rally to help a colleague in trouble — same as admin sees it.
+    const mechActive=all.filter(a=>a.status==="active"&&a.type==="mechanic_sos"&&a.uid!==uid);
     const bar=ge("sos-bar");if(!bar)return;
-    if(active.length){bar.style.display="flex";tx("sos-bar-txt","🆘 "+active[active.length-1].name);}
+    if(mechActive.length){
+      const m=mechActive[mechActive.length-1];
+      bar.style.display="flex";bar.style.background="rgba(168,85,247,.12)";
+      tx("sos-bar-txt","🧑‍🔧🆘 Mechanic "+m.name+" needs help");
+      bar.onclick=()=>{if(m.mapsLink)window.open(m.mapsLink,"_blank");else if(m.phone&&m.phone!=="—")window.location.href="tel:"+m.phone.replace(/\s/g,"");};
+    }
+    else if(customerActive.length){
+      const c=customerActive[customerActive.length-1];
+      bar.style.display="flex";bar.style.background="";tx("sos-bar-txt","🆘 "+c.name);
+      bar.onclick=()=>go("m-gig");
+    }
     else bar.style.display="none";
   });
   const doGPS=()=>{if(!uid)return;navigator.geolocation&&navigator.geolocation.getCurrentPosition(p=>{update(ref(db,"mechanics/"+uid),{lat:p.coords.latitude,lng:p.coords.longitude,gpsOn:true,lastGPS:Date.now()});tx("gps-stat","📍 GPS: "+p.coords.latitude.toFixed(4)+"°N");},()=>tx("gps-stat","📍 GPS: Active"),{enableHighAccuracy:true,timeout:7000});};
@@ -542,7 +556,7 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
   </div>
   <div class="sb">
     <div class="sec">
-      <div id="sos-bar" style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:8px 11px;display:none;align-items:center;gap:7px;margin-bottom:10px;cursor:pointer" onclick="go('m-gig')">
+      <div id="sos-bar" style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:8px 11px;display:none;align-items:center;gap:7px;margin-bottom:10px;cursor:pointer">
         <div style="width:7px;height:7px;border-radius:50%;background:var(--rd);animation:dd 1s infinite;flex-shrink:0"></div>
         <div style="font-size:12px;font-weight:700;color:var(--rd);flex:1" id="sos-bar-txt">Customer SOS</div>
       </div>

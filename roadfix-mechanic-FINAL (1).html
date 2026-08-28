@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>MechPro — Mechanic</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#060D08;--bg2:#0D1810;--bg3:#14221A;--card:#102018;--bdr:rgba(255,255,255,.06);--bdr2:rgba(255,255,255,.11);--tx:#EEF8EE;--tx2:#7AAA82;--tx3:#3A5C44;--gn:#4ADE80;--gn2:rgba(74,222,128,.11);--am:#FBBF24;--am2:rgba(251,191,36,.11);--rd:#F87171;--rd2:rgba(248,113,113,.11);--bl:#60A5FA;--bl2:rgba(96,165,250,.11);--or:#F97316;--or2:rgba(249,115,22,.13);--pu:#C084FC;--pu2:rgba(192,132,252,.12);--pu:#C084FC;--pu2:rgba(192,132,252,.11);--r:12px;--r2:18px;--fh:"Syne",system-ui,sans-serif;--fb:"DM Sans",system-ui,sans-serif}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden;background:var(--bg)}
+body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;position:relative}
+.scr{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--bg);opacity:0;pointer-events:none;transition:opacity .18s}.scr.on{opacity:1;pointer-events:all}
+.sb{flex:1;overflow-y:auto;padding-bottom:76px}.sb::-webkit-scrollbar{display:none}
+@keyframes pp{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
+@keyframes dd{0%,100%{opacity:1}50%{opacity:.25}}
+@keyframes bi{0%,100%{opacity:1}40%{opacity:.3}}
+@keyframes spin{to{transform:rotate(360deg)}}
+.auth{justify-content:center;align-items:center;padding:24px 20px;background:radial-gradient(ellipse at 50% 0%,rgba(74,222,128,.07),transparent 70%),var(--bg)}
+.logo{font-family:var(--fh);font-size:28px;font-weight:800;text-align:center;margin-bottom:4px}.logo em{color:var(--gn);font-style:normal}
+.ac{background:var(--card);border:1px solid var(--bdr2);border-radius:var(--r2);padding:18px;width:100%;margin-bottom:12px;max-height:72vh;overflow-y:auto}.ac::-webkit-scrollbar{display:none}
+.at{font-family:var(--fh);font-size:15px;font-weight:700;margin-bottom:12px}
+.f{margin-bottom:9px}.f label{display:block;font-size:11px;font-weight:500;color:var(--tx2);margin-bottom:3px}
+.f input,.f select{background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:14px;padding:9px 11px;width:100%;outline:none;transition:border .15s}
+.f input:focus{border-color:var(--gn)}.f input::placeholder{color:var(--tx3)}.f select option{background:var(--bg3)}
+.err{font-size:11px;color:var(--rd);min-height:14px;text-align:center;margin-bottom:7px}
+.sw{font-size:13px;color:var(--tx2);text-align:center;cursor:pointer;margin-top:4px}.sw span{color:var(--gn);font-weight:600}
+.pfp-up{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.pfp-ring{width:52px;height:52px;border-radius:50%;background:var(--bg3);border:2px dashed var(--gn);overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:22px;cursor:pointer;flex-shrink:0}.pfp-ring img{width:100%;height:100%;object-fit:cover;display:none}
+.btn{width:100%;border:none;border-radius:var(--r);padding:11px;font-family:var(--fh);font-size:14px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:transform .15s;margin-bottom:6px}.btn:active{transform:scale(.97)}
+.b-gn{background:var(--gn);color:#060D08}.b-ghost{background:var(--bg3);color:var(--tx);border:1px solid var(--bdr2)}.b-rd{background:var(--rd);color:#fff}
+.pending{justify-content:center;align-items:center;padding:28px 22px;text-align:center;background:var(--bg)}
+.topbar{flex-shrink:0;padding:42px 14px 11px;display:flex;align-items:center;justify-content:space-between;background:var(--bg);border-bottom:1px solid var(--bdr);z-index:5}
+.lgo{font-family:var(--fh);font-size:18px;font-weight:800}.lgo em{color:var(--gn);font-style:normal}
+.m-avi{width:32px;height:32px;border-radius:50%;overflow:hidden;background:var(--gn2);border:1.5px solid var(--gn);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}
+.m-pfp{width:100%;height:100%;object-fit:cover}.m-ini{font-family:var(--fh);font-size:11px;font-weight:700;color:var(--gn)}
+.back{font-size:13px;color:var(--tx2);cursor:pointer}.pgt{font-family:var(--fh);font-size:15px;font-weight:700;flex:1;text-align:center}.sp{width:42px}
+.bnav{flex-shrink:0;display:flex;background:var(--bg2);border-top:1px solid var(--bdr2);padding:6px 0 15px}
+.bn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;position:relative}
+.bn-i{font-size:19px;transition:transform .15s}.bn-l{font-size:10px;color:var(--tx3);font-weight:500}
+.bn.on .bn-l{color:var(--gn)}.bn.on .bn-i{transform:translateY(-2px)}
+.bn-dot{position:absolute;top:-1px;right:calc(50% - 15px);width:7px;height:7px;border-radius:50%;background:var(--rd);border:1.5px solid var(--bg2);display:none}
+.bdg{display:inline-flex;align-items:center;font-size:11px;font-weight:600;padding:2px 7px;border-radius:999px}
+.b-g{background:var(--gn2);color:var(--gn)}.b-a{background:var(--am2);color:var(--am)}.b-r{background:var(--rd2);color:var(--rd)}.b-off{background:rgba(255,255,255,.06);color:var(--tx2)}
+.card{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:13px;margin-bottom:9px}
+.sec{padding:13px}.sl{font-family:var(--fh);font-size:10px;font-weight:700;color:var(--tx3);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px}
+.sb-it{flex:1;border-radius:var(--r);padding:7px 9px;display:flex;align-items:center;gap:6px;font-size:11px;font-weight:500;background:var(--gn2);border:1px solid rgba(74,222,128,.2);color:var(--gn)}
+.sb-dot{width:6px;height:6px;border-radius:50%;background:var(--gn);animation:dd 1.2s infinite;flex-shrink:0}
+.onl-tog{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:12px;display:flex;align-items:center;gap:9px;margin-bottom:11px;cursor:pointer}
+.tt{width:44px;height:23px;border-radius:12px;background:var(--bg3);border:1px solid var(--bdr2);position:relative;transition:background .3s;flex-shrink:0}.tt.on{background:var(--gn)}
+.tth{width:17px;height:17px;border-radius:50%;background:#fff;position:absolute;top:2px;left:2px;transition:left .25s}.tt.on .tth{left:25px}
+.gig-prev{background:linear-gradient(135deg,rgba(74,222,128,.14),rgba(74,222,128,.04));border:1.5px solid rgba(74,222,128,.3);border-radius:var(--r2);padding:12px;margin-bottom:10px;cursor:pointer;display:none}
+.veh-box{background:var(--am2);border:1px solid rgba(251,191,36,.25);border-radius:var(--r);padding:11px;margin-bottom:9px}
+.veh-row{display:flex;justify-content:space-between;font-size:12px;padding:3px 0}.veh-row .vl{color:var(--tx2)}.veh-row .vv{font-weight:600;text-align:right;max-width:55%}
+.parts-box{background:var(--pu2);border:1px solid rgba(192,132,252,.25);border-radius:var(--r);padding:11px;margin-bottom:9px}
+.part-row{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid rgba(192,132,252,.1);font-size:11px}.part-row:last-child{border-bottom:none}
+.er{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--bdr);font-size:13px}.er:last-child{border-bottom:none}
+.cr{display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--bdr);cursor:pointer}.cr:last-child{border-bottom:none}
+.ph{padding:16px 13px;display:flex;flex-direction:column;align-items:center;gap:7px;border-bottom:1px solid var(--bdr)}
+.p-avi{width:60px;height:60px;border-radius:50%;overflow:hidden;background:var(--gn2);border:2px solid var(--gn);display:flex;align-items:center;justify-content:center;cursor:pointer}.p-avi img{width:100%;height:100%;object-fit:cover}
+.psts{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--bdr)}.pst{background:var(--bg2);padding:10px;text-align:center}.pstn{font-family:var(--fh);font-size:16px;font-weight:800}.pstl{font-size:10px;color:var(--tx3);margin-top:2px}
+.sw2{display:flex;flex-wrap:wrap;gap:5px;padding:10px 13px;border-bottom:1px solid var(--bdr)}
+.mit{display:flex;align-items:center;gap:10px;padding:10px 13px;border-bottom:1px solid var(--bdr);cursor:pointer;font-size:13px}.mit:active{background:var(--bg3)}
+.msos-ov{position:fixed;inset:0;background:rgba(6,13,8,.96);z-index:200;display:none;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center}
+.vtype-sel{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:11px}
+.vtype-btn{background:var(--card);border:2px solid var(--bdr2);border-radius:var(--r);padding:14px;text-align:center;cursor:pointer;transition:all .15s}
+.vtype-btn.sel{border-color:var(--gn);background:var(--gn2)}
+.vtype-btn .ico{font-size:28px;margin-bottom:6px}
+.vtype-btn .lbl{font-size:12px;font-weight:600;font-family:var(--fh)}
+.vtype-btn .sub{font-size:10px;color:var(--tx3);margin-top:2px}
+</style>
+<script type="module">
+import{initializeApp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import{getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,onAuthStateChanged,sendPasswordResetEmail}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import{getDatabase,ref,set,push,onValue,update,get}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+import{getStorage,ref as sref,uploadString,getDownloadURL}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
+const app=initializeApp({apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",authDomain:"roadfix-demo.firebaseapp.com",databaseURL:"https://roadfix-demo-default-rtdb.asia-southeast1.firebasedatabase.app",projectId:"roadfix-demo",storageBucket:"roadfix-demo.firebasestorage.app",messagingSenderId:"274952184107",appId:"1:274952184107:web:63188439d92ec31103a56e"});
+const auth=getAuth(app),db=getDatabase(app),storage=getStorage(app);
+
+let uid=null,profile=null,chatUnsub=null,shownGig=false;
+let jobsUnsub=null,profUnsub=null,alertsUnsub=null,_listenersStarted=false;
+let selVehicleType='car'; // default to car mechanic
+
+function getJobId(){return localStorage.getItem("mrf_jobId")||null;}
+function setJobId(id){if(id)localStorage.setItem("mrf_jobId",id);else localStorage.removeItem("mrf_jobId");}
+function getPendingGigId(){return localStorage.getItem("mrf_pendingGigId")||null;}
+function setPendingGigId(id){if(id)localStorage.setItem("mrf_pendingGigId",id);else localStorage.removeItem("mrf_pendingGigId");}
+
+onAuthStateChanged(auth,async user=>{
+  if(user){
+    uid=user.uid;
+    let snap=null;
+    for(let i=0;i<4;i++){
+      snap=await get(ref(db,"mechanics/"+uid));
+      if(snap.exists())break;
+      if(i<3)await new Promise(r=>setTimeout(r,800));
+    }
+    if(!snap||!snap.exists()){
+      const custSnap=await get(ref(db,"customers/"+uid));
+      if(custSnap.exists()){toast("⚠️ This is the Mechanic app. Use the Customer app.");await signOut(auth);go("m-login");return;}
+    }
+    startApp(snap&&snap.exists()?snap.val():{});
+  } else {uid=null;profile=null;_listenersStarted=false;go("m-login");}
+});
+
+function startApp(p){
+  if(profUnsub)profUnsub();
+  profUnsub=onValue(ref(db,"mechanics/"+uid),snap=>{
+    const mp=snap.val();if(!mp)return;
+    profile=mp;applyProfile(mp);
+    if(!mp.verified){if(cur!=="m-pending")go("m-pending");tx("m-pending-uid","Account ID: "+uid);}
+    else if(!_listenersStarted){
+      _listenersStarted=true;
+      update(ref(db,"mechanics/"+uid),{status:"online",gpsOn:true,lastSeen:Date.now()});
+      startListeners();go("m-home");
+      if(cur==="m-pending")toast("✅ Verified! Welcome to MechPro.");
+    }
+  });
+}
+
+function applyProfile(p){
+  const ini=(p.name||"M").split(" ").map(w=>w[0]).join("").substr(0,2).toUpperCase();
+  qsa(".m-ini").forEach(e=>e.textContent=ini);
+  qsa(".m-name").forEach(e=>e.textContent=p.name||"Mechanic");
+  qsa(".m-phone").forEach(e=>e.textContent=(p.phone||"")+(p.city?" · "+p.city:""));
+  if(p.pfp){qsa(".m-pfp").forEach(e=>{e.src=p.pfp;e.style.display="block";});qsa(".m-ini").forEach(e=>e.style.display="none");}
+  tx("stat-jobs",String(p.totalJobs||0));
+  tx("stat-rat",(p.rating||5).toString().substr(0,3)+"⭐");
+  tx("stat-earn",p.totalEarned?"₹"+Math.round(p.totalEarned/1000)+"k":"₹0");
+  const vt=p.vehicleType||"car";
+  const vtEl=ge("vtype-badge");if(vtEl)vtEl.textContent=vt==="car"?"🚗 Car mechanic":"🏍️ Luxury bike mechanic";
+  if(p.brandSpeciality){const sw=ge("skills-wrap");if(sw)sw.innerHTML=p.brandSpeciality.split(",").map(s=>`<span class="bdg b-g">${s.trim()}</span>`).join("");}
+  else if(p.skills){const sw=ge("skills-wrap");if(sw)sw.innerHTML=p.skills.split(",").map(s=>`<span class="bdg b-g">${s.trim()}</span>`).join("");}
+}
+
+function startListeners(){
+  if(jobsUnsub)jobsUnsub();if(alertsUnsub)alertsUnsub();
+  jobsUnsub=onValue(ref(db,"jobs"),snap=>{
+    const all=snap.val()||{};
+    // Restore active job
+    const myJobId=getJobId();
+    if(myJobId&&all[myJobId]){
+      const j=all[myJobId];
+      tx("active-job",j.issue||"Active job");
+      if(j.status==="done"){setJobId(null);setPendingGigId(null);shownGig=false;tx("active-job","None");hideGigBanner();}
+    }
+    // Find new gigs for car mechanics only
+    const myType=(profile&&profile.vehicleType)||"car";
+    Object.entries(all).forEach(([id,job])=>{
+      // A job is a gig for THIS mechanic if either:
+      //  - it's an open broadcast (no preferredMechanicId — any matching mechanic can grab it), OR
+      //  - the customer specifically requested THIS mechanic (preferredMechanicId === uid)
+      // A job with a preferredMechanicId set to someone else must never show up here.
+      const isForMe=!job.preferredMechanicId||job.preferredMechanicId===uid;
+      if(job.status==="searching_mechanic"&&!job.mechanicId&&!shownGig&&(job.vehicleType||"car")===myType&&isForMe){
+        shownGig=true;setPendingGigId(id);showGigBanner(id,job);
+      }
+      if(getPendingGigId()===id){
+        if(job.status!=="searching_mechanic"||job.mechanicId||!isForMe){
+          if(job.mechanicId!==uid){shownGig=false;setPendingGigId(null);hideGigBanner();}
+        }
+        if(job.status==="done"){shownGig=false;setPendingGigId(null);hideGigBanner();}
+      }
+    });
+    const anyOpen=Object.values(all).some(j=>j.status==="searching_mechanic"&&!j.mechanicId&&(j.vehicleType||"car")===(profile&&profile.vehicleType||"car")&&(!j.preferredMechanicId||j.preferredMechanicId===uid));
+    if(!anyOpen&&shownGig&&!getJobId()){shownGig=false;setPendingGigId(null);hideGigBanner();}
+  });
+  alertsUnsub=onValue(ref(db,"alerts"),snap=>{
+    const all=Object.values(snap.val()||{});
+    const customerActive=all.filter(a=>a.status==="active"&&a.type==="customer_sos");
+    // Peer alert: other mechanics' own SOS calls (not this mechanic's own) also show here,
+    // so nearby mechanics can rally to help a colleague in trouble — same as admin sees it.
+    const mechActive=all.filter(a=>a.status==="active"&&a.type==="mechanic_sos"&&a.uid!==uid);
+    const bar=ge("sos-bar");if(!bar)return;
+    if(mechActive.length){
+      const m=mechActive[mechActive.length-1];
+      bar.style.display="flex";bar.style.background="rgba(168,85,247,.12)";
+      tx("sos-bar-txt","🧑‍🔧🆘 Mechanic "+m.name+" needs help");
+      bar.onclick=()=>{if(m.mapsLink)window.open(m.mapsLink,"_blank");else if(m.phone&&m.phone!=="—")window.location.href="tel:"+m.phone.replace(/\s/g,"");};
+    }
+    else if(customerActive.length){
+      const c=customerActive[customerActive.length-1];
+      bar.style.display="flex";bar.style.background="";tx("sos-bar-txt","🆘 "+c.name);
+      bar.onclick=()=>go("m-gig");
+    }
+    else bar.style.display="none";
+  });
+  const doGPS=()=>{if(!uid)return;navigator.geolocation&&navigator.geolocation.getCurrentPosition(p=>{update(ref(db,"mechanics/"+uid),{lat:p.coords.latitude,lng:p.coords.longitude,gpsOn:true,lastGPS:Date.now()});tx("gps-stat","📍 GPS: "+p.coords.latitude.toFixed(4)+"°N");},()=>tx("gps-stat","📍 GPS: Active"),{enableHighAccuracy:true,timeout:7000});};
+  doGPS();window._gpsInterval=setInterval(doGPS,30000);
+}
+
+function showGigBanner(id,job){
+  setPendingGigId(id);
+  const pv=ge("gig-prev");if(pv)pv.style.display="block";
+  tx("gig-prev-title","🔔 New job — "+(job.issue||"Repair"));
+  tx("gig-prev-price","₹"+(job.estimateLow||"—")+"–"+(job.estimateHigh||"—"));
+  const nb=ge("gig-badge");if(nb)nb.style.display="block";
+  populateGig(id,job);
+}
+function hideGigBanner(){localStorage.removeItem("mrf_pendingGigId");const pv=ge("gig-prev");if(pv)pv.style.display="none";const nb=ge("gig-badge");if(nb)nb.style.display="none";}
+function populateGig(id,job){
+  tx("gig-issue",job.issue||"—");tx("gig-loc","📍 "+(job.location||"—"));
+  tx("gig-price","₹"+(job.estimateLow||"—")+"–"+(job.estimateHigh||"—"));
+  tx("gig-cust",job.customerName||"—");tx("gig-cph",job.customerPhone||"—");
+  const vs=job.vehicle||((job.vehicleMake||"")+" "+(job.vehicleModel||"")+" "+(job.vehicleYear||"")+" "+(job.vehicleFuel||"")).trim();
+  tx("gig-veh",vs||"Not specified");tx("gig-parts",job.partType||"OEM");tx("gig-cats",job.categories||"General");
+  // PARTS TO CARRY
+  const pc=ge("parts-to-carry");
+  if(pc&&job.partsDetail&&job.partsDetail.length){
+    pc.innerHTML='<div class="sl">🔧 Parts to carry</div>'+job.partsDetail.map(p=>`<div class="part-row"><div><div style="font-size:11px;font-weight:600;color:var(--pu)">${p.part} ×${p.qty||1}</div><div style="font-size:10px;color:var(--tx3)">${p.spec||""}</div></div><span class="bdg ${p.urgency==="immediate"?"b-r":"b-a"}">${p.urgency||"check"}</span></div>`).join('');
+    pc.style.display="block";
+  } else if(pc){pc.innerHTML='<div class="sl">🔧 Parts to carry</div><div style="font-size:11px;color:var(--tx2)">'+( job.partsNeeded||"General tools")+'</div>';pc.style.display="block";}
+  // CUSTOMER GPS LINK
+  if(job.lat&&job.lng){
+    const cgl=ge("cust-gps-link");
+    if(cgl){cgl.href="https://maps.google.com/?q="+job.lat+","+job.lng;cgl.style.display="block";}
+    tx("cust-coords",job.lat.toFixed(4)+"°N, "+job.lng.toFixed(4)+"°E");
+  }
+}
+
+// Map Firebase auth error codes to friendly, specific messages (used by login/register/reset).
+function authErrMsg(e){
+  const c=e.code||"";
+  const map={
+    "auth/email-already-in-use":"Email already registered — sign in instead",
+    "auth/weak-password":"Use at least 6 characters",
+    "auth/invalid-email":"That email address doesn't look valid",
+    "auth/wrong-password":"Wrong password",
+    "auth/invalid-credential":"Wrong email or password",
+    "auth/user-not-found":"No account with this email",
+    "auth/too-many-requests":"Too many attempts — wait a bit and try again",
+    "auth/network-request-failed":"Network error — check your connection"
+  };
+  return map[c]||(e.message||"").replace("Firebase: ","").replace(/\(.*\)/,"").trim()||"Something went wrong";
+}
+// Disable a button + swap its label while an async action runs, restoring it afterwards either way.
+async function withBusy(btnId,busyLabel,fn){
+  const b=ge(btnId);const orig=b?b.innerHTML:"";
+  if(b){b.disabled=true;b.style.opacity=".6";b.innerHTML=busyLabel;}
+  try{await fn();}finally{if(b){b.disabled=false;b.style.opacity="1";b.innerHTML=orig;}}
+}
+// REGISTER
+window.doReg=async()=>{
+  const n=gv("mn"),ph=gv("mph"),ci=gv("mci"),sk=gv("msk"),brand=gv("mbrand"),em=gv("mem"),pw=gv("mpw");
+  const err=ge("mr-err");
+  if(!n||!ph||!em||!pw){err.textContent="Fill all required fields";return;}
+  if(pw.length<6){err.textContent="Password must be at least 6 characters";return;}
+  if(!selVehicleType){err.textContent="Please select car or luxury bike mechanic";return;}
+  err.textContent="Creating account...";
+  await withBusy("mreg-btn","Creating account...",async()=>{
+    try{
+      const c=await createUserWithEmailAndPassword(auth,em,pw);
+      const pfpF=ge("m-pfp-inp").files[0];
+      let pfp="";
+      if(pfpF){try{pfp=await uploadPfp(pfpF,"mechanics/"+c.user.uid+"/pfp.jpg");}catch(upErr){pfp="";}}
+      try{
+        await set(ref(db,"mechanics/"+c.user.uid),{name:n,phone:ph,city:ci||"",skills:sk||"General",brandSpeciality:brand||sk||"General",vehicleType:selVehicleType,email:em,role:"mechanic",status:"online",gpsOn:true,rating:5.0,verified:false,createdAt:Date.now(),pfp,totalJobs:0,totalEarned:0});
+      }catch(dbErr){try{await set(ref(db,"mechanics/"+c.user.uid),{name:n,phone:ph,email:em,role:"mechanic",vehicleType:selVehicleType,verified:false,createdAt:Date.now()});}catch(e2){}}
+      err.textContent="";
+    }catch(e){err.textContent=authErrMsg(e);}
+  });
+};
+window.setVType=(t)=>{
+  selVehicleType=t;
+  qsa(".vtype-btn").forEach(b=>b.classList.remove("sel"));
+  const btn=ge("vtype-"+t);if(btn)btn.classList.add("sel");
+  const bf=ge("brand-field");if(bf)bf.style.display="block";
+  const bl=ge("brand-label");
+  const bh=ge("brand-hint");
+  const bi=ge("mbrand");
+  if(t==="car"){
+    if(bl)bl.textContent="Car brands you specialise in *";
+    if(bi)bi.placeholder="e.g. Maruti, Honda, Hyundai — or All brands";
+    if(bh)bh.innerHTML='🚗 <strong>Car brands:</strong> Maruti, Hyundai, Tata, Honda, Toyota, Ford, Kia, MG, Volkswagen, Skoda, BMW, Mercedes, Audi, Mahindra, Renault, Nissan';
+    if(bh)bh.style.color='var(--gn)';
+  } else {
+    if(bl)bl.textContent="Luxury bike brands you specialise in *";
+    if(bi)bi.placeholder="e.g. Ducati, Kawasaki, BMW Motorrad";
+    if(bh)bh.innerHTML='🏍️ <strong>Luxury bike brands (₹5L+):</strong><br>• <strong>Italian:</strong> Ducati Panigale, Ducati Multistrada, Ducati StreetFighter, Ducati Monster, Aprilia RSV4, Aprilia Tuono, MV Agusta<br>• <strong>German:</strong> BMW S1000RR, BMW R1250GS, BMW M1000RR, BMW K1600<br>• <strong>Japanese:</strong> Kawasaki Ninja H2/H2R, Kawasaki ZX-10R, Kawasaki Z900, Suzuki Hayabusa, Suzuki GSX-R1000, Yamaha R1, Yamaha MT-10, Honda CBR1000RR, Honda Gold Wing<br>• <strong>British:</strong> Triumph Rocket 3, Triumph Tiger 900, Triumph Speed Triple, Triumph Bonneville T120<br>• <strong>Austrian:</strong> KTM 1290 Super Duke, KTM 890 Duke<br>• <strong>American:</strong> Harley-Davidson CVO, Harley Pan America, Indian Scout, Indian Chief';
+    if(bh)bh.style.color='var(--pu)';bh.style.background='var(--pu2)';bh.style.border='1px solid rgba(168,85,247,.2)';
+  }
+};
+// General "always carry" kit — separate from the per-gig AI parts list. Helps
+// mechanics stock up before going online, not just react to a specific job.
+const GENERAL_KIT={
+  car:["Basic tool kit (spanners, screwdrivers, pliers)","Jump starter / booster cables","Tyre inflator + puncture repair kit","Multimeter","OBD-II scanner","Engine oil top-up (1L)","Coolant top-up (1L)","Brake fluid (DOT4)","Spare fuses & relays","Torque wrench","Wheel wrench + jack","Spare spark plugs (common sizes)"],
+  luxbike:["Bike-specific metric tool kit","Chain lube & cleaner","12V jump pack (bike-rated)","Multimeter","Brand diagnostic scanner (if available)","Brake fluid (DOT4)","Coolant (liquid-cooled models)","Spare fuses & relays","Tubeless tyre puncture kit","Small-range torque wrench (Nm)"]
+};
+window.togglePartsKit=()=>{
+  const p=ge("parts-kit-panel"),chev=ge("pk-chevron");
+  const showing=p.style.display!=="none";
+  if(showing){p.style.display="none";chev.textContent="›";return;}
+  const kind=(profile&&(profile.vehicleType==="bike"||profile.vehicleType==="luxbike"))?"luxbike":"car";
+  const list=GENERAL_KIT[kind];
+  p.innerHTML='<div style="font-size:10px;color:var(--tx3);margin-bottom:6px">Recommended kit for '+(kind==="luxbike"?"luxury bike":"car")+' mechanics — keep these stocked:</div>'+
+    list.map(item=>'<div style="font-size:12px;padding:5px 0;border-bottom:1px solid var(--bdr)">• '+item+'</div>').join('');
+  p.style.display="block";chev.textContent="⌄";
+};
+window.doLogin=async()=>{
+  const err=ge("ml-err");err.textContent="Signing in...";
+  await withBusy("mlogin-btn","Signing in...",async()=>{
+    try{await signInWithEmailAndPassword(auth,gv("mlem"),gv("mlpw"));err.textContent="";}
+    catch(e){err.textContent=authErrMsg(e);}
+  });
+};
+window.doForgotPw=async()=>{
+  const err=ge("ml-err"),em=gv("mlem");
+  if(!em){err.textContent="Enter your email above first, then tap Forgot password";return;}
+  try{await sendPasswordResetEmail(auth,em);err.textContent="";toast("📧 Password reset link sent to "+em);}
+  catch(e){err.textContent=authErrMsg(e);}
+};
+
+// ── PRE-BOOKING LISTENER ──────────────────────────────
+let pbUnsub=null;
+window.loadMechPrebookings=()=>{
+  if(!uid)return;
+  if(pbUnsub)pbUnsub();
+  const myType=(profile&&profile.vehicleType)||'car';
+  pbUnsub=onValue(ref(db,'prebookings'),snap=>{
+    const all=Object.values(snap.val()||{})
+      .filter(pb=>pb.status==='pending'&&(pb.vehicleType||'car')===myType)
+      .sort((a,b)=>(a.scheduledDateTime||0)-(b.scheduledDateTime||0));
+    const c=ge('pb-mech-list');if(!c)return;
+    const badge=ge('pb-badge');
+    if(badge)badge.style.display=all.length>0?'block':'none';
+    if(!all.length){c.innerHTML='<div style="text-align:center;color:var(--tx3);padding:24px;font-size:13px">No pending pre-bookings right now. Check back later!</div>';return;}
+    c.innerHTML=all.map(pb=>{
+      const dt=new Date(pb.scheduledDateTime||0);
+      const dateStr=dt.toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short',year:'numeric'});
+      const timeStr=dt.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
+      const isPast=dt<new Date();
+      return `<div style="background:var(--card);border:1px solid rgba(74,222,128,.2);border-radius:var(--r2);padding:12px;margin-bottom:9px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+          <div style="flex:1">
+            <div style="font-size:13px;font-weight:600;color:var(--tx)">${pb.issue||'Preventive check'}</div>
+            <div style="font-size:11px;color:var(--tx2);margin-top:3px">📅 ${dateStr} at ${timeStr}</div>
+            <div style="font-size:11px;color:var(--tx2);margin-top:2px">🚗 ${pb.vehicle||'—'}</div>
+            <div style="font-size:11px;color:var(--tx2);margin-top:2px">👤 ${pb.customerName||'—'} · ${pb.customerPhone||'—'}</div>
+            ${pb.location?`<div style="font-size:11px;color:var(--tx2);margin-top:2px">📍 ${pb.location}</div>`:''}
+            ${pb.notes?`<div style="font-size:11px;color:var(--tx3);margin-top:3px;font-style:italic">"${pb.notes}"</div>`:''}
+          </div>
+          <span class="bdg ${isPast?'b-r':'b-a'}" style="margin-left:8px;flex-shrink:0">${isPast?'Overdue':'Upcoming'}</span>
+        </div>
+        ${!isPast?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:7px">
+          <button class="btn b-gn" style="margin-bottom:0;padding:9px;font-size:12px" onclick="acceptPrebook('${pb.id}','${pb.customerName||'Customer'}','${pb.customerPhone||''}')">✅ Accept slot</button>
+          <button class="btn b-ghost" style="margin-bottom:0;padding:9px;font-size:12px" onclick="declinePrebook('${pb.id}')">✗ Decline</button>
+        </div>`:`<div style="font-size:11px;color:var(--rd);text-align:center">Scheduled time has passed</div>`}
+      </div>`;
+    }).join('');
+  });
+};
+
+window.acceptPrebook=async(pbId,custName,custPhone)=>{
+  const p=profile||{};
+  await update(ref(db,'prebookings/'+pbId),{
+    status:'confirmed',
+    mechanic:p.name||'Mechanic',
+    mechanicId:uid,
+    mechanicPhone:p.phone||'—',
+    confirmedAt:Date.now()
+  });
+  toast('✅ Pre-booking accepted! Customer notified.');
+  // Also create a job entry so it shows in admin
+  const jobId='PB'+pbId;
+  const pbSnap=await get(ref(db,'prebookings/'+pbId));
+  const pb=pbSnap.val();
+  if(pb){
+    await set(ref(db,'jobs/'+jobId),{
+      id:jobId,type:'prebooking',
+      customerId:pb.customerId,customerName:pb.customerName,customerPhone:pb.customerPhone,
+      vehicle:pb.vehicle,vehicleMake:pb.vehicleMake,vehicleModel:pb.vehicleModel,vehicleYear:pb.vehicleYear,vehicleFuel:pb.vehicleFuel,vehicleType:pb.vehicleType||'car',
+      issue:pb.issue||'Pre-booked service',
+      scheduledDate:pb.scheduledDate,scheduledTime:pb.scheduledTime,scheduledDateTime:pb.scheduledDateTime,
+      location:pb.location||'',
+      status:'scheduled',
+      mechanic:p.name||'Mechanic',mechanicId:uid,mechanicPhone:p.phone||'—',
+      createdAt:Date.now()
+    });
+  }
+};
+window.declinePrebook=(pbId)=>{
+  // Just hide from this mechanic — don't cancel (other mechanics can still take it)
+  toast('Skipped — other mechanics can still accept');
+};
+
+window.doLogout=async()=>{
+  if(profUnsub)profUnsub();if(jobsUnsub)jobsUnsub();if(alertsUnsub)alertsUnsub();if(chatUnsub)chatUnsub();
+  clearInterval(window._gpsInterval);_listenersStarted=false;
+  if(uid)await update(ref(db,"mechanics/"+uid),{status:"offline"});
+  setJobId(null);setPendingGigId(null);shownGig=false;await signOut(auth);
+};
+
+window.acceptGig=()=>{
+  const pendingId=getPendingGigId();if(!pendingId){toast("No gig available");return;}
+  const p=profile||{};
+  get(ref(db,"jobs/"+pendingId)).then(snap=>{
+    const job=snap.val();
+    if(!job){toast("Job no longer exists");hideGigBanner();shownGig=false;return;}
+    if(job.status!=="searching_mechanic"||job.mechanicId){toast("⚠️ Job already taken");hideGigBanner();shownGig=false;back();return;}
+    if(job.preferredMechanicId&&job.preferredMechanicId!==uid){toast("⚠️ This job was requested for another mechanic");hideGigBanner();shownGig=false;back();return;}
+    update(ref(db,"jobs/"+pendingId),{status:"mechanic_assigned",mechanic:p.name,mechanicId:uid,mechanicPhone:p.phone||"—",mechanicVehicleType:p.vehicleType||"car",updatedAt:Date.now()});
+    setTimeout(()=>update(ref(db,"jobs/"+pendingId),{status:"enroute"}),800);
+    update(ref(db,"mechanics/"+uid),{status:"enroute",activeJob:pendingId,eta:4});
+    setJobId(pendingId);setPendingGigId(null);
+    tx("active-job",job.issue||"Active job");hideGigBanner();shownGig=false;
+    toast("✅ Gig accepted! Head to customer.");go("m-nav");
+  });
+};
+window.declineGig=()=>{shownGig=false;setPendingGigId(null);hideGigBanner();back();};
+
+window.completeJob=()=>{
+  const jid=getJobId();if(!jid)return;
+  const earn=820;
+  update(ref(db,"jobs/"+jid),{mechanic_done:true,updatedAt:Date.now()});
+  get(ref(db,"jobs/"+jid)).then(s=>{
+    const j=s.val();
+    if(j&&j.customer_done){
+      update(ref(db,"jobs/"+jid),{status:"done",finalPrice:j.estimateLow||1550,completedAt:Date.now()});
+      update(ref(db,"mechanics/"+uid),{status:"online",activeJob:null,totalJobs:(profile&&profile.totalJobs||0)+1,totalEarned:(profile&&profile.totalEarned||0)+earn});
+      setJobId(null);shownGig=false;go("m-done");
+    } else {
+      update(ref(db,"mechanics/"+uid),{status:"online",activeJob:null,totalJobs:(profile&&profile.totalJobs||0)+1,totalEarned:(profile&&profile.totalEarned||0)+earn});
+      setJobId(null);shownGig=false;toast("Marked done — waiting for customer");go("m-done");
+    }
+  });
+};
+
+window.toggleOnline=()=>{
+  if(!uid)return;const tt=ge("tt"),on=tt.classList.contains("on");
+  tt.classList.toggle("on",!on);
+  tx("tlbl",!on?"You are online":"You are offline");
+  tx("tsub",!on?"Accepting gig requests":"Not receiving gigs");
+  const b=ge("tbdg");if(b){b.className="bdg "+(!on?"b-g":"b-off");b.textContent=!on?"● Active":"○ Offline";}
+  update(ref(db,"mechanics/"+uid),{status:!on?"online":"offline"});
+  localStorage.setItem("mrf_online",!on?"1":"0");
+};
+
+window.mechSOS=()=>{
+  ge("msos-ov").style.display="flex";if(!uid)return;
+  const p=profile||{};const sos={type:"mechanic_sos",uid,name:p.name||"Mechanic",phone:p.phone||"—",location:"Getting GPS...",time:Date.now(),status:"active",app:"mechanic"};
+  if(navigator.geolocation)navigator.geolocation.getCurrentPosition(pos=>{sos.location=pos.coords.latitude.toFixed(5)+"°N, "+pos.coords.longitude.toFixed(5)+"°E";sos.lat=pos.coords.latitude;sos.lng=pos.coords.longitude;sos.mapsLink="https://maps.google.com/?q="+pos.coords.latitude+","+pos.coords.longitude;push(ref(db,"alerts"),sos);},()=>push(ref(db,"alerts"),sos),{enableHighAccuracy:true});
+  else push(ref(db,"alerts"),sos);
+};
+window.callCustomer=()=>{const jid=getJobId();if(!jid)return;get(ref(db,"jobs/"+jid)).then(s=>{const j=s.val();const ph=(j&&j.customerPhone)||"";if(ph)window.location.href="tel:"+ph.replace(/\s/g,"");else toast("No customer phone");});};
+
+window.openMechChat=()=>{
+  const jid=getJobId();if(!jid){toast("No active job");return;}go("m-chat");
+  if(chatUnsub)chatUnsub();
+  chatUnsub=onValue(ref(db,"chats/"+jid),snap=>{
+    const box=ge("m-chat-box");if(!box)return;
+    const msgs=Object.values(snap.val()||{}).sort((a,b)=>a.time-b.time);
+    box.innerHTML=msgs.length?msgs.map(m=>{const mine=m.senderId===uid;return`<div style="display:flex;justify-content:${mine?"flex-end":"flex-start"};margin-bottom:8px"><div style="max-width:78%;background:${mine?"var(--gn)":"var(--card)"};color:${mine?"#060D08":"var(--tx)"};border-radius:${mine?"14px 14px 4px 14px":"14px 14px 14px 4px"};padding:9px 12px;font-size:13px;line-height:1.4"><div style="font-size:10px;opacity:.6;margin-bottom:3px">${mine?"You":m.senderName||"Customer"}</div>${m.text}<div style="font-size:9px;opacity:.5;margin-top:3px;text-align:right">${new Date(m.time).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}</div></div></div>`;}).join(""):"<div style='text-align:center;color:var(--tx3);padding:20px;font-size:12px'>No messages yet</div>";
+    box.scrollTop=box.scrollHeight;
+  });
+};
+window.sendMechMsg=()=>{const inp=ge("m-chat-inp"),jid=getJobId();if(!inp||!inp.value.trim()||!jid)return;push(ref(db,"chats/"+jid),{senderId:uid,senderName:(profile&&profile.name)||"Mechanic",senderRole:"mechanic",text:inp.value.trim(),time:Date.now()});inp.value="";};
+
+window.uploadMechPfp=async(inp)=>{
+  if(!uid||!inp.files[0])return;
+  toast("Uploading photo...");
+  try{const url=await uploadPfp(inp.files[0],"mechanics/"+uid+"/pfp.jpg");await update(ref(db,"mechanics/"+uid),{pfp:url});toast("✅ Photo updated");}
+  catch(e){toast("⚠️ Photo upload failed — try a smaller image");}
+};
+window.prevPfp=(inp,imgId,icoId)=>{const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{const img=ge(imgId),ico=ge(icoId);if(img){img.src=e.target.result;img.style.display="block";}if(ico)ico.style.display="none";};r.readAsDataURL(f);};
+function gv(id){const e=ge(id);return e?e.value.trim():"";}
+function ge(id){return document.getElementById(id);}
+function qsa(s){return Array.from(document.querySelectorAll(s));}
+function tx(id,v){const e=ge(id);if(e)e.textContent=v;}
+function toast(msg){let t=ge("m-toast");if(!t){t=document.createElement("div");t.id="m-toast";t.style.cssText="position:fixed;bottom:85px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.9);color:#fff;padding:9px 18px;border-radius:99px;font-size:13px;z-index:9999;transition:opacity .3s;pointer-events:none;white-space:nowrap;max-width:90vw;text-align:center";document.body.appendChild(t);}t.textContent=msg;t.style.opacity="1";clearTimeout(window._mt);window._mt=setTimeout(()=>{t.style.opacity="0";},2800);}
+function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>r(e.target.result);x.onerror=j;x.readAsDataURL(f);});}
+// Resize + compress an image file down to a small JPEG data URL (max 480px, ~q0.7) before it ever touches Storage/DB.
+function resizeImg(file,maxDim=480,quality=0.7){return new Promise((res,rej)=>{const img=new Image();const url=URL.createObjectURL(file);img.onload=()=>{let{width:w,height:h}=img;if(w>h&&w>maxDim){h=Math.round(h*maxDim/w);w=maxDim;}else if(h>maxDim){w=Math.round(w*maxDim/h);h=maxDim;}const c=document.createElement("canvas");c.width=w;c.height=h;c.getContext("2d").drawImage(img,0,0,w,h);URL.revokeObjectURL(url);res(c.toDataURL("image/jpeg",quality));};img.onerror=rej;img.src=url;});}
+// Upload a resized data-URL to Firebase Storage and return its public download URL (keeps the Realtime DB light).
+async function uploadPfp(file,path){const small=await resizeImg(file);const r=sref(storage,path);await uploadString(r,small,"data_url");return await getDownloadURL(r);}
+</script>
+</head>
+<body>
+<div class="msos-ov" id="msos-ov">
+  <div style="font-size:64px;margin-bottom:11px;animation:pp 1s infinite">🆘</div>
+  <div style="font-family:var(--fh);font-size:21px;font-weight:800;color:var(--rd);margin-bottom:7px">SOS Sent!</div>
+  <div style="font-size:12px;color:var(--tx2);margin-bottom:18px;line-height:1.8">✅ GPS · ✅ Admin alerted</div>
+  <button class="btn b-rd" style="max-width:200px" onclick="ge('msos-ov').style.display='none'">✓ OK</button>
+</div>
+<div id="m-loading" class="scr on" style="justify-content:center;align-items:center">
+  <div style="font-family:var(--fh);font-size:32px;font-weight:800;margin-bottom:14px">Mech<em style="color:var(--gn);font-style:normal">Pro</em></div>
+  <div style="width:36px;height:36px;border:3px solid var(--bdr2);border-top-color:var(--gn);border-radius:50%;animation:spin .8s linear infinite"></div>
+</div>
+<div id="m-login" class="scr auth">
+  <div class="logo">Mech<em>Pro</em></div>
+  <div style="font-size:12px;color:var(--tx2);margin-bottom:16px;text-align:center">Mechanic sign in</div>
+  <div class="ac">
+    <div class="at">Sign in</div>
+    <div class="f"><label>Email</label><input id="mlem" type="email" placeholder="your@email.com" autocomplete="email"></div>
+    <div class="f"><label>Password</label><input id="mlpw" type="password" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()"></div>
+    <div class="err" id="ml-err"></div>
+    <button class="btn b-gn" id="mlogin-btn" onclick="doLogin()">Sign in →</button>
+    <div class="sw" style="margin-top:2px" onclick="doForgotPw()">Forgot password?</div>
+  </div>
+  <div class="sw">New mechanic? <span onclick="go('m-register')">Register here</span></div>
+</div>
+<div id="m-register" class="scr auth">
+  <div class="logo">Mech<em>Pro</em></div>
+  <div class="ac">
+    <div class="at">Mechanic Registration</div>
+    <!-- VEHICLE TYPE SELECTION - MANDATORY -->
+    <div style="margin-bottom:11px">
+      <div class="f"><label style="color:var(--gn);font-weight:600">I am a * — choose one:</label></div>
+      <div class="vtype-sel">
+        <div class="vtype-btn" id="vtype-car" onclick="setVType('car')">
+          <div class="ico">🚗</div>
+          <div class="lbl">Car Mechanic</div>
+          <div class="sub">All car brands</div>
+        </div>
+        <div class="vtype-btn" id="vtype-luxbike" onclick="setVType('luxbike')">
+          <div class="ico">🏍️</div>
+          <div class="lbl">Luxury Bike</div>
+          <div class="sub">Premium only</div>
+        </div>
+      </div>
+    </div>
+    <div class="pfp-up">
+      <div class="pfp-ring" onclick="document.getElementById('m-pfp-inp').click()"><img id="mreg-img" src="" alt=""><span id="mreg-ico">📷</span></div>
+      <div><div style="font-size:12px;color:var(--tx2)">Profile photo (optional)</div></div>
+      <input type="file" id="m-pfp-inp" accept="image/*" style="display:none" onchange="prevPfp(this,'mreg-img','mreg-ico')">
+    </div>
+    <div class="f"><label>Full name ✱</label><input id="mn" type="text" placeholder="Arjun Kalita"></div>
+    <div class="f"><label>Phone ✱</label><input id="mph" type="tel" placeholder="+91 94351 77810"></div>
+    <div class="f"><label>City</label><input id="mci" type="text" placeholder="Guwahati"></div>
+    <div class="f"><label>Skills (comma separated)</label><input id="msk" type="text" placeholder="Engine, Brakes, Suspension, Electrical"></div>
+    <div class="f" id="brand-field" style="display:block">
+      <label id="brand-label">Brands you specialise in *</label>
+      <input id="mbrand" type="text" placeholder="e.g. Maruti, Honda, Hyundai">
+    </div>
+    <div id="brand-hint" style="background:var(--gn2);border:1px solid rgba(74,222,128,.2);border-radius:var(--r);padding:8px 11px;font-size:10px;color:var(--gn);margin-bottom:9px">
+      🚗 <strong>Car brands:</strong> Maruti, Hyundai, Tata, Honda, Toyota, Ford, Kia, MG, Volkswagen, Skoda, BMW, Mercedes, Audi, etc.
+    </div>
+    <div class="f"><label>Email ✱</label><input id="mem" type="email" placeholder="your@email.com"></div>
+    <div class="f"><label>Password ✱</label><input id="mpw" type="password" placeholder="Min 6 characters"></div>
+    <div class="err" id="mr-err"></div>
+    <button class="btn b-gn" id="mreg-btn" onclick="doReg()">Register →</button>
+  </div>
+  <div class="sw">Already registered? <span onclick="go('m-login')">Sign in</span></div>
+</div>
+<div id="m-pending" class="scr pending">
+  <div style="font-size:60px;margin-bottom:14px;animation:pp 2s infinite">⏳</div>
+  <div style="font-family:var(--fh);font-size:20px;font-weight:800;color:var(--am);margin-bottom:7px">Verification Pending</div>
+  <div style="font-size:12px;color:var(--tx2);margin-bottom:22px;line-height:1.8;max-width:280px">Account created.<br><strong style="color:var(--gn)">Admin verifies you → you auto-enter instantly.</strong></div>
+  <div style="background:var(--am2);border:1px solid rgba(251,191,36,.25);border-radius:var(--r2);padding:13px;width:100%;max-width:290px;text-align:center;margin-bottom:18px">
+    <div style="font-size:10px;color:var(--am);font-weight:700;margin-bottom:4px">HOW IT WORKS</div>
+    <div style="font-size:11px;color:var(--tx2);line-height:1.6">Admin → Mechanics tab → Verify ✓ → you auto-enter</div>
+  </div>
+  <button class="btn b-ghost" style="max-width:240px" onclick="doLogout()">Sign out</button>
+  <div style="font-size:9px;color:var(--tx3);margin-top:14px;font-family:monospace" id="m-pending-uid"></div>
+</div>
+<div id="m-home" class="scr">
+  <div class="topbar">
+    <div class="lgo">Mech<em>Pro</em></div>
+    <div style="display:flex;gap:7px;align-items:center">
+      <button style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:5px 9px;font-family:var(--fh);font-size:11px;font-weight:700;color:var(--rd);cursor:pointer" onclick="mechSOS()">🆘</button>
+      <div class="m-avi" onclick="go('m-profile')"><img class="m-pfp" src="" alt="" style="display:none"><span class="m-ini">AK</span></div>
+    </div>
+  </div>
+  <div class="sb">
+    <div class="sec">
+      <div id="sos-bar" style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:8px 11px;display:none;align-items:center;gap:7px;margin-bottom:10px;cursor:pointer">
+        <div style="width:7px;height:7px;border-radius:50%;background:var(--rd);animation:dd 1s infinite;flex-shrink:0"></div>
+        <div style="font-size:12px;font-weight:700;color:var(--rd);flex:1" id="sos-bar-txt">Customer SOS</div>
+      </div>
+      <div style="display:flex;gap:7px;margin-bottom:10px">
+        <div class="sb-it"><div class="sb-dot"></div><span id="gps-stat">📍 GPS: Active</span></div>
+        <div class="sb-it"><div class="sb-dot"></div><span id="vtype-badge">🚗 Car mechanic</span></div>
+      </div>
+      <div class="onl-tog" onclick="toggleOnline()">
+        <div class="tt on" id="tt"><div class="tth"></div></div>
+        <div style="flex:1"><div style="font-family:var(--fh);font-size:13px;font-weight:600" id="tlbl">You are online</div><div style="font-size:11px;color:var(--tx2);margin-top:2px" id="tsub">Accepting gig requests</div></div>
+        <span class="bdg b-g" id="tbdg">● Active</span>
+      </div>
+      <div id="gig-prev" class="gig-prev" onclick="go('m-gig')">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:5px">
+          <div><div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--gn)" id="gig-prev-title">🔔 New gig!</div><div style="font-size:11px;color:var(--tx2);margin-top:2px">Tap to view</div></div>
+          <div style="font-family:var(--fh);font-size:19px;font-weight:800" id="gig-prev-price">—</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:11px">
+        <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r);padding:10px 7px;text-align:center"><div style="font-family:var(--fh);font-size:19px;font-weight:800" id="stat-jobs">0</div><div style="font-size:10px;color:var(--tx3);margin-top:2px">Total jobs</div></div>
+        <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r);padding:10px 7px;text-align:center"><div style="font-family:var(--fh);font-size:19px;font-weight:800;color:var(--gn)" id="stat-earn">₹0</div><div style="font-size:10px;color:var(--tx3);margin-top:2px">Earned</div></div>
+        <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r);padding:10px 7px;text-align:center"><div style="font-family:var(--fh);font-size:19px;font-weight:800;color:var(--am)" id="stat-rat">5.0⭐</div><div style="font-size:10px;color:var(--tx3);margin-top:2px">Rating</div></div>
+      </div>
+      <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--gn)">Welcome, <span class="m-name">Mechanic</span> ✅</div>
+      <div style="font-size:11px;color:var(--tx2);margin-top:2px">Active job: <span id="active-job" style="color:var(--am)">None</span></div>
+      <div style="margin-top:10px;background:rgba(192,132,252,.08);border:1px solid rgba(192,132,252,.25);border-radius:var(--r2);padding:10px;display:flex;align-items:center;justify-content:space-between;cursor:pointer" onclick="go('m-prebookings')">
+        <div><div style="font-size:12px;font-weight:600;color:var(--pu)">📅 Pre-bookings available</div><div style="font-size:11px;color:var(--tx2);margin-top:2px">Customers booking in advance</div></div>
+        <div style="display:flex;align-items:center;gap:6px"><div id="pb-badge" style="display:none;width:8px;height:8px;border-radius:50%;background:var(--rd)"></div><span style="font-size:11px;color:var(--pu)">View →</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="bnav">
+    <div class="bn on" onclick="go('m-home')"><div class="bn-i">🏠</div><div class="bn-l">Home</div></div>
+    <div class="bn" onclick="go('m-gig')"><div class="bn-i">🔔</div><div class="bn-dot" id="gig-badge"></div><div class="bn-l">Gigs</div></div>
+    <div class="bn" onclick="go('m-earn')"><div class="bn-i">💰</div><div class="bn-l">Earnings</div></div>
+    <div class="bn" onclick="go('m-profile')"><div class="bn-i">👤</div><div class="bn-l">Profile</div></div>
+  </div>
+</div>
+<div id="m-gig" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Gig alert</div><span class="bdg b-r">Urgent</span></div>
+  <div class="sb">
+    <div class="sec">
+      <div style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:8px 11px;display:flex;align-items:center;gap:7px;margin-bottom:11px;animation:bi 1.5s 3"><span style="font-size:17px">🚨</span><span style="font-size:12px;font-weight:700;color:var(--rd);font-family:var(--fh)">New job — respond quickly!</span></div>
+      <div style="background:var(--card);border:1.5px solid rgba(96,165,250,.28);border-radius:var(--r2);padding:15px;margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:11px">
+          <div><div style="font-family:var(--fh);font-size:14px;font-weight:700" id="gig-issue">—</div><div style="font-size:11px;color:var(--tx2);margin-top:2px" id="gig-loc">—</div></div>
+          <div style="text-align:right"><div style="font-family:var(--fh);font-size:22px;font-weight:800;color:var(--gn)" id="gig-price">₹—</div></div>
+        </div>
+        <!-- CUSTOMER GPS LINK -->
+        <a id="cust-gps-link" href="#" target="_blank" style="display:none;background:var(--bl2);border:1px solid rgba(96,165,250,.3);border-radius:var(--r);padding:8px 11px;text-align:center;font-size:12px;color:var(--bl);text-decoration:none;font-weight:600;display:block;margin-bottom:9px">📍 Navigate to customer — Google Maps →</a>
+        <div style="font-size:10px;color:var(--tx3);margin-bottom:9px" id="cust-coords"></div>
+        <div class="veh-box">
+          <div style="font-family:var(--fh);font-size:11px;font-weight:700;color:var(--am);margin-bottom:5px">🚗 Vehicle</div>
+          <div class="veh-row"><span class="vl">Vehicle</span><span class="vv" id="gig-veh">—</span></div>
+          <div class="veh-row"><span class="vl">Parts type</span><span class="vv" id="gig-parts">—</span></div>
+          <div class="veh-row"><span class="vl">Categories</span><span class="vv" id="gig-cats">—</span></div>
+        </div>
+        <!-- PARTS TO CARRY -->
+        <div id="parts-to-carry" class="parts-box" style="display:none"></div>
+        <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r);padding:10px;margin-bottom:9px">
+          <div style="font-size:11px;font-weight:600;margin-bottom:3px">Customer: <span id="gig-cust" style="color:var(--gn)">—</span></div>
+          <div style="font-size:11px;color:var(--tx2)">Phone: <span id="gig-cph">—</span></div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <button class="btn b-gn" onclick="acceptGig()">✅ Accept gig</button>
+        <button class="btn b-ghost" onclick="declineGig()">✗ Decline</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="m-nav" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Navigate</div><span class="bdg b-g">En route</span></div>
+  <div class="sb">
+    <div class="sec">
+      <div style="display:flex;gap:7px;margin-bottom:10px">
+        <div class="sb-it"><div class="sb-dot"></div>GPS ON · admin sees you</div>
+        <div class="sb-it"><div class="sb-dot"></div>🎥 Recording</div>
+      </div>
+      <div style="background:var(--bg3);border-radius:var(--r2);height:170px;overflow:hidden;border:1px solid var(--bdr2);margin-bottom:10px">
+        <svg viewBox="0 0 380 170" width="100%" height="100%"><rect width="380" height="170" fill="#14221A"/><line x1="0" y1="85" x2="380" y2="85" stroke="#1A3020" stroke-width="10"/><line x1="190" y1="0" x2="190" y2="170" stroke="#1A3020" stroke-width="10"/><polyline points="85,132 85,85 225,85 225,120" stroke="#4ADE80" stroke-width="3" fill="none" stroke-dasharray="8,4"/><circle cx="225" cy="120" r="8" fill="#F87171"/><text x="225" y="135" fill="white" font-size="8" text-anchor="middle">Customer</text><circle cx="85" cy="132" r="8" fill="#4ADE80"/><text x="85" y="147" fill="white" font-size="8" text-anchor="middle">You</text></svg>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:10px">
+        <div style="background:var(--gn2);border:1px solid rgba(74,222,128,.3);border-radius:var(--r);padding:9px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer" onclick="callCustomer()"><div style="font-size:19px">📞</div><div style="font-size:10px;color:var(--gn)">Call</div></div>
+        <div style="background:var(--gn2);border:1px solid rgba(74,222,128,.3);border-radius:var(--r);padding:9px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer" onclick="openMechChat()"><div style="font-size:19px">💬</div><div style="font-size:10px;color:var(--gn)">Chat</div></div>
+        <div style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:9px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer" onclick="mechSOS()"><div style="font-size:19px">🆘</div><div style="font-size:10px;color:var(--rd)">SOS</div></div>
+      </div>
+      <button class="btn b-gn" onclick="go('m-active')">▶ I have arrived</button>
+    </div>
+  </div>
+</div>
+<div id="m-chat" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Chat with customer</div><div class="sp"></div></div>
+  <div id="m-chat-box" style="flex:1;overflow-y:auto;padding:12px 13px;min-height:0"></div>
+  <div style="flex-shrink:0;display:flex;gap:7px;padding:9px 13px;background:var(--bg2);border-top:1px solid var(--bdr2)">
+    <input id="m-chat-inp" type="text" placeholder="Type a message..." style="flex:1;background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:13px;padding:8px 11px;outline:none" onkeydown="if(event.key==='Enter')sendMechMsg()">
+    <button style="background:var(--gn);border:none;border-radius:var(--r);padding:0 13px;color:#060D08;font-family:var(--fh);font-size:13px;font-weight:700;cursor:pointer" onclick="sendMechMsg()">Send</button>
+  </div>
+</div>
+<div id="m-active" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Active job</div><span class="bdg b-a">In progress</span></div>
+  <div class="sb">
+    <div class="sec">
+      <div style="text-align:center;padding:12px 0"><div style="font-size:42px;margin-bottom:7px;animation:pp 2s infinite">🔧</div><div style="font-family:var(--fh);font-size:16px;font-weight:700">Repairing vehicle</div></div>
+      <div style="display:flex;gap:7px;margin-bottom:10px">
+        <div class="sb-it"><div class="sb-dot"></div>🎥 Recording</div>
+        <div class="sb-it"><div class="sb-dot"></div>📍 GPS ON</div>
+      </div>
+      <div class="sl">Checklist</div>
+      <div class="card" style="padding:7px 12px;margin-bottom:9px">
+        <div class="cr" onclick="chk(this)"><div style="font-size:16px;width:20px">⬜</div><div style="font-size:13px">Inspect and confirm fault</div></div>
+        <div class="cr" onclick="chk(this)"><div style="font-size:16px;width:20px">⬜</div><div style="font-size:13px">Confirm parts match job specification</div></div>
+        <div class="cr" onclick="chk(this)"><div style="font-size:16px;width:20px">⬜</div><div style="font-size:13px">Install new part</div></div>
+        <div class="cr" onclick="chk(this)" style="border-bottom:none"><div style="font-size:16px;width:20px">⬜</div><div style="font-size:13px">Test and confirm repair complete</div></div>
+      </div>
+      <button class="btn b-gn" onclick="completeJob()">✅ Mark job complete</button>
+    </div>
+  </div>
+</div>
+<div id="m-done" class="scr">
+  <div class="topbar"><div class="back" onclick="go('m-home')">← Home</div><div class="pgt">Job done!</div><div class="sp"></div></div>
+  <div class="sb">
+    <div class="sec">
+      <div style="text-align:center;padding:14px 0"><div style="font-size:52px;margin-bottom:9px">💰</div><div style="font-family:var(--fh);font-size:22px;font-weight:800;color:var(--gn)">Job complete!</div><div style="font-size:11px;color:var(--tx2);margin-top:3px">Admin panel updated ✓</div></div>
+      <button class="btn b-gn" onclick="go('m-home')">🏠 Back to home</button>
+    </div>
+  </div>
+</div>
+<div id="m-earn" class="scr">
+  <div class="topbar"><div class="lgo">Mech<em>Pro</em></div><span class="bdg b-g">Earnings</span></div>
+  <div class="sb">
+    <div class="sec">
+      <div style="background:linear-gradient(135deg,rgba(74,222,128,.12),rgba(74,222,128,.04));border:1px solid rgba(74,222,128,.18);border-radius:var(--r2);padding:16px;text-align:center;margin-bottom:11px">
+        <div style="font-size:11px;color:var(--tx2);margin-bottom:3px">Total earned (keep 100%)</div>
+        <div style="font-family:var(--fh);font-size:36px;font-weight:800;color:var(--gn)" id="earn-total">₹0</div>
+      </div>
+      <div class="card" style="padding:10px 12px">
+        <div class="er"><div style="color:var(--tx2)">Total gigs</div><div style="font-weight:600" id="earn-jobs">0</div></div>
+        <div class="er"><div style="color:var(--tx2)">Rating</div><div style="font-weight:600;color:var(--am)" id="earn-rat">5.0 ⭐</div></div>
+        <div class="er"><div style="color:var(--tx2)">Platform fee (1-2%)</div><div style="font-weight:600;color:var(--rd)" id="earn-cut">₹0</div></div>
+      </div>
+      <div style="background:var(--gn2);border:1px solid rgba(74,222,128,.2);border-radius:var(--r);padding:9px 11px;font-size:11px;color:var(--gn)">💚 No middleman. You earn directly from customers. RoadFix takes 1-2% only.</div>
+    </div>
+  </div>
+  <div class="bnav">
+    <div class="bn" onclick="go('m-home')"><div class="bn-i">🏠</div><div class="bn-l">Home</div></div>
+    <div class="bn" onclick="go('m-gig')"><div class="bn-i">🔔</div><div class="bn-l">Gigs</div></div>
+    <div class="bn on"><div class="bn-i">💰</div><div class="bn-l">Earnings</div></div>
+    <div class="bn" onclick="go('m-profile')"><div class="bn-i">👤</div><div class="bn-l">Profile</div></div>
+  </div>
+</div>
+<div id="m-profile" class="scr">
+  <div class="sb" style="padding-bottom:76px">
+    <div class="ph">
+      <div style="width:60px;height:60px;border-radius:50%;overflow:hidden;background:var(--gn2);border:2px solid var(--gn);display:flex;align-items:center;justify-content:center;cursor:pointer" onclick="document.getElementById('m-pfp-up').click()">
+        <img class="m-pfp" src="" alt="" style="display:none;width:100%;height:100%;object-fit:cover">
+        <span class="m-ini" style="font-family:var(--fh);font-size:19px;font-weight:800;color:var(--gn)">AK</span>
+      </div>
+      <input type="file" id="m-pfp-up" accept="image/*" style="display:none" onchange="uploadMechPfp(this)">
+      <div style="font-family:var(--fh);font-size:16px;font-weight:700" class="m-name">Loading...</div>
+      <div style="font-size:11px;color:var(--tx2)" class="m-phone">—</div>
+      <span class="bdg b-g" id="vtype-badge-profile">✅ Car mechanic</span>
+    </div>
+    <div class="psts">
+      <div class="pst"><div class="pstn" id="p-jobs">0</div><div class="pstl">Jobs</div></div>
+      <div class="pst"><div class="pstn" style="color:var(--am)" id="p-rat">5.0⭐</div><div class="pstl">Rating</div></div>
+      <div class="pst"><div class="pstn" style="color:var(--gn)" id="p-earn">₹0</div><div class="pstl">Lifetime</div></div>
+    </div>
+    <div style="padding:8px 13px 4px;font-size:11px;color:var(--tx3);font-family:var(--fh);font-weight:700;letter-spacing:.05em;text-transform:uppercase">Brand speciality</div>
+    <div id="skills-wrap" class="sw2"></div>
+    <div class="mit" onclick="togglePartsKit()"><span style="font-size:15px">🧰</span><span style="flex:1">Parts kit to carry</span><span style="color:var(--tx3)" id="pk-chevron">›</span></div>
+    <div id="parts-kit-panel" style="display:none;padding:4px 13px 10px"></div>
+    <div class="mit"><span style="font-size:15px">📍</span><span style="flex:1">GPS & tracking</span><span style="color:var(--tx3)">›</span></div>
+    <div class="mit"><span style="font-size:15px">🏦</span><span style="flex:1">Bank account</span><span style="color:var(--tx3)">›</span></div>
+    <div class="mit" onclick="doLogout()"><span style="font-size:15px">🚪</span><span style="flex:1">Sign out</span><span style="color:var(--tx3)">›</span></div>
+    <div style="padding:13px;text-align:center;font-size:11px;color:var(--tx3)">MechPro v8 · GPS radius · Parts-to-carry · Firebase live</div>
+  </div>
+  <div class="bnav">
+    <div class="bn" onclick="go('m-home')"><div class="bn-i">🏠</div><div class="bn-l">Home</div></div>
+    <div class="bn" onclick="go('m-gig')"><div class="bn-i">🔔</div><div class="bn-l">Gigs</div></div>
+    <div class="bn" onclick="go('m-earn')"><div class="bn-i">💰</div><div class="bn-l">Earnings</div></div>
+    <div class="bn on"><div class="bn-i">👤</div><div class="bn-l">Profile</div></div>
+  </div>
+</div>
+
+<!-- PRE-BOOKINGS SCREEN -->
+<div id="m-prebookings" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Pre-bookings</div><span class="bdg b-g">● Live</span></div>
+  <div class="sb">
+    <div class="sec">
+      <div style="background:var(--gn2);border:1px solid rgba(74,222,128,.2);border-radius:var(--r2);padding:11px;margin-bottom:11px">
+        <div style="font-size:12px;font-weight:700;color:var(--gn);margin-bottom:4px">📅 Advance bookings from customers</div>
+        <div style="font-size:11px;color:var(--tx2)">These customers feel their car might need attention. Accept a slot and earn extra income — scheduled in advance.</div>
+      </div>
+      <div id="pb-mech-list"><div style="text-align:center;color:var(--tx3);padding:24px;font-size:13px">Loading...</div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+var stk=["m-loading"],cur="m-loading";
+function go(id){var o=document.getElementById(cur),n=document.getElementById(id);if(!n)return;o.classList.remove("on");n.classList.add("on");if(stk[stk.length-1]!==id)stk.push(id);cur=id;var sb=n.querySelector(".sb");if(sb)sb.scrollTop=0;
+  if(id==="m-gig"){const pid=localStorage.getItem("mrf_pendingGigId");if(pid){get(ref(db,"jobs/"+pid)).then(snap=>{const j=snap.val();if(j)populateGig(pid,j);});}}
+  if(id==="m-prebookings")loadMechPrebookings();
+  if(id==="m-earn"&&typeof profile!=="undefined"&&profile){
+    document.getElementById("earn-total").textContent="₹"+(profile.totalEarned||0).toLocaleString("en-IN");
+    document.getElementById("earn-jobs").textContent=String(profile.totalJobs||0);
+    document.getElementById("earn-rat").textContent=(profile.rating||5.0).toString().substr(0,3)+" ⭐";
+    document.getElementById("earn-cut").textContent="-₹"+Math.round((profile.totalEarned||0)*.015).toLocaleString("en-IN");
+    document.getElementById("p-jobs").textContent=String(profile.totalJobs||0);
+    document.getElementById("p-rat").textContent=(profile.rating||5.0).toString().substr(0,3)+"⭐";
+    document.getElementById("p-earn").textContent="₹"+Math.round((profile.totalEarned||0)/1000)+"k";
+    if(document.getElementById("vtype-badge-profile"))document.getElementById("vtype-badge-profile").textContent="✅ "+(profile.vehicleType==="luxbike"?"Luxury bike":"Car")+" mechanic";
+  }
+}
+function back(){if(stk.length<2)return;stk.pop();var p=stk[stk.length-1];document.getElementById(cur).classList.remove("on");document.getElementById(p).classList.add("on");cur=p;}
+function chk(r){var i=r.querySelector("[style*='width:20px']");if(i&&i.textContent.trim()==="⬜")i.textContent="✅";}
+function ge(id){return document.getElementById(id);}
+function tx(id,v){var e=document.getElementById(id);if(e)e.textContent=v;}
+</script>
+</body>
+</html>

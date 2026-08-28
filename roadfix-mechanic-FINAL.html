@@ -147,18 +147,22 @@ function startListeners(){
     // Find new gigs for car mechanics only
     const myType=(profile&&profile.vehicleType)||"car";
     Object.entries(all).forEach(([id,job])=>{
-      // Only show car jobs to car mechanics
-      if(job.status==="searching_mechanic"&&!job.mechanicId&&!shownGig&&(job.vehicleType||"car")===myType){
+      // A job is a gig for THIS mechanic if either:
+      //  - it's an open broadcast (no preferredMechanicId — any matching mechanic can grab it), OR
+      //  - the customer specifically requested THIS mechanic (preferredMechanicId === uid)
+      // A job with a preferredMechanicId set to someone else must never show up here.
+      const isForMe=!job.preferredMechanicId||job.preferredMechanicId===uid;
+      if(job.status==="searching_mechanic"&&!job.mechanicId&&!shownGig&&(job.vehicleType||"car")===myType&&isForMe){
         shownGig=true;setPendingGigId(id);showGigBanner(id,job);
       }
       if(getPendingGigId()===id){
-        if(job.status!=="searching_mechanic"||job.mechanicId){
+        if(job.status!=="searching_mechanic"||job.mechanicId||!isForMe){
           if(job.mechanicId!==uid){shownGig=false;setPendingGigId(null);hideGigBanner();}
         }
         if(job.status==="done"){shownGig=false;setPendingGigId(null);hideGigBanner();}
       }
     });
-    const anyOpen=Object.values(all).some(j=>j.status==="searching_mechanic"&&!j.mechanicId&&(j.vehicleType||"car")===(profile&&profile.vehicleType||"car"));
+    const anyOpen=Object.values(all).some(j=>j.status==="searching_mechanic"&&!j.mechanicId&&(j.vehicleType||"car")===(profile&&profile.vehicleType||"car")&&(!j.preferredMechanicId||j.preferredMechanicId===uid));
     if(!anyOpen&&shownGig&&!getJobId()){shownGig=false;setPendingGigId(null);hideGigBanner();}
   });
   alertsUnsub=onValue(ref(db,"alerts"),snap=>{
@@ -393,6 +397,7 @@ window.acceptGig=()=>{
     const job=snap.val();
     if(!job){toast("Job no longer exists");hideGigBanner();shownGig=false;return;}
     if(job.status!=="searching_mechanic"||job.mechanicId){toast("⚠️ Job already taken");hideGigBanner();shownGig=false;back();return;}
+    if(job.preferredMechanicId&&job.preferredMechanicId!==uid){toast("⚠️ This job was requested for another mechanic");hideGigBanner();shownGig=false;back();return;}
     update(ref(db,"jobs/"+pendingId),{status:"mechanic_assigned",mechanic:p.name,mechanicId:uid,mechanicPhone:p.phone||"—",mechanicVehicleType:p.vehicleType||"car",updatedAt:Date.now()});
     setTimeout(()=>update(ref(db,"jobs/"+pendingId),{status:"enroute"}),800);
     update(ref(db,"mechanics/"+uid),{status:"enroute",activeJob:pendingId,eta:4});
@@ -697,9 +702,8 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
       <div class="card" style="padding:10px 12px">
         <div class="er"><div style="color:var(--tx2)">Total gigs</div><div style="font-weight:600" id="earn-jobs">0</div></div>
         <div class="er"><div style="color:var(--tx2)">Rating</div><div style="font-weight:600;color:var(--am)" id="earn-rat">5.0 ⭐</div></div>
-        <div class="er"><div style="color:var(--tx2)">Platform fee (1-2%)</div><div style="font-weight:600;color:var(--rd)" id="earn-cut">₹0</div></div>
       </div>
-      <div style="background:var(--gn2);border:1px solid rgba(74,222,128,.2);border-radius:var(--r);padding:9px 11px;font-size:11px;color:var(--gn)">💚 No middleman. You earn directly from customers. RoadFix takes 1-2% only.</div>
+      <div style="background:var(--gn2);border:1px solid rgba(74,222,128,.2);border-radius:var(--r);padding:9px 11px;font-size:11px;color:var(--gn)">💚 No middleman. You earn directly from customers.</div>
     </div>
   </div>
   <div class="bnav">
@@ -766,7 +770,6 @@ function go(id){var o=document.getElementById(cur),n=document.getElementById(id)
     document.getElementById("earn-total").textContent="₹"+(profile.totalEarned||0).toLocaleString("en-IN");
     document.getElementById("earn-jobs").textContent=String(profile.totalJobs||0);
     document.getElementById("earn-rat").textContent=(profile.rating||5.0).toString().substr(0,3)+" ⭐";
-    document.getElementById("earn-cut").textContent="-₹"+Math.round((profile.totalEarned||0)*.015).toLocaleString("en-IN");
     document.getElementById("p-jobs").textContent=String(profile.totalJobs||0);
     document.getElementById("p-rat").textContent=(profile.rating||5.0).toString().substr(0,3)+"⭐";
     document.getElementById("p-earn").textContent="₹"+Math.round((profile.totalEarned||0)/1000)+"k";

@@ -431,11 +431,11 @@ Return ONLY this JSON:
 {"faults":[{"name":"specific fault","pct":87,"desc":"one sentence","col":"rd"},{"name":"specific fault","pct":61,"desc":"one sentence","col":"yw"},{"name":"specific fault","pct":38,"desc":"one sentence","col":"bl"}],"warn":"safety warning or empty","parts":"comma separated parts","partsDetail":[{"part":"CV Axle","qty":1,"spec":"OEM spec for ${veh.make} ${veh.model}","urgency":"immediate"}],"low":800,"high":2500,"severity":"high"}`;
   if(!KEY||KEY.length<20){showAISmartFallback(veh,issue,catStr);return;}
   const isOAuth=KEY.startsWith('AQ.');
-  const url='https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent'+(isOAuth?'':'?key='+KEY);
+  const url='https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent'+(isOAuth?'':'?key='+KEY);
   const headers={'Content-Type':'application/json'};if(isOAuth)headers['Authorization']='Bearer '+KEY;
   try{
     const r=await fetch(url,{method:'POST',headers,body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.05,maxOutputTokens:600}})});
-    if(!r.ok){showAISmartFallback(veh,issue,catStr);return;}
+    if(!r.ok){const et=await r.text().catch(()=>'');console.warn('Gemini API error',r.status,et);toast('⚠️ AI service unavailable — using smart estimate instead');showAISmartFallback(veh,issue,catStr);return;}
     const d=await r.json();
     if(!d.candidates||!d.candidates[0]){showAISmartFallback(veh,issue,catStr);return;}
     let raw=d.candidates[0].content.parts[0].text||'';
@@ -443,7 +443,7 @@ Return ONLY this JSON:
     const m=raw.match(/\{[\s\S]*\}/);
     let a=null;try{a=JSON.parse(m?m[0]:raw);}catch(e){a=null;}
     if(a&&a.faults&&a.faults.length)showAI(a);else showAISmartFallback(veh,issue,catStr);
-  }catch(e){showAISmartFallback(veh,issue,catStr);}
+  }catch(e){console.warn('Gemini network error',e);toast('⚠️ AI service unavailable — using smart estimate instead');showAISmartFallback(veh,issue,catStr);}
 }
 function showAISmartFallback(veh,issue,catStr){
   const il=(issue||'').toLowerCase(),cl=(catStr||'').toLowerCase(),isEV=veh&&veh.fuel==='Electric';
@@ -537,7 +537,10 @@ window.runPreventiveCheck=()=>{
 // ── NEARBY MECHANICS (GPS RADIUS SEARCH) ─────────────
 window.submitJob=()=>{
   const jid=getJobId();
-  if(jid)update(ref(db,'jobs/'+jid),{status:'searching_mechanic',partType:selPT,delivery:selPD,updatedAt:Date.now()});
+  // Don't broadcast the job yet — just save the part/delivery choice and show nearby
+  // mechanics so the customer can pick one. The job only becomes visible to a mechanic
+  // once the customer taps "Request →" on that specific mechanic (see bookMech below).
+  if(jid)update(ref(db,'jobs/'+jid),{partType:selPT,delivery:selPD,updatedAt:Date.now()});
   currentSearchRadius=2;go('s-mechs');
 };
 function haversine(lat1,lon1,lat2,lon2){
@@ -637,11 +640,11 @@ window.selPayMethod2=(method,el)=>{
   const total=price+platform;
   const methods={
     'UPI':'<div style="background:var(--bg3);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">Pay via UPI</div><div style="font-size:11px;color:var(--tx2)">UPI ID: roadfix@paytm</div><div style="font-size:11px;color:var(--tx2);margin-top:3px">Scan QR at mechanic site</div></div>',
-    'Cash':'<div style="background:var(--bg3);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">Pay with Cash</div><div style="font-size:11px;color:var(--tx2)">Pay mechanic directly in cash after job completion. Platform fee collected separately.</div></div>',
+    'Cash':'<div style="background:var(--bg3);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">Pay with Cash</div><div style="font-size:11px;color:var(--tx2)">Pay mechanic directly in cash after job completion.</div></div>',
     'Card':'<div style="background:var(--bg3);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">Pay by Card</div><div style="font-size:11px;color:var(--tx2)">Swipe at mechanic POS terminal or pay via bank app</div></div>',
     'Wallet':'<div style="background:var(--bg3);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">Digital Wallet</div><div style="font-size:11px;color:var(--tx2)">Paytm · PhonePe · GPay accepted</div></div>',
   };
-  detail.innerHTML=(methods[method]||'')+'<div class="rr"><span style="color:var(--tx2)">Service charge</span><span>₹'+price+'</span></div><div class="rr"><span style="color:var(--tx2)">Platform fee (2.5%)</span><span style="color:var(--yw)">₹'+platform+'</span></div><div class="rr" style="border-top:2px solid var(--bdr2);padding-top:8px"><strong>Total</strong><strong style="color:var(--or)">₹'+total+'</strong></div><div style="font-size:10px;color:var(--tx3);margin-top:5px">Mechanic receives ₹'+mechCut+' after platform deduction</div>';
+  detail.innerHTML=(methods[method]||'')+'<div class="rr" style="border-top:2px solid var(--bdr2);padding-top:8px"><strong>Total</strong><strong style="color:var(--or)">₹'+total+'</strong></div>';
   tx('pay-total','₹'+total);
 };
 

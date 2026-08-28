@@ -272,13 +272,14 @@ function renderAlerts(){
 }
 
 window.verifyMech=uid=>{
-  update(ref(db,"mechanics/"+uid),{verified:true});
-  toast("✅ Mechanic verified — they will auto-redirect now");
+  update(ref(db,"mechanics/"+uid),{verified:true})
+    .then(()=>toast("✅ Mechanic verified — they will auto-redirect now"))
+    .catch(e=>toast("❌ Verify failed: "+(e.message||e.code||"check database rules")));
 };
 // FIX 46: admin delete with undo-style confirmation
-window.delMech=(uid,name)=>{if(!confirm("Delete mechanic \""+name+"\"? This cannot be undone."))return;remove(ref(db,"mechanics/"+uid));toast("Deleted");};
-window.delCust=(uid,name)=>{if(!confirm("Delete customer \""+name+"\"? This cannot be undone."))return;remove(ref(db,"customers/"+uid));toast("Deleted");};
-window.delJob=id=>{if(!confirm("Delete this job? This cannot be undone."))return;remove(ref(db,"jobs/"+id));toast("Deleted");};
+window.delMech=(uid,name)=>{if(!confirm("Delete mechanic \""+name+"\"? This cannot be undone."))return;remove(ref(db,"mechanics/"+uid)).then(()=>toast("Deleted")).catch(e=>toast("❌ Delete failed: "+(e.message||e.code)));};
+window.delCust=(uid,name)=>{if(!confirm("Delete customer \""+name+"\"? This cannot be undone."))return;remove(ref(db,"customers/"+uid)).then(()=>toast("Deleted")).catch(e=>toast("❌ Delete failed: "+(e.message||e.code)));};
+window.delJob=id=>{if(!confirm("Delete this job? This cannot be undone."))return;remove(ref(db,"jobs/"+id)).then(()=>toast("Deleted")).catch(e=>toast("❌ Delete failed: "+(e.message||e.code)));};
 window.delAlert=id=>{remove(ref(db,"alerts/"+id));toast("Alert removed");};
 window.resolveAlert=id=>{update(ref(db,"alerts/"+id),{status:"resolved",resolvedAt:Date.now()});};
 

@@ -108,7 +108,7 @@ function startApp(p){
   profUnsub=onValue(ref(db,"mechanics/"+uid),snap=>{
     const mp=snap.val();if(!mp)return;
     profile=mp;applyProfile(mp);
-    if(!mp.verified){if(cur!=="m-pending")go("m-pending");}
+    if(!mp.verified){if(cur!=="m-pending")go("m-pending");tx("m-pending-uid","Account ID: "+uid);}
     else if(!_listenersStarted){
       _listenersStarted=true;
       update(ref(db,"mechanics/"+uid),{status:"online",gpsOn:true,lastSeen:Date.now()});
@@ -545,6 +545,7 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
     <div style="font-size:11px;color:var(--tx2);line-height:1.6">Admin → Mechanics tab → Verify ✓ → you auto-enter</div>
   </div>
   <button class="btn b-ghost" style="max-width:240px" onclick="doLogout()">Sign out</button>
+  <div style="font-size:9px;color:var(--tx3);margin-top:14px;font-family:monospace" id="m-pending-uid"></div>
 </div>
 <div id="m-home" class="scr">
   <div class="topbar">

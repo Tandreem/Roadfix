@@ -104,6 +104,7 @@ let uid=null,profile=null,selVeh=null,selPT='OEM',selPD='Company outlet',selPayM
 let cats=[],chatUnsub=null,bookedMechPhone='',bookedMechId='';
 let jobsUnsub=null,mechsUnsub=null,profUnsub=null,vehUnsub=null;
 let jobHistory=[],allMechanics={},currentSearchRadius=2;
+let completingJobIds=new Set(); // guards against double-firing job completion from the live jobs listener
 window._geminiKey=localStorage.getItem('rf_gemini_key')||'';
 
 function getJobId(){return localStorage.getItem('rf_jobId')||null;}
@@ -190,7 +191,8 @@ function startApp(){
           if(ml){ml.href='https://maps.google.com/?q='+myJob.lat+','+myJob.lng;ml.style.display='block';}
         }
       }
-      if(myJob.customer_done&&myJob.mechanic_done){
+      if(myJob.customer_done&&myJob.mechanic_done&&!completingJobIds.has(myJob.id)){
+        completingJobIds.add(myJob.id);
         update(ref(db,'jobs/'+myJob.id),{status:'done',finalPrice:myJob.estimateLow||1550,completedAt:Date.now()});
         update(ref(db,'customers/'+uid),{totalJobs:(profile&&profile.totalJobs||0)+1,totalSpend:(profile&&profile.totalSpend||0)+(myJob.estimateLow||1550)});
         setJobId(null);tx('lf-status','None active');clearActiveJobBanner();
@@ -351,7 +353,7 @@ window.initVehicles=()=>{
   if(vehUnsub)vehUnsub();
   vehUnsub=onValue(ref(db,'customers/'+uid+'/vehicles'),snap=>{
     const list=Object.values(snap.val()||{});
-    ['vl1','vl2'].forEach(cid=>{
+    ['vl1','vl2','vl3'].forEach(cid=>{
       const c=ge(cid);if(!c)return;
       if(!list.length){c.innerHTML='<div class="ev">No vehicles yet. Add one below.</div>';return;}
       c.innerHTML=list.map(v=>{
@@ -650,22 +652,19 @@ window.selPayMethod2=(method,el)=>{
 
 window.customerJobDone=()=>{
   const jid=getJobId();if(!jid)return;
-  const price=window._aiResult?Math.round(window._aiResult.low):1550;
+  // Just mark the customer's side done and move to payment — finishJob() below is the
+  // single place that actually finalizes the job and updates spend totals, so we don't
+  // double-count here even if the mechanic already marked their side done too.
   update(ref(db,'jobs/'+jid),{customer_done:true,paymentMethod:selPayMethod,updatedAt:Date.now()});
-  get(ref(db,'jobs/'+jid)).then(s=>{
-    const j=s.val();
-    if(j&&j.mechanic_done){
-      update(ref(db,'jobs/'+jid),{status:'done',finalPrice:price,completedAt:Date.now()});
-      update(ref(db,'customers/'+uid),{totalJobs:(profile&&profile.totalJobs||0)+1,totalSpend:(profile&&profile.totalSpend||0)+price});
-      setJobId(null);toast('✅ Job complete! Thank you.');
-    }else toast('Waiting for mechanic to confirm too...');
-  });
   go('s-pay');
 };
 window.finishJob=()=>{
-  const jid=getJobId();const price=window._aiResult?Math.round(window._aiResult.low):1550;
-  if(jid){update(ref(db,'jobs/'+jid),{customer_done:true,status:'done',finalPrice:price,paymentMethod:selPayMethod,completedAt:Date.now()});
-  update(ref(db,'customers/'+uid),{totalJobs:(profile&&profile.totalJobs||0)+1,totalSpend:(profile&&profile.totalSpend||0)+price});}
+  const jid=getJobId();if(!jid)return;
+  if(completingJobIds.has(jid)){setJobId(null);window._aiResult=null;clearActiveJobBanner();go('s-home');return;}
+  completingJobIds.add(jid);
+  const price=window._aiResult?Math.round(window._aiResult.low):1550;
+  update(ref(db,'jobs/'+jid),{customer_done:true,status:'done',finalPrice:price,paymentMethod:selPayMethod,completedAt:Date.now()});
+  update(ref(db,'customers/'+uid),{totalJobs:(profile&&profile.totalJobs||0)+1,totalSpend:(profile&&profile.totalSpend||0)+price});
   setJobId(null);window._aiResult=null;clearActiveJobBanner();go('s-home');
 };
 
@@ -1126,7 +1125,7 @@ async function withBusy(btnId,busyLabel,fn){
         <div style="font-size:11px;color:var(--tx2)">Feel like your car might act up? Book a mechanic in advance — before the breakdown happens.</div></div>
       </div>
       <div class="sl">Select vehicle</div>
-      <div id="vl2" class="vg" style="min-height:40px"></div>
+      <div id="vl3" class="vg" style="min-height:40px"></div>
       <div class="sl" style="margin-top:4px">Describe the concern</div>
       <div class="f"><input id="pb-issue" type="text" placeholder="e.g. Strange noise when turning, car feels sluggish..."></div>
       <div class="sl">Schedule date & time</div>

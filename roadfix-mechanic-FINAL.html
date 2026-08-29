@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<title>MechPro — Mechanic</title>
+<title>RoadFix — Mechanic</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root{--bg:#060D08;--bg2:#0D1810;--bg3:#14221A;--card:#102018;--bdr:rgba(255,255,255,.06);--bdr2:rgba(255,255,255,.11);--tx:#EEF8EE;--tx2:#7AAA82;--tx3:#3A5C44;--gn:#4ADE80;--gn2:rgba(74,222,128,.11);--am:#FBBF24;--am2:rgba(251,191,36,.11);--rd:#F87171;--rd2:rgba(248,113,113,.11);--bl:#60A5FA;--bl2:rgba(96,165,250,.11);--or:#F97316;--or2:rgba(249,115,22,.13);--pu:#C084FC;--pu2:rgba(192,132,252,.12);--pu:#C084FC;--pu2:rgba(192,132,252,.11);--r:12px;--r2:18px;--fh:"Syne",system-ui,sans-serif;--fb:"DM Sans",system-ui,sans-serif}
@@ -79,6 +79,7 @@ const auth=getAuth(app),db=getDatabase(app),storage=getStorage(app);
 
 let uid=null,profile=null,chatUnsub=null,shownGig=false;
 let jobsUnsub=null,profUnsub=null,alertsUnsub=null,_listenersStarted=false;
+let completingJobIds=new Set(); // guards against double-tap double-crediting earnings
 let selVehicleType='car'; // default to car mechanic
 
 function getJobId(){return localStorage.getItem("mrf_jobId")||null;}
@@ -113,7 +114,7 @@ function startApp(p){
       _listenersStarted=true;
       update(ref(db,"mechanics/"+uid),{status:"online",gpsOn:true,lastSeen:Date.now()});
       startListeners();go("m-home");
-      if(cur==="m-pending")toast("✅ Verified! Welcome to MechPro.");
+      if(cur==="m-pending")toast("✅ Verified! Welcome to RoadFix.");
     }
   });
 }
@@ -410,6 +411,8 @@ window.declineGig=()=>{shownGig=false;setPendingGigId(null);hideGigBanner();back
 
 window.completeJob=()=>{
   const jid=getJobId();if(!jid)return;
+  if(completingJobIds.has(jid))return; // guards against a rapid double-tap double-crediting earnings
+  completingJobIds.add(jid);
   const earn=820;
   update(ref(db,"jobs/"+jid),{mechanic_done:true,updatedAt:Date.now()});
   get(ref(db,"jobs/"+jid)).then(s=>{
@@ -482,11 +485,11 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
   <button class="btn b-rd" style="max-width:200px" onclick="ge('msos-ov').style.display='none'">✓ OK</button>
 </div>
 <div id="m-loading" class="scr on" style="justify-content:center;align-items:center">
-  <div style="font-family:var(--fh);font-size:32px;font-weight:800;margin-bottom:14px">Mech<em style="color:var(--gn);font-style:normal">Pro</em></div>
+  <div style="font-family:var(--fh);font-size:32px;font-weight:800;margin-bottom:14px">Road<em style="color:var(--gn);font-style:normal">Fix</em></div>
   <div style="width:36px;height:36px;border:3px solid var(--bdr2);border-top-color:var(--gn);border-radius:50%;animation:spin .8s linear infinite"></div>
 </div>
 <div id="m-login" class="scr auth">
-  <div class="logo">Mech<em>Pro</em></div>
+  <div class="logo">Road<em>Fix</em></div>
   <div style="font-size:12px;color:var(--tx2);margin-bottom:16px;text-align:center">Mechanic sign in</div>
   <div class="ac">
     <div class="at">Sign in</div>
@@ -499,7 +502,7 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
   <div class="sw">New mechanic? <span onclick="go('m-register')">Register here</span></div>
 </div>
 <div id="m-register" class="scr auth">
-  <div class="logo">Mech<em>Pro</em></div>
+  <div class="logo">Road<em>Fix</em></div>
   <div class="ac">
     <div class="at">Mechanic Registration</div>
     <!-- VEHICLE TYPE SELECTION - MANDATORY -->
@@ -554,7 +557,7 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
 </div>
 <div id="m-home" class="scr">
   <div class="topbar">
-    <div class="lgo">Mech<em>Pro</em></div>
+    <div class="lgo">Road<em>Fix</em></div>
     <div style="display:flex;gap:7px;align-items:center">
       <button style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:5px 9px;font-family:var(--fh);font-size:11px;font-weight:700;color:var(--rd);cursor:pointer" onclick="mechSOS()">🆘</button>
       <div class="m-avi" onclick="go('m-profile')"><img class="m-pfp" src="" alt="" style="display:none"><span class="m-ini">AK</span></div>
@@ -692,7 +695,7 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
   </div>
 </div>
 <div id="m-earn" class="scr">
-  <div class="topbar"><div class="lgo">Mech<em>Pro</em></div><span class="bdg b-g">Earnings</span></div>
+  <div class="topbar"><div class="lgo">Road<em>Fix</em></div><span class="bdg b-g">Earnings</span></div>
   <div class="sb">
     <div class="sec">
       <div style="background:linear-gradient(135deg,rgba(74,222,128,.12),rgba(74,222,128,.04));border:1px solid rgba(74,222,128,.18);border-radius:var(--r2);padding:16px;text-align:center;margin-bottom:11px">
@@ -737,7 +740,7 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
     <div class="mit"><span style="font-size:15px">📍</span><span style="flex:1">GPS & tracking</span><span style="color:var(--tx3)">›</span></div>
     <div class="mit"><span style="font-size:15px">🏦</span><span style="flex:1">Bank account</span><span style="color:var(--tx3)">›</span></div>
     <div class="mit" onclick="doLogout()"><span style="font-size:15px">🚪</span><span style="flex:1">Sign out</span><span style="color:var(--tx3)">›</span></div>
-    <div style="padding:13px;text-align:center;font-size:11px;color:var(--tx3)">MechPro v8 · GPS radius · Parts-to-carry · Firebase live</div>
+    <div style="padding:13px;text-align:center;font-size:11px;color:var(--tx3)">RoadFix v8 · GPS radius · Parts-to-carry · Firebase live</div>
   </div>
   <div class="bnav">
     <div class="bn" onclick="go('m-home')"><div class="bn-i">🏠</div><div class="bn-l">Home</div></div>

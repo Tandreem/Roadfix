@@ -80,6 +80,7 @@ const auth=getAuth(app),db=getDatabase(app),storage=getStorage(app);
 let uid=null,profile=null,chatUnsub=null,shownGig=false;
 let jobsUnsub=null,profUnsub=null,alertsUnsub=null,_listenersStarted=false;
 let completingJobIds=new Set(); // guards against double-tap double-crediting earnings
+let globalChatUnsub=null,chatSeenCount=0,chatWatchJobId=null;
 let selVehicleType='car'; // default to car mechanic
 
 function getJobId(){return localStorage.getItem("mrf_jobId")||null;}
@@ -143,7 +144,10 @@ function startListeners(){
     if(myJobId&&all[myJobId]){
       const j=all[myJobId];
       tx("active-job",j.issue||"Active job");
-      if(j.status==="done"){setJobId(null);setPendingGigId(null);shownGig=false;tx("active-job","None");hideGigBanner();}
+      if(j.status==="done"){setJobId(null);setPendingGigId(null);shownGig=false;tx("active-job","None");hideGigBanner();watchChatForNotifications(null);}
+      else watchChatForNotifications(myJobId);
+    } else {
+      watchChatForNotifications(null);
     }
     // Find new gigs for car mechanics only
     const myType=(profile&&profile.vehicleType)||"car";
@@ -386,6 +390,7 @@ window.declinePrebook=(pbId)=>{
 
 window.doLogout=async()=>{
   if(profUnsub)profUnsub();if(jobsUnsub)jobsUnsub();if(alertsUnsub)alertsUnsub();if(chatUnsub)chatUnsub();
+  if(globalChatUnsub)globalChatUnsub();chatWatchJobId=null;chatSeenCount=0;
   clearInterval(window._gpsInterval);_listenersStarted=false;
   if(uid)await update(ref(db,"mechanics/"+uid),{status:"offline"});
   setJobId(null);setPendingGigId(null);shownGig=false;await signOut(auth);
@@ -446,6 +451,25 @@ window.mechSOS=()=>{
 };
 window.callCustomer=()=>{const jid=getJobId();if(!jid)return;get(ref(db,"jobs/"+jid)).then(s=>{const j=s.val();const ph=(j&&j.customerPhone)||"";if(ph)window.location.href="tel:"+ph.replace(/\s/g,"");else toast("No customer phone");});};
 
+// Watches chat for a job in the BACKGROUND (unlike openMechChat's listener, which only
+// runs while the chat screen is actually open) so a new message shows up as a toast
+// no matter which screen the mechanic is currently on.
+function watchChatForNotifications(jid){
+  if(!jid){if(globalChatUnsub){globalChatUnsub();globalChatUnsub=null;}chatWatchJobId=null;chatSeenCount=0;return;}
+  if(chatWatchJobId===jid)return;
+  if(globalChatUnsub)globalChatUnsub();
+  chatWatchJobId=jid;chatSeenCount=0;
+  globalChatUnsub=onValue(ref(db,"chats/"+jid),snap=>{
+    const msgs=Object.values(snap.val()||{}).sort((a,b)=>a.time-b.time);
+    if(msgs.length>chatSeenCount){
+      const latest=msgs[msgs.length-1];
+      if(latest.senderId!==uid&&cur!=="m-chat"){
+        toast("💬 "+(latest.senderName||"Customer")+": "+latest.text.substr(0,40));
+      }
+    }
+    chatSeenCount=msgs.length;
+  });
+}
 window.openMechChat=()=>{
   const jid=getJobId();if(!jid){toast("No active job");return;}go("m-chat");
   if(chatUnsub)chatUnsub();
@@ -454,6 +478,7 @@ window.openMechChat=()=>{
     const msgs=Object.values(snap.val()||{}).sort((a,b)=>a.time-b.time);
     box.innerHTML=msgs.length?msgs.map(m=>{const mine=m.senderId===uid;return`<div style="display:flex;justify-content:${mine?"flex-end":"flex-start"};margin-bottom:8px"><div style="max-width:78%;background:${mine?"var(--gn)":"var(--card)"};color:${mine?"#060D08":"var(--tx)"};border-radius:${mine?"14px 14px 4px 14px":"14px 14px 14px 4px"};padding:9px 12px;font-size:13px;line-height:1.4"><div style="font-size:10px;opacity:.6;margin-bottom:3px">${mine?"You":m.senderName||"Customer"}</div>${m.text}<div style="font-size:9px;opacity:.5;margin-top:3px;text-align:right">${new Date(m.time).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}</div></div></div>`;}).join(""):"<div style='text-align:center;color:var(--tx3);padding:20px;font-size:12px'>No messages yet</div>";
     box.scrollTop=box.scrollHeight;
+    chatSeenCount=msgs.length;
   });
 };
 window.sendMechMsg=()=>{const inp=ge("m-chat-inp"),jid=getJobId();if(!inp||!inp.value.trim()||!jid)return;push(ref(db,"chats/"+jid),{senderId:uid,senderName:(profile&&profile.name)||"Mechanic",senderRole:"mechanic",text:inp.value.trim(),time:Date.now()});inp.value="";};

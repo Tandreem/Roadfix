@@ -103,6 +103,7 @@ function isLuxuryBike(make,model){
 let uid=null,profile=null,selVeh=null,selPT='OEM',selPD='Company outlet',selPayMethod='UPI';
 let cats=[],chatUnsub=null,bookedMechPhone='',bookedMechId='';
 let jobsUnsub=null,mechsUnsub=null,profUnsub=null,vehUnsub=null;
+let globalChatUnsub=null,chatSeenCount=0,chatWatchJobId=null;
 let jobHistory=[],allMechanics={},currentSearchRadius=2;
 let completingJobIds=new Set(); // guards against double-firing job completion from the live jobs listener
 window._geminiKey=localStorage.getItem('rf_gemini_key')||'';
@@ -163,6 +164,7 @@ function startApp(){
     if(cachedId&&all[cachedId]&&all[cachedId].customerId!==uid){setJobId(null);}
     const myJob=Object.values(all).find(j=>j.customerId===uid&&j.status!=='done');
     if(myJob){
+      watchChatForNotifications(myJob.id);
       if(!getJobId())setJobId(myJob.id);
       const L={pending:'Pending — waiting for mechanic',searching_mechanic:'🔍 Searching for mechanic...',mechanic_assigned:(myJob.mechanic||'?')+' accepted ✅',enroute:'🛵 '+(myJob.mechanic||'Mechanic')+' en route to you',fixing:'🔧 Being fixed'};
       const statusText=L[myJob.status]||myJob.status;
@@ -198,6 +200,7 @@ function startApp(){
         setJobId(null);tx('lf-status','None active');clearActiveJobBanner();
       }
     } else {
+      watchChatForNotifications(null);
       if(!getJobId())tx('lf-status','None active');
     }
   });
@@ -344,6 +347,7 @@ window.cancelPrebook=async(pbId)=>{
 
 window.doLogout=()=>{
   if(profUnsub)profUnsub();if(jobsUnsub)jobsUnsub();if(mechsUnsub)mechsUnsub();if(chatUnsub)chatUnsub();if(vehUnsub)vehUnsub();
+  if(globalChatUnsub)globalChatUnsub();chatWatchJobId=null;chatSeenCount=0;
   setJobId(null);signOut(auth);
 };
 
@@ -401,15 +405,30 @@ window.doPhoto=()=>{
   i.click();
 };
 window.doVoice=async()=>{
+  // If wrapped in a native Android shell with a voice bridge exposed, use that —
+  // Android WebView does NOT support the browser SpeechRecognition API, even with
+  // mic permission granted, so this native path is required inside the APK.
+  if(window.AndroidVoice&&typeof window.AndroidVoice.startListening==="function"){
+    toast("🎙️ Listening...");
+    try{window.AndroidVoice.startListening();}catch(e){toast("🎙️ Voice bridge error — try typing instead");}
+    return;
+  }
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(!SR){toast('🎙️ Use Chrome for voice input');return;}
+  if(!SR){toast('🎙️ Voice input needs Chrome browser or the app\'s native voice — try typing instead');return;}
   if(location.protocol!=='https:'&&location.hostname!=='localhost'){toast('🎙️ Voice needs HTTPS — use the GitHub Pages link');return;}
   try{await navigator.mediaDevices.getUserMedia({audio:true});}catch(e){toast('🎙️ Allow microphone in browser settings');return;}
   const sr=new SR();sr.lang='en-IN';sr.continuous=false;sr.interimResults=false;
+  let gotResult=false;
   sr.onstart=()=>toast('🎙️ Listening...');
-  sr.onresult=e=>{const t=e.results[0][0].transcript;const ta=ge('ptxt');if(ta)ta.value=t;toast('🎙️ Got: "'+t.substr(0,25)+'..."');};
-  sr.onerror=err=>{const m={'not-allowed':'Allow mic in settings','no-speech':'Nothing heard','network':'Check connection'};toast('🎙️ '+(m[err.error]||err.error));};
+  sr.onresult=e=>{gotResult=true;const t=e.results[0][0].transcript;const ta=ge('ptxt');if(ta)ta.value=t;toast('🎙️ Got: "'+t.substr(0,25)+'..."');};
+  sr.onerror=err=>{const m={'not-allowed':'Allow mic in settings','no-speech':'Nothing heard — try again','network':'Check connection'};toast('🎙️ '+(m[err.error]||err.error));};
+  sr.onend=()=>{if(!gotResult)toast('🎙️ Didn\'t catch that — try again or type it');};
   sr.start();
+};
+// Called BY the native Android voice bridge (see AndroidVoice above) once it has a transcript.
+window.onVoiceResult=(text)=>{
+  const ta=ge('ptxt');if(ta&&text)ta.value=text;
+  if(text)toast('🎙️ Got: "'+text.substr(0,25)+'..."');else toast('🎙️ Didn\'t catch that — try again or type it');
 };
 
 // ── AI ANALYSIS ───────────────────────────────────────
@@ -658,16 +677,50 @@ window.customerJobDone=()=>{
   update(ref(db,'jobs/'+jid),{customer_done:true,paymentMethod:selPayMethod,updatedAt:Date.now()});
   go('s-pay');
 };
-window.finishJob=()=>{
+window.finishJob=async()=>{
   const jid=getJobId();if(!jid)return;
   if(completingJobIds.has(jid)){setJobId(null);window._aiResult=null;clearActiveJobBanner();go('s-home');return;}
   completingJobIds.add(jid);
   const price=window._aiResult?Math.round(window._aiResult.low):1550;
-  update(ref(db,'jobs/'+jid),{customer_done:true,status:'done',finalPrice:price,paymentMethod:selPayMethod,completedAt:Date.now()});
+  const rating=selRating||5;
+  update(ref(db,'jobs/'+jid),{customer_done:true,status:'done',finalPrice:price,paymentMethod:selPayMethod,rating,completedAt:Date.now()});
   update(ref(db,'customers/'+uid),{totalJobs:(profile&&profile.totalJobs||0)+1,totalSpend:(profile&&profile.totalSpend||0)+price});
+  // Update the mechanic's real average rating (was previously hardcoded at 5.0 and never touched).
+  try{
+    const jobSnap=await get(ref(db,'jobs/'+jid));
+    const mechId=jobSnap.val()&&jobSnap.val().mechanicId;
+    if(mechId){
+      const mSnap=await get(ref(db,'mechanics/'+mechId));
+      const m=mSnap.val()||{};
+      const priorCount=m.ratingCount||m.totalJobs||0;
+      const priorAvg=parseFloat(m.rating)||5.0;
+      const newAvg=((priorAvg*priorCount)+rating)/(priorCount+1);
+      update(ref(db,'mechanics/'+mechId),{rating:newAvg.toFixed(1),ratingCount:priorCount+1});
+    }
+  }catch(e){/* rating aggregate is best-effort — job completion above already succeeded */}
+  selRating=5;
   setJobId(null);window._aiResult=null;clearActiveJobBanner();go('s-home');
 };
 
+// Watches chat for a job in the BACKGROUND (unlike openChat's listener, which only
+// runs while the chat screen is actually open) so a new message shows up as a toast
+// no matter which screen the customer is currently on.
+function watchChatForNotifications(jid){
+  if(!jid){if(globalChatUnsub){globalChatUnsub();globalChatUnsub=null;}chatWatchJobId=null;chatSeenCount=0;return;}
+  if(chatWatchJobId===jid)return; // already watching this job
+  if(globalChatUnsub)globalChatUnsub();
+  chatWatchJobId=jid;chatSeenCount=0;
+  globalChatUnsub=onValue(ref(db,'chats/'+jid),snap=>{
+    const msgs=Object.values(snap.val()||{}).sort((a,b)=>a.time-b.time);
+    if(msgs.length>chatSeenCount){
+      const latest=msgs[msgs.length-1];
+      if(latest.senderId!==uid&&cur!=='s-chat'){
+        toast('💬 '+(latest.senderName||'Mechanic')+': '+latest.text.substr(0,40));
+      }
+    }
+    chatSeenCount=msgs.length;
+  });
+}
 // ── CHAT ─────────────────────────────────────────────
 window.openChat=()=>{
   const jid=getJobId();if(!jid){toast('No active job');return;}
@@ -678,6 +731,7 @@ window.openChat=()=>{
     const msgs=Object.values(snap.val()||{}).sort((a,b)=>a.time-b.time);
     box.innerHTML=msgs.length?msgs.map(m=>{const mine=m.senderId===uid;return`<div style="display:flex;justify-content:${mine?'flex-end':'flex-start'};margin-bottom:8px"><div style="max-width:78%;background:${mine?'var(--or)':'var(--card)'};color:${mine?'#fff':'var(--tx)'};border-radius:${mine?'14px 14px 4px 14px':'14px 14px 14px 4px'};padding:9px 12px;font-size:13px;line-height:1.4"><div style="font-size:10px;opacity:.6;margin-bottom:3px">${mine?'You':m.senderName||'Mechanic'}</div>${m.text}<div style="font-size:9px;opacity:.5;margin-top:3px;text-align:right">${new Date(m.time).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div></div></div>`;}).join(''):'<div style="text-align:center;color:var(--tx3);padding:20px;font-size:12px">No messages yet. Say hello!</div>';
     box.scrollTop=box.scrollHeight;
+    chatSeenCount=msgs.length; // reading them here means the background watcher won't re-toast for these
   });
 };
 window.sendMsg=()=>{
@@ -699,7 +753,8 @@ const PDB={OEM:[{n:'OEM Parts',b:'Genuine manufacturer',p:'₹1,200',d:'Original
 window.selPT2=t=>{selPT=t;['OEM','ODM','Generic'].forEach(x=>{const e=ge('pt-'+x);if(e)e.classList.toggle('on',x===t);});const c=ge('parts-list');if(c)c.innerHTML=(PDB[t]||[]).map(p=>`<div class="part-card sel"><div style="display:flex;justify-content:space-between"><div style="font-size:12px;font-weight:600">${p.n}</div><div style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--or)">${p.p}</div></div><div style="font-size:10px;color:var(--tx3)">${p.b}</div><div style="font-size:11px;color:var(--tx2)">${p.d}</div></div>`).join('');const jid=getJobId();if(jid)update(ref(db,'jobs/'+jid),{partType:t});};
 window.selPD2=(i,n)=>{selPD=n;[0,1,2,3].forEach(j=>{const e=ge('pd'+j);if(e)e.classList.toggle('sel',j===i);});};
 window.togCat=(el,n)=>{el.classList.toggle('sel');if(el.classList.contains('sel')){if(!cats.includes(n))cats.push(n);}else cats=cats.filter(c=>c!==n);};
-window.rateStar=i=>qsa('.star').forEach((s,j)=>s.classList.toggle('on',j<=i));
+let selRating=5;
+window.rateStar=i=>{selRating=i+1;qsa('.star').forEach((s,j)=>s.classList.toggle('on',j<=i));};
 window.saveGeminiKey=()=>{const inp=ge('gemini-key-inp');if(!inp)return;const k=inp.value.trim();window._geminiKey=k;localStorage.setItem('rf_gemini_key',k);const st=ge('ai-key-status');if(k){toast('✅ Gemini key saved');if(st)st.textContent='(Gemini live ✅)';}else{toast('Key cleared');if(st)st.textContent='(Smart mode)';}};
 // Save OBD+ waitlist interest against this customer so it's a real lead list, not just a toast.
 window.notifyObdInterest=async()=>{
@@ -916,10 +971,10 @@ async function withBusy(btnId,busyLabel,fn){
   <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Preventive Check</div><div class="sp"></div></div>
   <div class="sb">
     <div class="sec">
-      <!-- OBD DEVICE REQUIRED MESSAGE -->
+      <!-- OBD+ (single consolidated card — was previously duplicated as two separate blocks) -->
       <div style="background:var(--pu2);border:1.5px solid rgba(168,85,247,.4);border-radius:var(--r2);padding:16px;text-align:center;margin-bottom:14px">
         <div style="font-size:36px;margin-bottom:8px">📡</div>
-        <div style="font-family:var(--fh);font-size:14px;font-weight:700;color:var(--pu);margin-bottom:6px">RoadFix OBD+ Required</div>
+        <div style="font-family:var(--fh);font-size:14px;font-weight:700;color:var(--pu);margin-bottom:6px">RoadFix OBD+ Smart Module</div>
         <div style="font-size:12px;color:var(--tx2);line-height:1.7;margin-bottom:12px">This feature works only with the <strong style="color:var(--pu)">RoadFix OBD+ hardware module</strong> plugged into your car's OBD port. The device sends live data to your phone automatically.</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px;text-align:left">
           <div style="background:var(--bg3);border-radius:var(--r);padding:8px;display:flex;gap:6px;align-items:center"><span>🌡️</span><span style="font-size:10px;color:var(--tx2)">Engine temp live</span></div>
@@ -928,27 +983,10 @@ async function withBusy(btnId,busyLabel,fn){
           <div style="background:var(--bg3);border-radius:var(--r);padding:8px;display:flex;gap:6px;align-items:center"><span>🤖</span><span style="font-size:10px;color:var(--tx2)">AI fault alerts</span></div>
         </div>
         <div style="background:var(--gn2);border:1px solid rgba(34,197,94,.2);border-radius:var(--r);padding:7px 10px;font-size:11px;color:var(--gn);margin-bottom:10px">💡 OBD+ only suggests mechanics. It never forces you to book. You stay in full control.</div>
-        
         <button class="btn b-pu" style="margin-bottom:0" onclick="notifyObdInterest()">🔔 Notify me when available</button>
       </div>
       <!-- Hidden fallback for runPreventiveCheck — keeps function working -->
       <div id="prev-results" style="display:none"></div>
-      <div style="height:1px;background:var(--bdr);margin:12px 0"></div>
-      <div class="sl">RoadFix OBD+ Device</div>
-      <div style="background:var(--card);border:1.5px solid rgba(168,85,247,.3);border-radius:var(--r2);padding:14px;margin-bottom:9px">
-        <div style="display:flex;align-items:center;gap:9px;margin-bottom:9px">
-          <div style="font-size:28px">📡</div>
-          <div><div style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--pu)">RoadFix OBD+ Smart Module</div><div style="font-size:11px;color:var(--tx2);margin-top:2px">Plug into your car's OBD port — live monitoring</div></div>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:9px">
-          <div style="background:var(--bg3);border-radius:var(--r);padding:7px;display:flex;align-items:center;gap:6px"><span style="font-size:14px">📍</span><span style="font-size:10px;color:var(--tx2)">Real-time GPS</span></div>
-          <div style="background:var(--bg3);border-radius:var(--r);padding:7px;display:flex;align-items:center;gap:6px"><span style="font-size:14px">🛞</span><span style="font-size:10px;color:var(--tx2)">Tyre pressure</span></div>
-          <div style="background:var(--bg3);border-radius:var(--r);padding:7px;display:flex;align-items:center;gap:6px"><span style="font-size:14px">🌡️</span><span style="font-size:10px;color:var(--tx2)">Engine monitor</span></div>
-          <div style="background:var(--bg3);border-radius:var(--r);padding:7px;display:flex;align-items:center;gap:6px"><span style="font-size:14px">🤖</span><span style="font-size:10px;color:var(--tx2)">AI fault alerts</span></div>
-        </div>
-        <div style="background:var(--pu2);border:1px solid rgba(168,85,247,.2);border-radius:var(--r);padding:8px 10px;font-size:11px;color:var(--pu);margin-bottom:8px">💡 OBD+ suggests mechanics — never forces you to book. You stay in full control.</div>
-        <button class="btn b-pu" style="margin-bottom:0" onclick="notifyObdInterest()">Notify me when available →</button>
-      </div>
     </div>
   </div>
 </div>

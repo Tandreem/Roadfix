@@ -170,6 +170,15 @@ function startListeners(){
       const j=all[myJobId];
       tx("active-job",j.issue||"Active job");
       if(j.status==="done"){setJobId(null);setPendingGigId(null);shownGig=false;tx("active-job","None");hideGigBanner();watchChatForNotifications(null);}
+      else if(j.status==="cancelled"){
+        // Previously the mechanic had no idea a customer cancelled — they'd just stay
+        // "enroute"/"fixing" with a job that no longer exists on the customer's end.
+        toast("⚠️ Customer cancelled this job");
+        notify("⚠️ Job cancelled","The customer cancelled this request");
+        update(ref(db,"mechanics/"+uid),{status:"online",activeJob:null});
+        setJobId(null);setPendingGigId(null);shownGig=false;tx("active-job","None");hideGigBanner();watchChatForNotifications(null);
+        go("m-home");
+      }
       else watchChatForNotifications(myJobId);
     } else {
       watchChatForNotifications(null);
@@ -466,6 +475,17 @@ window.markArrived=()=>{
   // had even arrived. Now it actually updates the job status.
   update(ref(db,"jobs/"+jid),{status:"fixing",arrivedAt:Date.now()});
   go("m-active");
+};
+// Releases the job back to the open pool for another mechanic to pick up, and lets the
+// customer's app know via their own live listener. Previously there was no way for a
+// mechanic to back out of an accepted job at all — they'd just have to leave it hanging.
+window.cantMakeIt=()=>{
+  const jid=getJobId();if(!jid){go("m-home");return;}
+  if(!confirm("Release this job back for another mechanic to accept?"))return;
+  update(ref(db,"jobs/"+jid),{status:"searching_mechanic",mechanicId:null,mechanic:null,mechanicPhone:null,preferredMechanicId:null,preferredMechanic:null,updatedAt:Date.now()});
+  update(ref(db,"mechanics/"+uid),{status:"online",activeJob:null});
+  setJobId(null);setPendingGigId(null);shownGig=false;tx("active-job","None");
+  toast("Job released back to the pool");go("m-home");
 };
 window.completeJob=()=>{
   const jid=getJobId();if(!jid)return;
@@ -764,6 +784,7 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
         <div style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:9px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer" onclick="mechSOS()"><div style="font-size:19px">🆘</div><div style="font-size:10px;color:var(--rd)">SOS</div></div>
       </div>
       <button class="btn b-gn" onclick="markArrived()">▶ I have arrived</button>
+      <button class="btn b-ghost" style="color:var(--rd)" onclick="cantMakeIt()">Can't make it — release job</button>
     </div>
   </div>
 </div>
@@ -791,6 +812,7 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
         <div class="cr" onclick="chk(this)" style="border-bottom:none"><div style="font-size:16px;width:20px">⬜</div><div style="font-size:13px">Test and confirm repair complete</div></div>
       </div>
       <button class="btn b-gn" onclick="completeJob()">✅ Mark job complete</button>
+      <button class="btn b-ghost" style="color:var(--rd)" onclick="cantMakeIt()">Can't finish — release job</button>
     </div>
   </div>
 </div>

@@ -106,7 +106,7 @@ let jobsUnsub=null,mechsUnsub=null,profUnsub=null,vehUnsub=null;
 let globalChatUnsub=null,chatSeenCount=0,chatWatchJobId=null;
 let jobHistory=[],allMechanics={},currentSearchRadius=2;
 let completingJobIds=new Set(); // guards against double-firing job completion from the live jobs listener
-let lastNotifiedJobStatus={};
+let lastNotifiedJobStatus={},lastKnownMechanicId={};
 window._geminiKey=localStorage.getItem('rf_gemini_key')||'';
 
 function getJobId(){return localStorage.getItem('rf_jobId')||null;}
@@ -155,7 +155,7 @@ function startApp(){
   });
   jobsUnsub=onValue(ref(db,'jobs'),snap=>{
     const all=snap.val()||{};
-    const active=Object.values(all).filter(j=>j.status&&j.status!=='done').length;
+    const active=Object.values(all).filter(j=>j.status&&j.status!=='done'&&j.status!=='cancelled').length;
     tx('lf-jobs',String(active));
     jobHistory=Object.values(all).filter(j=>j.customerId===uid&&j.status==='done').sort((a,b)=>(b.completedAt||0)-(a.completedAt||0));
     renderHistory();
@@ -164,7 +164,7 @@ function startApp(){
     // show or act on someone else's job.
     const cachedId=getJobId();
     if(cachedId&&all[cachedId]&&all[cachedId].customerId!==uid){setJobId(null);}
-    const myJob=Object.values(all).find(j=>j.customerId===uid&&j.status!=='done');
+    const myJob=Object.values(all).find(j=>j.customerId===uid&&j.status!=='done'&&j.status!=='cancelled');
     if(myJob){
       // Price used to come only from window._aiResult (in-memory, wiped by an app reload
       // or the OS reclaiming a backgrounded WebView) — now it's kept in sync with the
@@ -183,6 +183,16 @@ function startApp(){
         if(myJob.status==='mechanic_assigned')notify('✅ Mechanic accepted',(myJob.mechanic||'A mechanic')+' is on the way');
         else if(myJob.status==='fixing')notify('🔧 Mechanic arrived',(myJob.mechanic||'Your mechanic')+' has arrived and started work');
       }
+      // If a mechanic had been assigned but the job just reverted to "searching_mechanic"
+      // with no mechanicId, that mechanic released/cancelled the job — previously this was
+      // invisible to the customer, who'd just sit on the tracking screen indefinitely.
+      if(lastKnownMechanicId[myJob.id]&&!myJob.mechanicId&&myJob.status==='searching_mechanic'){
+        lastKnownMechanicId[myJob.id]=null;
+        toast('⚠️ Your mechanic had to cancel — please pick another');
+        notify('⚠️ Mechanic cancelled',"Your mechanic couldn't make it — please pick another");
+        currentSearchRadius=2;go('s-mechs');
+      }
+      if(myJob.mechanicId)lastKnownMechanicId[myJob.id]=myJob.mechanicId;
       // Update active job banner
       const banner=ge('active-job-banner');
       if(banner){
@@ -655,6 +665,28 @@ window.bookMech=(mechId,mechName,mechPhone)=>{
   update(ref(db,'jobs/'+jid),{preferredMechanic:mechName,preferredMechanicId:mechId,status:'searching_mechanic',updatedAt:Date.now()});
   toast('Request sent to '+mechName+' — waiting...');go('s-waiting');
 };
+// Releases whichever mechanic was requested (so their gig notification clears) and lets
+// the customer pick someone else. Previously "back()" just changed the customer's own
+// screen without telling the database anything — the original mechanic kept the request
+// sitting in their queue indefinitely.
+window.chooseAnotherMechanic=()=>{
+  const jid=getJobId();
+  if(jid)update(ref(db,'jobs/'+jid),{preferredMechanic:null,preferredMechanicId:null,status:'pending',updatedAt:Date.now()});
+  currentSearchRadius=2;go('s-mechs');
+};
+// Fully cancels the job. If a mechanic was already assigned, frees them back to "online"
+// so they aren't stuck showing an activeJob that no longer exists for them.
+window.cancelJobRequest=async()=>{
+  const jid=getJobId();if(!jid){go('s-home');return;}
+  if(!confirm('Cancel this request? This cannot be undone.'))return;
+  try{
+    const jobSnap=await get(ref(db,'jobs/'+jid));
+    const job=jobSnap.val()||{};
+    update(ref(db,'jobs/'+jid),{status:'cancelled',cancelledBy:'customer',cancelledAt:Date.now()});
+    if(job.mechanicId)update(ref(db,'mechanics/'+job.mechanicId),{status:'online',activeJob:null});
+  }catch(e){/* best-effort */}
+  setJobId(null);clearActiveJobBanner();toast('Request cancelled');go('s-home');
+};
 window.callMech=()=>{if(bookedMechPhone)window.location.href='tel:'+bookedMechPhone.replace(/\s/g,'');else toast('No phone');};
 window.openMechGPS=()=>{const ml=ge('mech-gps-link');if(ml&&ml.href!=='#')window.open(ml.href,'_blank');else toast('GPS not available yet');};
 
@@ -1113,7 +1145,8 @@ async function withBusy(btnId,busyLabel,fn){
       <div style="font-size:52px;margin-bottom:14px;animation:pp 1.5s infinite">⏳</div>
       <div style="font-family:var(--fh);font-size:19px;font-weight:800;margin-bottom:8px">Request sent!</div>
       <div style="font-size:13px;color:var(--tx2);margin-bottom:22px;line-height:1.8">Waiting for mechanic acceptance.<br><strong style="color:var(--gn)">You'll auto-redirect when they accept.</strong></div>
-      <button class="btn b-ghost" onclick="back()">← Choose different mechanic</button>
+      <button class="btn b-ghost" onclick="chooseAnotherMechanic()">← Choose different mechanic</button>
+      <button class="btn b-ghost" style="color:var(--rd);margin-top:8px" onclick="cancelJobRequest()">Cancel request</button>
     </div>
   </div>
 </div>
@@ -1147,6 +1180,7 @@ async function withBusy(btnId,busyLabel,fn){
         <button class="btn b-bl" onclick="customerJobDone()">✅ Job done — Confirm & Pay</button>
       </div>
       <div id="track-waiting-note" style="text-align:center;font-size:11px;color:var(--tx3);padding:8px">Waiting for mechanic to arrive and start work...</div>
+      <button class="btn b-ghost" style="color:var(--rd)" onclick="cancelJobRequest()">Cancel job</button>
     </div>
   </div>
 </div>

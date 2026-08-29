@@ -106,6 +106,7 @@ let jobsUnsub=null,mechsUnsub=null,profUnsub=null,vehUnsub=null;
 let globalChatUnsub=null,chatSeenCount=0,chatWatchJobId=null;
 let jobHistory=[],allMechanics={},currentSearchRadius=2;
 let completingJobIds=new Set(); // guards against double-firing job completion from the live jobs listener
+let lastNotifiedJobStatus={};
 window._geminiKey=localStorage.getItem('rf_gemini_key')||'';
 
 function getJobId(){return localStorage.getItem('rf_jobId')||null;}
@@ -131,6 +132,7 @@ onAuthStateChanged(auth,async user=>{
 });
 
 function startApp(){
+  requestNotifyPermission();
   if(profUnsub)profUnsub();if(jobsUnsub)jobsUnsub();if(mechsUnsub)mechsUnsub();
   profUnsub=onValue(ref(db,'customers/'+uid),snap=>{
     const p=snap.val();if(!p)return;
@@ -164,11 +166,23 @@ function startApp(){
     if(cachedId&&all[cachedId]&&all[cachedId].customerId!==uid){setJobId(null);}
     const myJob=Object.values(all).find(j=>j.customerId===uid&&j.status!=='done');
     if(myJob){
+      // Price used to come only from window._aiResult (in-memory, wiped by an app reload
+      // or the OS reclaiming a backgrounded WebView) — now it's kept in sync with the
+      // durable job record too, so the payment screen never shows a stale/blank price.
+      window.currentJobPrice=myJob.estimateLow||window._aiResult&&Math.round(window._aiResult.low)||1550;
       watchChatForNotifications(myJob.id);
       if(!getJobId())setJobId(myJob.id);
       const L={pending:'Pending — waiting for mechanic',searching_mechanic:'🔍 Searching for mechanic...',mechanic_assigned:(myJob.mechanic||'?')+' accepted ✅',enroute:'🛵 '+(myJob.mechanic||'Mechanic')+' en route to you',fixing:'🔧 Being fixed'};
       const statusText=L[myJob.status]||myJob.status;
       tx('lf-status',statusText);
+      // Notify (real phone notification, not just an in-app toast) the first time we see
+      // each meaningful status change — guarded so it fires once per transition, not on
+      // every unrelated listener tick.
+      if(lastNotifiedJobStatus[myJob.id]!==myJob.status){
+        lastNotifiedJobStatus[myJob.id]=myJob.status;
+        if(myJob.status==='mechanic_assigned')notify('✅ Mechanic accepted',(myJob.mechanic||'A mechanic')+' is on the way');
+        else if(myJob.status==='fixing')notify('🔧 Mechanic arrived',(myJob.mechanic||'Your mechanic')+' has arrived and started work');
+      }
       // Update active job banner
       const banner=ge('active-job-banner');
       if(banner){
@@ -177,13 +191,21 @@ function startApp(){
         tx('banner-status',statusText);
         tx('banner-vehicle',myJob.vehicle||'');
       }
-      if((myJob.status==='mechanic_assigned'||myJob.status==='enroute')&&myJob.mechanic){
+      if((myJob.status==='mechanic_assigned'||myJob.status==='enroute'||myJob.status==='fixing')&&myJob.mechanic){
         bookedMechPhone=myJob.mechanicPhone||'';bookedMechId=myJob.mechanicId||'';
         tx('track-mech',myJob.mechanic);
+        // The "Job done" button used to always show, even while the mechanic was still
+        // enroute — meaning a customer could confirm+pay before any work was actually
+        // done. It only appears once the mechanic has marked themselves arrived ('fixing').
+        const doneWrap=ge('track-done-btn-wrap'),waitNote=ge('track-waiting-note');
+        if(myJob.status==='fixing'){if(doneWrap)doneWrap.style.display='block';if(waitNote)waitNote.style.display='none';}
+        else{if(doneWrap)doneWrap.style.display='none';if(waitNote)waitNote.style.display='block';}
         if(myJob.mechanicId)get(ref(db,'mechanics/'+myJob.mechanicId)).then(s=>{
           const m=s.val();
           if(m&&m.pfp){const img=ge('track-pfp');if(img){img.src=m.pfp;img.style.display='block';ge('track-ini').style.display='none';}}
           else tx('track-ini',(myJob.mechanic||'M').substr(0,2).toUpperCase());
+          // This used to hardcode "GPS ON" regardless of the mechanic's actual location status.
+          tx('track-gps-stat',m&&m.gpsOn?'✅ Verified · GPS ON':'✅ Verified · GPS unavailable');
         });
         if(cur==='s-waiting'){toast('✅ '+myJob.mechanic+' accepted!');go('s-tracking');}
         if((cur==='s-home'||cur==='s-loading')&&myJob.status==='enroute')go('s-tracking');
@@ -571,7 +593,11 @@ function haversine(lat1,lon1,lat2,lon2){
 }
 function buildMechList(){
   const list=ge('mech-list');if(!list)return;
-  const verified=Object.entries(allMechanics).filter(([id,m])=>m.verified&&m.vehicleType==='car'&&(m.status==='online'||m.status==='enroute'));
+  // Match mechanics to the vehicle the customer actually selected — this used to be
+  // hardcoded to 'car' for everyone, so bike/luxury-bike customers could never find
+  // any mechanic no matter how long they waited.
+  const wantType=(selVeh&&selVeh.type==='bike')?'bike':'car';
+  const verified=Object.entries(allMechanics).filter(([id,m])=>m.verified&&(m.vehicleType||'car')===wantType&&(m.status==='online'||m.status==='enroute'));
   // GPS radius filtering
   let nearby=verified;
   const hasGPS=window._lat&&window._lng;
@@ -585,14 +611,14 @@ function buildMechList(){
   const rl=ge('radius-lbl');
   if(rl)rl.textContent=hasGPS?'Searching within '+currentSearchRadius+' km':'Showing all verified mechanics';
   if(!nearby.length&&hasGPS&&currentSearchRadius<50){
-    // Auto-expand radius
+    // Auto-expand radius (shortened from 1200ms so this doesn't feel sluggish)
     const nextRadius=currentSearchRadius<=2?5:currentSearchRadius<=5?10:currentSearchRadius<=10?20:50;
     list.innerHTML=`<div style="text-align:center;padding:14px;font-size:12px;color:var(--tx2)">No mechanics within ${currentSearchRadius}km — expanding to ${nextRadius}km...</div>`;
     currentSearchRadius=nextRadius;
-    setTimeout(()=>buildMechList(),1200);
+    setTimeout(()=>buildMechList(),500);
     return;
   }
-  if(!nearby.length){list.innerHTML='<div style="text-align:center;color:var(--tx3);padding:18px;font-size:12px">No verified car mechanics available right now. Please try again shortly.</div>';return;}
+  if(!nearby.length){list.innerHTML='<div style="text-align:center;color:var(--tx3);padding:18px;font-size:12px">No verified '+(wantType==='bike'?'bike':'car')+' mechanics available right now. Please try again shortly.</div>';return;}
   // Sort by distance if GPS available
   if(hasGPS){
     nearby.sort(([,a],[,b])=>{
@@ -655,7 +681,7 @@ window.selPayMethod2=(method,el)=>{
   el.classList.add('sel');
   const detail=ge('pay-detail');
   if(!detail)return;
-  const price=window._aiResult?Math.round(window._aiResult.low):1550;
+  const price=window.currentJobPrice||(window._aiResult?Math.round(window._aiResult.low):1550);
   const platform=Math.round(price*0.025); // 2.5% platform fee
   const mechCut=Math.round((price-platform)*0.98); // 1-2% from mechanic
   const total=price+platform;
@@ -681,9 +707,11 @@ window.finishJob=async()=>{
   const jid=getJobId();if(!jid)return;
   if(completingJobIds.has(jid)){setJobId(null);window._aiResult=null;clearActiveJobBanner();go('s-home');return;}
   completingJobIds.add(jid);
-  const price=window._aiResult?Math.round(window._aiResult.low):1550;
+  const price=window.currentJobPrice||(window._aiResult?Math.round(window._aiResult.low):1550);
   const rating=selRating||5;
-  update(ref(db,'jobs/'+jid),{customer_done:true,status:'done',finalPrice:price,paymentMethod:selPayMethod,rating,completedAt:Date.now()});
+  const reasonEl=ge('cust-rate-reason');
+  const ratingReason=(rating<=3&&reasonEl)?reasonEl.value.trim():'';
+  update(ref(db,'jobs/'+jid),{customer_done:true,status:'done',finalPrice:price,paymentMethod:selPayMethod,rating,ratingReason,completedAt:Date.now()});
   update(ref(db,'customers/'+uid),{totalJobs:(profile&&profile.totalJobs||0)+1,totalSpend:(profile&&profile.totalSpend||0)+price});
   // Update the mechanic's real average rating (was previously hardcoded at 5.0 and never touched).
   try{
@@ -699,6 +727,9 @@ window.finishJob=async()=>{
     }
   }catch(e){/* rating aggregate is best-effort — job completion above already succeeded */}
   selRating=5;
+  qsa('.star').forEach(s=>s.classList.add('on'));
+  const reasonWrap=ge('cust-rate-reason-wrap'),reasonBox=ge('cust-rate-reason');
+  if(reasonWrap)reasonWrap.style.display='none';if(reasonBox)reasonBox.value='';
   setJobId(null);window._aiResult=null;clearActiveJobBanner();go('s-home');
 };
 
@@ -716,6 +747,7 @@ function watchChatForNotifications(jid){
       const latest=msgs[msgs.length-1];
       if(latest.senderId!==uid&&cur!=='s-chat'){
         toast('💬 '+(latest.senderName||'Mechanic')+': '+latest.text.substr(0,40));
+        notify('💬 '+(latest.senderName||'Mechanic'),latest.text.substr(0,80));
       }
     }
     chatSeenCount=msgs.length;
@@ -754,7 +786,11 @@ window.selPT2=t=>{selPT=t;['OEM','ODM','Generic'].forEach(x=>{const e=ge('pt-'+x
 window.selPD2=(i,n)=>{selPD=n;[0,1,2,3].forEach(j=>{const e=ge('pd'+j);if(e)e.classList.toggle('sel',j===i);});};
 window.togCat=(el,n)=>{el.classList.toggle('sel');if(el.classList.contains('sel')){if(!cats.includes(n))cats.push(n);}else cats=cats.filter(c=>c!==n);};
 let selRating=5;
-window.rateStar=i=>{selRating=i+1;qsa('.star').forEach((s,j)=>s.classList.toggle('on',j<=i));};
+window.rateStar=i=>{
+  selRating=i+1;
+  qsa('.star').forEach((s,j)=>s.classList.toggle('on',j<=i));
+  const w=ge('cust-rate-reason-wrap');if(w)w.style.display=selRating<=3?'block':'none';
+};
 window.saveGeminiKey=()=>{const inp=ge('gemini-key-inp');if(!inp)return;const k=inp.value.trim();window._geminiKey=k;localStorage.setItem('rf_gemini_key',k);const st=ge('ai-key-status');if(k){toast('✅ Gemini key saved');if(st)st.textContent='(Gemini live ✅)';}else{toast('Key cleared');if(st)st.textContent='(Smart mode)';}};
 // Save OBD+ waitlist interest against this customer so it's a real lead list, not just a toast.
 window.notifyObdInterest=async()=>{
@@ -776,6 +812,31 @@ function ge(id){return document.getElementById(id);}
 function qsa(s){return Array.from(document.querySelectorAll(s));}
 function tx(id,v){const e=ge(id);if(e)e.textContent=v;}
 function toast(msg){let t=ge('rf-toast');if(!t){t=document.createElement('div');t.id='rf-toast';t.style.cssText='position:fixed;bottom:85px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.9);color:#fff;padding:9px 18px;border-radius:99px;font-size:13px;z-index:9999;transition:opacity .3s;pointer-events:none;white-space:nowrap;max-width:90vw;text-align:center';document.body.appendChild(t);}t.textContent=msg;t.style.opacity='1';clearTimeout(window._tt);window._tt=setTimeout(()=>{t.style.opacity='0';},2800);}
+// ── PHONE NOTIFICATIONS ───────────────────────────────
+// Asks for OS notification permission once, then fires a real phone notification
+// (not just an in-app toast) for important events even if the app is backgrounded.
+// If wrapped in a native Android shell with a notification bridge exposed, prefer that —
+// it's the only way to get a notification while the app is fully closed, since the
+// browser Notification API only works while the page/tab is at least open in the background.
+window.requestNotifyPermission=async()=>{
+  if(window.AndroidNotify&&typeof window.AndroidNotify.requestPermission==='function'){
+    try{window.AndroidNotify.requestPermission();}catch(e){}
+    return;
+  }
+  if(!('Notification' in window))return;
+  if(Notification.permission==='default'){
+    try{await Notification.requestPermission();}catch(e){}
+  }
+};
+function notify(title,body){
+  if(window.AndroidNotify&&typeof window.AndroidNotify.showNotification==='function'){
+    try{window.AndroidNotify.showNotification(title,body);return;}catch(e){}
+  }
+  if('Notification' in window&&Notification.permission==='granted'){
+    try{new Notification(title,{body,icon:'',tag:'roadfix'});return;}catch(e){}
+  }
+  toast((title?title+': ':'')+body);
+}
 function b64(f){return new Promise((r,j)=>{const x=new FileReader();x.onload=e=>r(e.target.result);x.onerror=j;x.readAsDataURL(f);});}
 // Resize + compress an image file down to a small JPEG data URL (max 480px, ~q0.7) before it ever touches Storage/DB.
 function resizeImg(file,maxDim=480,quality=0.7){return new Promise((res,rej)=>{const img=new Image();const url=URL.createObjectURL(file);img.onload=()=>{let{width:w,height:h}=img;if(w>h&&w>maxDim){h=Math.round(h*maxDim/w);w=maxDim;}else if(h>maxDim){w=Math.round(w*maxDim/h);h=maxDim;}const c=document.createElement("canvas");c.width=w;c.height=h;c.getContext("2d").drawImage(img,0,0,w,h);URL.revokeObjectURL(url);res(c.toDataURL("image/jpeg",quality));};img.onerror=rej;img.src=url;});}
@@ -1072,7 +1133,7 @@ async function withBusy(btnId,busyLabel,fn){
             <img id="track-pfp" src="" alt="" style="display:none;width:100%;height:100%;object-fit:cover">
             <span id="track-ini" style="font-family:var(--fh);font-size:12px;font-weight:700;color:#fff">AK</span>
           </div>
-          <div style="flex:1"><div style="font-size:12px;font-weight:700;font-family:var(--fh)" id="track-mech">Mechanic</div><div style="font-size:11px;color:var(--tx2)">✅ Verified · GPS ON</div></div>
+          <div style="flex:1"><div style="font-size:12px;font-weight:700;font-family:var(--fh)" id="track-mech">Mechanic</div><div style="font-size:11px;color:var(--tx2)" id="track-gps-stat">✅ Verified</div></div>
         </div>
         <!-- Real GPS link to mechanic -->
         <a id="mech-gps-link" href="#" target="_blank" style="display:none;background:var(--bl2);border:1px solid rgba(59,130,246,.3);border-radius:var(--r);padding:8px 11px;text-align:center;font-size:12px;color:var(--bl);text-decoration:none;font-weight:600;display:block;margin-bottom:9px">📍 Track mechanic on Google Maps →</a>
@@ -1082,7 +1143,10 @@ async function withBusy(btnId,busyLabel,fn){
           <div style="background:var(--rd2);border:1px solid rgba(239,68,68,.3);border-radius:var(--r);padding:8px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer" onclick="doSOS()"><div style="font-size:18px">🆘</div><div style="font-size:9px;color:var(--rd)">SOS</div></div>
         </div>
       </div>
-      <button class="btn b-bl" onclick="customerJobDone()">✅ Job done — Confirm & Pay</button>
+      <div id="track-done-btn-wrap" style="display:none">
+        <button class="btn b-bl" onclick="customerJobDone()">✅ Job done — Confirm & Pay</button>
+      </div>
+      <div id="track-waiting-note" style="text-align:center;font-size:11px;color:var(--tx3);padding:8px">Waiting for mechanic to arrive and start work...</div>
     </div>
   </div>
 </div>
@@ -1110,6 +1174,10 @@ async function withBusy(btnId,busyLabel,fn){
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:9px"><div style="font-family:var(--fh);font-size:11px;color:var(--tx3)">Total to pay</div><div style="font-family:var(--fh);font-size:22px;font-weight:800;color:var(--or)" id="pay-total">₹—</div></div>
       <div style="display:flex;justify-content:center;gap:6px;margin-bottom:11px">
         <span class="star on" onclick="rateStar(0)">⭐</span><span class="star on" onclick="rateStar(1)">⭐</span><span class="star on" onclick="rateStar(2)">⭐</span><span class="star on" onclick="rateStar(3)">⭐</span><span class="star on" onclick="rateStar(4)">⭐</span>
+      </div>
+      <div id="cust-rate-reason-wrap" style="display:none;margin-bottom:11px">
+        <div class="sl">What went wrong?</div>
+        <div class="f"><textarea id="cust-rate-reason" rows="2" placeholder="e.g. Mechanic was late, overcharged, rude..." style="width:100%;resize:vertical"></textarea></div>
       </div>
       <button class="btn b-or" onclick="finishJob()">Pay & complete →</button>
     </div>
@@ -1210,7 +1278,7 @@ function go(id){
   if(id==='s-mechs'){currentSearchRadius=2;buildMechList();}
   if(id==='s-pb-list')loadPrebookings();
   if(id==='s-pay'){
-    var price=window._aiResult?Math.round(window._aiResult.low):1550;
+    var price=window.currentJobPrice||(window._aiResult?Math.round(window._aiResult.low):1550);
     document.getElementById('pay-total').textContent='₹'+Math.round(price*1.025);
     selPayMethod2('UPI',document.querySelector('.pm'));
   }

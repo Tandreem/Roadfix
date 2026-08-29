@@ -68,6 +68,7 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 .vtype-btn .ico{font-size:28px;margin-bottom:6px}
 .vtype-btn .lbl{font-size:12px;font-weight:600;font-family:var(--fh)}
 .vtype-btn .sub{font-size:10px;color:var(--tx3);margin-top:2px}
+.star{font-size:26px;cursor:pointer;opacity:.25}.star.on{opacity:1}
 </style>
 <script type="module">
 import{initializeApp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
@@ -105,7 +106,31 @@ onAuthStateChanged(auth,async user=>{
   } else {uid=null;profile=null;_listenersStarted=false;go("m-login");}
 });
 
+// ── PHONE NOTIFICATIONS ───────────────────────────────
+// Same pattern as the customer app: prefer a native Android bridge if the wrapped APK
+// exposes one (only way to notify while the app is fully closed), else fall back to the
+// browser Notification API (works while the app is at least open/backgrounded), else toast.
+window.requestNotifyPermission=async()=>{
+  if(window.AndroidNotify&&typeof window.AndroidNotify.requestPermission==="function"){
+    try{window.AndroidNotify.requestPermission();}catch(e){}
+    return;
+  }
+  if(!("Notification" in window))return;
+  if(Notification.permission==="default"){
+    try{await Notification.requestPermission();}catch(e){}
+  }
+};
+function notify(title,body){
+  if(window.AndroidNotify&&typeof window.AndroidNotify.showNotification==="function"){
+    try{window.AndroidNotify.showNotification(title,body);return;}catch(e){}
+  }
+  if("Notification" in window&&Notification.permission==="granted"){
+    try{new Notification(title,{body,icon:"",tag:"roadfix"});return;}catch(e){}
+  }
+  toast((title?title+": ":"")+body);
+}
 function startApp(p){
+  requestNotifyPermission();
   if(profUnsub)profUnsub();
   profUnsub=onValue(ref(db,"mechanics/"+uid),snap=>{
     const mp=snap.val();if(!mp)return;
@@ -159,6 +184,7 @@ function startListeners(){
       const isForMe=!job.preferredMechanicId||job.preferredMechanicId===uid;
       if(job.status==="searching_mechanic"&&!job.mechanicId&&!shownGig&&(job.vehicleType||"car")===myType&&isForMe){
         shownGig=true;setPendingGigId(id);showGigBanner(id,job);
+        notify("🔧 New gig available",(job.issue||"A vehicle needs help")+" — tap to view");
       }
       if(getPendingGigId()===id){
         if(job.status!=="searching_mechanic"||job.mechanicId||!isForMe){
@@ -170,6 +196,7 @@ function startListeners(){
     const anyOpen=Object.values(all).some(j=>j.status==="searching_mechanic"&&!j.mechanicId&&(j.vehicleType||"car")===(profile&&profile.vehicleType||"car")&&(!j.preferredMechanicId||j.preferredMechanicId===uid));
     if(!anyOpen&&shownGig&&!getJobId()){shownGig=false;setPendingGigId(null);hideGigBanner();}
   });
+  let lastNotifiedSosKey=null;
   alertsUnsub=onValue(ref(db,"alerts"),snap=>{
     const all=Object.values(snap.val()||{});
     const customerActive=all.filter(a=>a.status==="active"&&a.type==="customer_sos");
@@ -182,15 +209,33 @@ function startListeners(){
       bar.style.display="flex";bar.style.background="rgba(168,85,247,.12)";
       tx("sos-bar-txt","🧑‍🔧🆘 Mechanic "+m.name+" needs help");
       bar.onclick=()=>{if(m.mapsLink)window.open(m.mapsLink,"_blank");else if(m.phone&&m.phone!=="—")window.location.href="tel:"+m.phone.replace(/\s/g,"");};
+      const key="mech_"+m.uid+"_"+m.time;
+      if(lastNotifiedSosKey!==key){lastNotifiedSosKey=key;notify("🧑‍🔧🆘 Mechanic SOS",m.name+" needs help nearby");}
     }
     else if(customerActive.length){
       const c=customerActive[customerActive.length-1];
       bar.style.display="flex";bar.style.background="";tx("sos-bar-txt","🆘 "+c.name);
       bar.onclick=()=>go("m-gig");
+      const key="cust_"+c.uid+"_"+c.time;
+      if(lastNotifiedSosKey!==key){lastNotifiedSosKey=key;notify("🆘 Customer SOS",c.name+" needs urgent help");}
     }
     else bar.style.display="none";
   });
-  const doGPS=()=>{if(!uid)return;navigator.geolocation&&navigator.geolocation.getCurrentPosition(p=>{update(ref(db,"mechanics/"+uid),{lat:p.coords.latitude,lng:p.coords.longitude,gpsOn:true,lastGPS:Date.now()});tx("gps-stat","📍 GPS: "+p.coords.latitude.toFixed(4)+"°N");},()=>tx("gps-stat","📍 GPS: Active"),{enableHighAccuracy:true,timeout:7000});};
+  const doGPS=()=>{
+    if(!uid)return;
+    if(!navigator.geolocation){tx("gps-stat","📍 GPS: Not supported");tx("gps-stat2","📍 GPS: Off");update(ref(db,"mechanics/"+uid),{gpsOn:false});return;}
+    navigator.geolocation.getCurrentPosition(
+      p=>{update(ref(db,"mechanics/"+uid),{lat:p.coords.latitude,lng:p.coords.longitude,gpsOn:true,lastGPS:Date.now()});tx("gps-stat","📍 GPS: "+p.coords.latitude.toFixed(4)+"°N");tx("gps-stat2","📍 GPS ON");},
+      err=>{
+        // This used to say "GPS: Active" here too — i.e. on the ERROR path (denied/off/timed
+        // out) — which is exactly backwards. Now it correctly reflects that GPS isn't working.
+        const msg=err&&err.code===1?"📍 GPS: Permission denied":err&&err.code===3?"📍 GPS: Timed out":"📍 GPS: Off";
+        tx("gps-stat",msg);tx("gps-stat2","📍 GPS OFF");
+        update(ref(db,"mechanics/"+uid),{gpsOn:false});
+      },
+      {enableHighAccuracy:true,timeout:7000}
+    );
+  };
   doGPS();window._gpsInterval=setInterval(doGPS,30000);
 }
 
@@ -414,10 +459,19 @@ window.acceptGig=()=>{
 };
 window.declineGig=()=>{shownGig=false;setPendingGigId(null);hideGigBanner();back();};
 
+window.markArrived=()=>{
+  const jid=getJobId();if(!jid){go("m-active");return;}
+  // This button used to only navigate the mechanic's own screen — it never told the
+  // customer's app anything, so the customer could tap "Job done" before the mechanic
+  // had even arrived. Now it actually updates the job status.
+  update(ref(db,"jobs/"+jid),{status:"fixing",arrivedAt:Date.now()});
+  go("m-active");
+};
 window.completeJob=()=>{
   const jid=getJobId();if(!jid)return;
   if(completingJobIds.has(jid))return; // guards against a rapid double-tap double-crediting earnings
   completingJobIds.add(jid);
+  window._lastCompletedJobId=jid; // kept around so the rating screen (after setJobId(null)) still knows which job to rate
   const earn=820;
   update(ref(db,"jobs/"+jid),{mechanic_done:true,updatedAt:Date.now()});
   get(ref(db,"jobs/"+jid)).then(s=>{
@@ -431,6 +485,36 @@ window.completeJob=()=>{
       setJobId(null);shownGig=false;toast("Marked done — waiting for customer");go("m-done");
     }
   });
+};
+let selMechRating=5;
+window.rateMechStar=i=>{
+  selMechRating=i+1;
+  qsa(".star").forEach((s,j)=>s.classList.toggle("on",j<=i));
+  const w=ge("mech-rate-reason-wrap");if(w)w.style.display=selMechRating<=3?"block":"none";
+};
+window.submitCustomerRating=async()=>{
+  const jid=window._lastCompletedJobId;if(!jid){go("m-home");return;}
+  const rating=selMechRating||5;
+  const reasonEl=ge("mech-rate-reason");
+  const reason=(rating<=3&&reasonEl)?reasonEl.value.trim():"";
+  try{
+    const jobSnap=await get(ref(db,"jobs/"+jid));
+    const custId=jobSnap.val()&&jobSnap.val().customerId;
+    update(ref(db,"jobs/"+jid),{customerRating:rating,customerRatingReason:reason});
+    if(custId){
+      const cSnap=await get(ref(db,"customers/"+custId));
+      const c=cSnap.val()||{};
+      const priorCount=c.ratingCount||c.totalJobs||0;
+      const priorAvg=parseFloat(c.rating)||5.0;
+      const newAvg=((priorAvg*priorCount)+rating)/(priorCount+1);
+      update(ref(db,"customers/"+custId),{rating:newAvg.toFixed(1),ratingCount:priorCount+1});
+    }
+  }catch(e){/* best-effort — job completion already succeeded regardless */}
+  selMechRating=5;window._lastCompletedJobId=null;
+  qsa(".star").forEach(s=>s.classList.add("on"));
+  const reasonWrap=ge("mech-rate-reason-wrap"),reasonBox=ge("mech-rate-reason");
+  if(reasonWrap)reasonWrap.style.display="none";if(reasonBox)reasonBox.value="";
+  toast("✅ Rating submitted");go("m-home");
 };
 
 window.toggleOnline=()=>{
@@ -465,6 +549,7 @@ function watchChatForNotifications(jid){
       const latest=msgs[msgs.length-1];
       if(latest.senderId!==uid&&cur!=="m-chat"){
         toast("💬 "+(latest.senderName||"Customer")+": "+latest.text.substr(0,40));
+        notify("💬 "+(latest.senderName||"Customer"),latest.text.substr(0,80));
       }
     }
     chatSeenCount=msgs.length;
@@ -678,7 +763,7 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
         <div style="background:var(--gn2);border:1px solid rgba(74,222,128,.3);border-radius:var(--r);padding:9px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer" onclick="openMechChat()"><div style="font-size:19px">💬</div><div style="font-size:10px;color:var(--gn)">Chat</div></div>
         <div style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:9px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer" onclick="mechSOS()"><div style="font-size:19px">🆘</div><div style="font-size:10px;color:var(--rd)">SOS</div></div>
       </div>
-      <button class="btn b-gn" onclick="go('m-active')">▶ I have arrived</button>
+      <button class="btn b-gn" onclick="markArrived()">▶ I have arrived</button>
     </div>
   </div>
 </div>
@@ -696,8 +781,7 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
     <div class="sec">
       <div style="text-align:center;padding:12px 0"><div style="font-size:42px;margin-bottom:7px;animation:pp 2s infinite">🔧</div><div style="font-family:var(--fh);font-size:16px;font-weight:700">Repairing vehicle</div></div>
       <div style="display:flex;gap:7px;margin-bottom:10px">
-        <div class="sb-it"><div class="sb-dot"></div>🎥 Recording</div>
-        <div class="sb-it"><div class="sb-dot"></div>📍 GPS ON</div>
+        <div class="sb-it"><div class="sb-dot"></div><span id="gps-stat2">📍 GPS ON</span></div>
       </div>
       <div class="sl">Checklist</div>
       <div class="card" style="padding:7px 12px;margin-bottom:9px">
@@ -715,7 +799,15 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
   <div class="sb">
     <div class="sec">
       <div style="text-align:center;padding:14px 0"><div style="font-size:52px;margin-bottom:9px">💰</div><div style="font-family:var(--fh);font-size:22px;font-weight:800;color:var(--gn)">Job complete!</div><div style="font-size:11px;color:var(--tx2);margin-top:3px">Admin panel updated ✓</div></div>
-      <button class="btn b-gn" onclick="go('m-home')">🏠 Back to home</button>
+      <div class="sl">Rate this customer</div>
+      <div style="display:flex;justify-content:center;gap:6px;margin-bottom:9px">
+        <span class="star on" onclick="rateMechStar(0)">⭐</span><span class="star on" onclick="rateMechStar(1)">⭐</span><span class="star on" onclick="rateMechStar(2)">⭐</span><span class="star on" onclick="rateMechStar(3)">⭐</span><span class="star on" onclick="rateMechStar(4)">⭐</span>
+      </div>
+      <div id="mech-rate-reason-wrap" style="display:none;margin-bottom:11px">
+        <div class="sl">What went wrong?</div>
+        <div class="f"><textarea id="mech-rate-reason" rows="2" placeholder="e.g. Customer was rude, wasted my time, gave wrong location..." style="width:100%;resize:vertical"></textarea></div>
+      </div>
+      <button class="btn b-gn" onclick="submitCustomerRating()">Submit rating</button>
     </div>
   </div>
 </div>

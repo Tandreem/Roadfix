@@ -609,7 +609,14 @@ window.openMechChat=()=>{
     chatSeenCount=msgs.length;
   });
 };
-window.sendMechMsg=()=>{const inp=ge("m-chat-inp"),jid=getJobId();if(!inp||!inp.value.trim()||!jid)return;push(ref(db,"chats/"+jid),{senderId:uid,senderName:(profile&&profile.name)||"Mechanic",senderRole:"mechanic",text:inp.value.trim(),time:Date.now()});inp.value="";};
+window.sendMechMsg=()=>{
+  const inp=ge("m-chat-inp"),jid=getJobId();
+  if(!inp||!inp.value.trim()||!jid)return;
+  const text=inp.value.trim();
+  push(ref(db,"chats/"+jid),{senderId:uid,senderName:(profile&&profile.name)||"Mechanic",senderRole:"mechanic",text,time:Date.now()})
+    .then(()=>{inp.value="";})
+    .catch(e=>{toast("❌ Message failed to send: "+(e.message||e.code||"check connection"));});
+};
 
 window.uploadMechPfp=async(inp)=>{
   if(!uid||!inp.files[0])return;

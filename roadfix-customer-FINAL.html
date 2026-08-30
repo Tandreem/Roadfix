@@ -823,8 +823,10 @@ window.openChat=()=>{
 window.sendMsg=()=>{
   const inp=ge('chat-inp'),jid=getJobId();
   if(!inp||!inp.value.trim()||!jid)return;
-  push(ref(db,'chats/'+jid),{senderId:uid,senderName:(profile&&profile.name)||'Customer',senderRole:'customer',text:inp.value.trim(),time:Date.now()});
-  inp.value='';
+  const text=inp.value.trim();
+  push(ref(db,'chats/'+jid),{senderId:uid,senderName:(profile&&profile.name)||'Customer',senderRole:'customer',text,time:Date.now()})
+    .then(()=>{inp.value='';})
+    .catch(e=>{toast('❌ Message failed to send: '+(e.message||e.code||'check connection'));});
 };
 
 // ── HISTORY ───────────────────────────────────────────

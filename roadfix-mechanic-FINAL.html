@@ -121,6 +121,7 @@ window.requestNotifyPermission=async()=>{
   }
 };
 function notify(title,body){
+  if(navigator.vibrate)try{navigator.vibrate([200,100,200]);}catch(e){}
   if(window.AndroidNotify&&typeof window.AndroidNotify.showNotification==="function"){
     try{window.AndroidNotify.showNotification(title,body);return;}catch(e){}
   }
@@ -169,7 +170,24 @@ function startListeners(){
     if(myJobId&&all[myJobId]){
       const j=all[myJobId];
       tx("active-job",j.issue||"Active job");
-      if(j.status==="done"){setJobId(null);setPendingGigId(null);shownGig=false;tx("active-job","None");hideGigBanner();watchChatForNotifications(null);}
+      if(j.status==="done"){
+        // Previously this just wiped the mechanic's local job id the instant status
+        // became "done" — which can now happen purely from the CUSTOMER's side (paying)
+        // independent of the mechanic ever tapping "Mark job complete". If that happened
+        // first, the mechanic's button would silently do nothing (its jid was already
+        // gone) and they'd never get credited. Crediting now happens right here instead,
+        // guarded so it only ever fires once per job regardless of which side finished first.
+        if(!completingJobIds.has(myJobId)){
+          completingJobIds.add(myJobId);
+          const earn=820;
+          update(ref(db,"mechanics/"+uid),{status:"online",activeJob:null,totalJobs:(profile&&profile.totalJobs||0)+1,totalEarned:(profile&&profile.totalEarned||0)+earn});
+          toast("✅ Payment received — job complete!");
+          notify("✅ Job complete","Payment received — ₹"+earn+" credited to your earnings");
+        }
+        window._lastCompletedJobId=myJobId; // the rating screen (m-done) needs this to know which job to rate
+        setJobId(null);setPendingGigId(null);shownGig=false;tx("active-job","None");hideGigBanner();watchChatForNotifications(null);
+        go("m-done");
+      }
       else if(j.status==="cancelled"){
         // Previously the mechanic had no idea a customer cancelled — they'd just stay
         // "enroute"/"fixing" with a job that no longer exists on the customer's end.
@@ -276,6 +294,15 @@ function populateGig(id,job){
     tx("cust-coords",job.lat.toFixed(4)+"°N, "+job.lng.toFixed(4)+"°E");
   }
 }
+// Exposed for the same reason as the customer app's buildMechList/renderHistory fix —
+// the classic <script> at the bottom (go(), screen navigation) was calling Firebase
+// functions (ref/db/get) AND populateGig directly, none of which exist outside this
+// <script type="module">. That call was silently throwing every time, so reopening the
+// gig detail screen after navigating away never actually repopulated it.
+window.populateGig=populateGig;
+window.reopenGigScreen=function(pid){
+  get(ref(db,"jobs/"+pid)).then(snap=>{const j=snap.val();if(j)populateGig(pid,j);});
+};
 
 // Map Firebase auth error codes to friendly, specific messages (used by login/register/reset).
 function authErrMsg(e){
@@ -489,21 +516,17 @@ window.cantMakeIt=()=>{
 };
 window.completeJob=()=>{
   const jid=getJobId();if(!jid)return;
-  if(completingJobIds.has(jid))return; // guards against a rapid double-tap double-crediting earnings
-  completingJobIds.add(jid);
   window._lastCompletedJobId=jid; // kept around so the rating screen (after setJobId(null)) still knows which job to rate
-  const earn=820;
+  // Just signal this side is done — the live listener above is now the single place that
+  // actually finalizes + credits earnings once status flips to "done" (i.e. once the
+  // customer pays), regardless of which side acts first. This avoids crediting the
+  // mechanic before the customer has actually confirmed/paid.
   update(ref(db,"jobs/"+jid),{mechanic_done:true,updatedAt:Date.now()});
   get(ref(db,"jobs/"+jid)).then(s=>{
     const j=s.val();
-    if(j&&j.customer_done){
-      update(ref(db,"jobs/"+jid),{status:"done",finalPrice:j.estimateLow||1550,completedAt:Date.now()});
-      update(ref(db,"mechanics/"+uid),{status:"online",activeJob:null,totalJobs:(profile&&profile.totalJobs||0)+1,totalEarned:(profile&&profile.totalEarned||0)+earn});
-      setJobId(null);shownGig=false;go("m-done");
-    } else {
-      update(ref(db,"mechanics/"+uid),{status:"online",activeJob:null,totalJobs:(profile&&profile.totalJobs||0)+1,totalEarned:(profile&&profile.totalEarned||0)+earn});
-      setJobId(null);shownGig=false;toast("Marked done — waiting for customer");go("m-done");
-    }
+    if(!(j&&j.status==="done")){toast("Marked done — waiting for customer to confirm & pay");}
+    // If it's already "done" (customer paid first), the listener has already handled
+    // crediting and navigation — nothing more to do here.
   });
 };
 let selMechRating=5;
@@ -906,7 +929,7 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
 <script>
 var stk=["m-loading"],cur="m-loading";
 function go(id){var o=document.getElementById(cur),n=document.getElementById(id);if(!n)return;o.classList.remove("on");n.classList.add("on");if(stk[stk.length-1]!==id)stk.push(id);cur=id;var sb=n.querySelector(".sb");if(sb)sb.scrollTop=0;
-  if(id==="m-gig"){const pid=localStorage.getItem("mrf_pendingGigId");if(pid){get(ref(db,"jobs/"+pid)).then(snap=>{const j=snap.val();if(j)populateGig(pid,j);});}}
+  if(id==="m-gig"){const pid=localStorage.getItem("mrf_pendingGigId");if(pid)window.reopenGigScreen(pid);}
   if(id==="m-prebookings")loadMechPrebookings();
   if(id==="m-earn"&&typeof profile!=="undefined"&&profile){
     document.getElementById("earn-total").textContent="₹"+(profile.totalEarned||0).toLocaleString("en-IN");

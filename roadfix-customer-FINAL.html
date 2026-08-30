@@ -133,6 +133,7 @@ onAuthStateChanged(auth,async user=>{
 
 function startApp(){
   requestNotifyPermission();
+  setTimeout(checkNotifyBanner,300);
   if(profUnsub)profUnsub();if(jobsUnsub)jobsUnsub();if(mechsUnsub)mechsUnsub();
   profUnsub=onValue(ref(db,'customers/'+uid),snap=>{
     const p=snap.val();if(!p)return;
@@ -216,6 +217,16 @@ function startApp(){
           else tx('track-ini',(myJob.mechanic||'M').substr(0,2).toUpperCase());
           // This used to hardcode "GPS ON" regardless of the mechanic's actual location status.
           tx('track-gps-stat',m&&m.gpsOn?'✅ Verified · GPS ON':'✅ Verified · GPS unavailable');
+          // Real live ETA — the app already had a haversine() distance helper and both
+          // sides' live coordinates, but never once combined them into an actual ETA for
+          // the customer (the "eta:4" field elsewhere was written once and never used).
+          const etaBox=ge('track-eta');
+          if(etaBox&&m&&m.lat&&m.lng&&window._lat&&window._lng&&myJob.status!=='fixing'){
+            const km=haversine(window._lat,window._lng,m.lat,m.lng);
+            const mins=Math.max(1,Math.round(km/25*60)); // assumes ~25km/h average city speed
+            etaBox.style.display='block';
+            etaBox.textContent='🛵 Arriving in ~'+mins+' min ('+km.toFixed(1)+' km away)';
+          } else if(etaBox){etaBox.style.display='none';}
         });
         if(cur==='s-waiting'){toast('✅ '+myJob.mechanic+' accepted!');go('s-tracking');}
         if((cur==='s-home'||cur==='s-loading')&&myJob.status==='enroute')go('s-tracking');
@@ -658,6 +669,17 @@ function buildMechList(){
     </div>`;
   }).join('');
 }
+// Exposed on window because the classic <script> at the bottom (go(), which handles
+// screen navigation) calls this directly when navigating to 's-mechs' — functions
+// declared inside a <script type="module"> are NOT visible outside it otherwise, so
+// this call was silently throwing a ReferenceError and the mechanics list never
+// actually populated when reached via go(). This was very likely the real root cause
+// behind "taking way too long to find mechanics" — the list simply never rendered.
+window.buildMechList=buildMechList;
+// Same fix — go() resets the search radius before calling buildMechList, but assigning
+// to `currentSearchRadius` from the classic script doesn't touch this module's variable
+// (it silently creates an unrelated global instead). This wrapper does both correctly.
+window.resetMechSearch=function(){currentSearchRadius=2;buildMechList();};
 
 window.bookMech=(mechId,mechName,mechPhone)=>{
   const jid=getJobId();if(!jid){toast('Complete AI analysis first');return;}
@@ -811,6 +833,12 @@ function renderHistory(){
   if(!jobHistory.length){c.innerHTML='<div style="text-align:center;color:var(--tx3);padding:20px;font-size:13px">No completed jobs yet</div>';return;}
   c.innerHTML=jobHistory.map(j=>`<div class="hi-row"><div style="width:34px;height:34px;border-radius:10px;background:var(--gn2);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0">🔧</div><div style="flex:1"><div style="font-size:13px;font-weight:600">${j.issue||'Vehicle repair'}</div><div style="font-size:11px;color:var(--tx2);margin-top:2px">${j.vehicle||'—'} · ${j.mechanic||'—'}</div><div style="font-size:10px;color:var(--tx3);margin-top:1px">${j.completedAt?new Date(j.completedAt).toLocaleDateString('en-IN'):''} · ${j.paymentMethod||'—'}</div></div><div style="text-align:right"><div style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--rd)">₹${j.finalPrice||j.estimateLow||'—'}</div><span class="bdg b-g" style="margin-top:3px;display:inline-flex">Done</span></div></div>`).join('');
 }
+// Exposed for the same reason as buildMechList above — go('s-history') lives in the
+// classic bottom script, which previously had its OWN empty `function renderHistory(){}`
+// silently shadowing this real implementation. Job history has likely never rendered
+// via that path until now.
+window.renderHistory=renderHistory;
+window.checkNotifyBanner=checkNotifyBanner;
 
 // ── HELPERS ───────────────────────────────────────────
 const PDB={OEM:[{n:'OEM Parts',b:'Genuine manufacturer',p:'₹1,200',d:'Original. Full warranty.'}],ODM:[{n:'ODM Parts',b:'Tier-1 supplier',p:'₹780',d:'Same specs, lower cost.'}],Generic:[{n:'Generic Parts',b:'Aftermarket',p:'₹480',d:'Budget option.'}]};
@@ -860,7 +888,25 @@ window.requestNotifyPermission=async()=>{
     try{await Notification.requestPermission();}catch(e){}
   }
 };
+// Browsers largely ignore/silently suppress Notification.requestPermission() when it's
+// called automatically on load rather than from a genuine tap — this is exactly why
+// notifications weren't arriving even though the code calling them was correct. This
+// shows a banner prompting an explicit tap, which actually triggers the OS permission
+// dialog reliably.
+function checkNotifyBanner(){
+  const b=ge('notify-permission-banner');if(!b)return;
+  if(window.AndroidNotify){b.style.display='none';return;} // native bridge handles its own prompt
+  if('Notification' in window&&Notification.permission==='default')b.style.display='flex';
+  else b.style.display='none';
+}
+window.enableNotificationsClicked=async()=>{
+  await requestNotifyPermission();
+  checkNotifyBanner();
+  if('Notification' in window&&Notification.permission==='granted')toast('🔔 Notifications enabled');
+  else if('Notification' in window&&Notification.permission==='denied')toast('Notifications blocked — enable in browser/app settings');
+};
 function notify(title,body){
+  if(navigator.vibrate)try{navigator.vibrate([200,100,200]);}catch(e){}
   if(window.AndroidNotify&&typeof window.AndroidNotify.showNotification==='function'){
     try{window.AndroidNotify.showNotification(title,body);return;}catch(e){}
   }
@@ -956,6 +1002,10 @@ async function withBusy(btnId,busyLabel,fn){
       <div style="font-size:11px;color:var(--tx2);margin-top:2px" id="banner-vehicle">—</div>
     </div>
     <div style="padding:13px 13px 4px"><div style="font-family:var(--fh);font-size:20px;font-weight:700" class="c-first">Hi there 👋</div><div style="font-size:11px;color:var(--tx2);margin-top:3px">📍 Location active</div></div>
+    <div id="notify-permission-banner" style="display:none;margin:0 13px 10px;background:var(--bl2);border:1.5px solid rgba(59,130,246,.35);border-radius:var(--r2);padding:11px;display:flex;align-items:center;gap:9px;cursor:pointer" onclick="enableNotificationsClicked()">
+      <div style="font-size:22px">🔔</div>
+      <div style="flex:1"><div style="font-size:12px;font-weight:700;color:var(--bl)">Turn on notifications</div><div style="font-size:10px;color:var(--tx2)">Get alerted the moment a mechanic accepts or messages you</div></div>
+    </div>
     <div class="sec">
       <div style="background:var(--rd2);border:2px solid var(--rd);border-radius:14px;padding:15px;text-align:center;cursor:pointer;margin-bottom:10px" onclick="doSOS()">
         <div style="font-size:36px;margin-bottom:4px">🆘</div>
@@ -1168,6 +1218,7 @@ async function withBusy(btnId,busyLabel,fn){
           </div>
           <div style="flex:1"><div style="font-size:12px;font-weight:700;font-family:var(--fh)" id="track-mech">Mechanic</div><div style="font-size:11px;color:var(--tx2)" id="track-gps-stat">✅ Verified</div></div>
         </div>
+        <div id="track-eta" style="display:none;background:var(--gn2);border:1px solid rgba(34,197,94,.25);border-radius:var(--r);padding:8px 11px;font-size:12px;color:var(--gn);font-weight:600;margin-bottom:9px;text-align:center"></div>
         <!-- Real GPS link to mechanic -->
         <a id="mech-gps-link" href="#" target="_blank" style="display:none;background:var(--bl2);border:1px solid rgba(59,130,246,.3);border-radius:var(--r);padding:8px 11px;text-align:center;font-size:12px;color:var(--bl);text-decoration:none;font-weight:600;display:block;margin-bottom:9px">📍 Track mechanic on Google Maps →</a>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px">
@@ -1307,9 +1358,10 @@ function go(id){
   o.classList.remove('on');n.classList.add('on');
   if(stk[stk.length-1]!==id)stk.push(id);cur=id;
   var sb=n.querySelector('.sb');if(sb)sb.scrollTop=0;
+  if(id==='s-home'&&window.checkNotifyBanner)window.checkNotifyBanner();
   if(id==='s-addcar'||id==='s-report'||id==='s-prebook')initVehicles();
-  if(id==='s-history')renderHistory();
-  if(id==='s-mechs'){currentSearchRadius=2;buildMechList();}
+  if(id==='s-history')window.renderHistory();
+  if(id==='s-mechs')window.resetMechSearch();
   if(id==='s-pb-list')loadPrebookings();
   if(id==='s-pay'){
     var price=window.currentJobPrice||(window._aiResult?Math.round(window._aiResult.low):1550);
@@ -1320,7 +1372,6 @@ function go(id){
 function back(){if(stk.length<2)return;stk.pop();var p=stk[stk.length-1];document.getElementById(cur).classList.remove('on');document.getElementById(p).classList.add('on');cur=p;}
 setTimeout(()=>selPT2('OEM'),400);
 function ge(id){return document.getElementById(id);}
-function renderHistory(){}
 </script>
 </body>
 </html>

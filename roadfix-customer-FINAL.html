@@ -86,11 +86,19 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 </style>
 <script type="module">
 import{initializeApp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import{getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,onAuthStateChanged,sendPasswordResetEmail}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import{getDatabase,ref,set,push,onValue,update,get}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+import{getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,onAuthStateChanged,sendPasswordResetEmail,setPersistence,browserLocalPersistence}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import{getDatabase,ref,set,push,onValue,update,get,onDisconnect,goOnline}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 import{getStorage,ref as sref,uploadString,getDownloadURL}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
 const app=initializeApp({apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",authDomain:"roadfix-demo.firebaseapp.com",databaseURL:"https://roadfix-demo-default-rtdb.asia-southeast1.firebasedatabase.app",projectId:"roadfix-demo",storageBucket:"roadfix-demo.firebasestorage.app",messagingSenderId:"274952184107",appId:"1:274952184107:web:63188439d92ec31103a56e"});
 const auth=getAuth(app),db=getDatabase(app),storage=getStorage(app);
+// Keep the user signed in locally so a flaky/dropped connection doesn't bounce them to
+// the login screen — auth state is restored from local storage even before the network
+// reconnects. Firebase RTDB already queues writes made while briefly offline and flushes
+// them on reconnect, so a low-signal area degrades gracefully instead of hard-failing.
+setPersistence(auth,browserLocalPersistence).catch(()=>{});
+// Watch connection state so we can quietly retry rather than error out on a weak signal.
+let _isConnected=true;
+onValue(ref(db,".info/connected"),s=>{_isConnected=s.val()===true;if(_isConnected){try{goOnline(db);}catch(e){}}});
 
 // ── LUXURY BIKE CHECKER ────────────────────────────────
 const LUXURY_KEYWORDS=['ninja zx','hayabusa','ducati','s1000rr','panigale','multistrada','diavel','hypermotard','streetfighter','gold wing','africa twin','cbr1000','gsxr1000','gsx-r1000','r1 ','mt-10','mt10','kawasaki h2','z900','versys 1000','triumph rocket','tiger 900','ktm 1290','ktm 890','super duke','harley','indian chief','indian scout','mv agusta','aprilia rsv','aprilia tuono','k1600','r1250','r18','bmw s1000','bmw m1000','bmw r1','cvo road','cvo street','road glide','street glide ultra','svartpilen 801','super meteor 650','shotgun 650','ninja h2','zx-10','zx-6r','zx-14','z650rs','kawasaki zx'];
@@ -106,7 +114,7 @@ let jobsUnsub=null,mechsUnsub=null,profUnsub=null,vehUnsub=null;
 let globalChatUnsub=null,chatSeenCount=0,chatWatchJobId=null;
 let jobHistory=[],allMechanics={},currentSearchRadius=2;
 let completingJobIds=new Set(); // guards against double-firing job completion from the live jobs listener
-let lastNotifiedJobStatus={},lastKnownMechanicId={};
+let lastNotifiedJobStatus={},lastKnownMechanicId={},lastRediagnosedAt={};
 window._geminiKey=localStorage.getItem('rf_gemini_key')||'';
 
 function getJobId(){return localStorage.getItem('rf_jobId')||null;}
@@ -173,7 +181,7 @@ function startApp(){
       window.currentJobPrice=myJob.estimateLow||window._aiResult&&Math.round(window._aiResult.low)||1550;
       watchChatForNotifications(myJob.id);
       if(!getJobId())setJobId(myJob.id);
-      const L={pending:'Pending — waiting for mechanic',searching_mechanic:'🔍 Searching for mechanic...',mechanic_assigned:(myJob.mechanic||'?')+' accepted ✅',enroute:'🛵 '+(myJob.mechanic||'Mechanic')+' en route to you',fixing:'🔧 Being fixed'};
+      const L={pending:'Pending — waiting for mechanic',searching_mechanic:'🔍 Searching for mechanic...',mechanic_assigned:(myJob.mechanic||'?')+' accepted ✅',enroute:'🛵 '+(myJob.mechanic||'Mechanic')+' en route to you',fixing:'🔧 Being fixed',fetching_tools:'🧰 Mechanic fetching tools — returning shortly'};
       const statusText=L[myJob.status]||myJob.status;
       tx('lf-status',statusText);
       // Notify (real phone notification, not just an in-app toast) the first time we see
@@ -183,6 +191,16 @@ function startApp(){
         lastNotifiedJobStatus[myJob.id]=myJob.status;
         if(myJob.status==='mechanic_assigned')notify('✅ Mechanic accepted',(myJob.mechanic||'A mechanic')+' is on the way');
         else if(myJob.status==='fixing')notify('🔧 Mechanic arrived',(myJob.mechanic||'Your mechanic')+' has arrived and started work');
+        else if(myJob.status==='fetching_tools'){toast('🧰 Mechanic went to fetch tools — returning shortly');notify('🧰 Mechanic fetching tools',(myJob.mechanic||'Your mechanic')+' is collecting the right tools and will return');}
+      }
+      // Re-diagnosis: mechanic found a different fault and the AI re-analysed. Fires once
+      // per re-diagnosis (tracked by the rediagnosedAt timestamp) so the customer is told
+      // the problem — and therefore the price — has changed.
+      if(myJob.rediagnosed&&lastRediagnosedAt[myJob.id]!==myJob.rediagnosedAt){
+        lastRediagnosedAt[myJob.id]=myJob.rediagnosedAt;
+        toast('🔄 Diagnosis updated — new estimate ₹'+myJob.estimateLow+'–₹'+myJob.estimateHigh);
+        notify('🔄 Diagnosis changed','The actual fault was different — new estimate ₹'+myJob.estimateLow+'–₹'+myJob.estimateHigh);
+        window.currentJobPrice=myJob.estimateLow;
       }
       // If a mechanic had been assigned but the job just reverted to "searching_mechanic"
       // with no mechanicId, that mechanic released/cancelled the job — previously this was
@@ -202,7 +220,7 @@ function startApp(){
         tx('banner-status',statusText);
         tx('banner-vehicle',myJob.vehicle||'');
       }
-      if((myJob.status==='mechanic_assigned'||myJob.status==='enroute'||myJob.status==='fixing')&&myJob.mechanic){
+      if((myJob.status==='mechanic_assigned'||myJob.status==='enroute'||myJob.status==='fixing'||myJob.status==='fetching_tools')&&myJob.mechanic){
         bookedMechPhone=myJob.mechanicPhone||'';bookedMechId=myJob.mechanicId||'';
         tx('track-mech',myJob.mechanic);
         // The "Job done" button used to always show, even while the mechanic was still
@@ -487,10 +505,17 @@ async function runAI(veh,issue,catStr){
   const KEY=window._geminiKey||'';
   const isEV=veh.fuel==='Electric';
   const isBike=veh.type==='bike';
+  // Newer vehicles are less likely to have serious mechanical failures and are usually
+  // cheaper to fix (parts under warranty age, less wear). Pass the age to the AI so its
+  // fault probabilities and price band reflect that.
+  const vehAge=Math.max(0,(new Date().getFullYear())-(parseInt(veh.year)||new Date().getFullYear()));
+  const ageNote=vehAge<=3?'This vehicle is NEARLY NEW (under 3 years old) — serious mechanical failures are unlikely, most issues are minor/under warranty, and repair costs should be LOW.':vehAge<=7?'This vehicle is moderately aged (3-7 years) — normal wear items expected, moderate repair costs.':'This vehicle is older (7+ years) — wear-related failures more likely, repair costs may be higher.';
   const prompt=`You are an expert vehicle mechanic AI. Return ONLY a raw JSON object. No markdown. No explanation. No backticks.
 Vehicle: ${veh.make} ${veh.model} ${veh.year} ${veh.fuel}${isEV?' (ELECTRIC)':''}${isBike?' (LUXURY MOTORCYCLE)':''}
+Vehicle age: ${vehAge} years. ${ageNote}
 Problem: ${issue}
 Categories: ${catStr}
+Factor the vehicle age into fault probabilities and the price range: a newer vehicle should have lower fault probabilities for wear items and a lower price band.
 Return ONLY this JSON:
 {"faults":[{"name":"specific fault","pct":87,"desc":"one sentence","col":"rd"},{"name":"specific fault","pct":61,"desc":"one sentence","col":"yw"},{"name":"specific fault","pct":38,"desc":"one sentence","col":"bl"}],"warn":"safety warning or empty","parts":"comma separated parts","partsDetail":[{"part":"CV Axle","qty":1,"spec":"OEM spec for ${veh.make} ${veh.model}","urgency":"immediate"}],"low":800,"high":2500,"severity":"high"}`;
   if(!KEY||KEY.length<20){showAISmartFallback(veh,issue,catStr);return;}
@@ -506,7 +531,7 @@ Return ONLY this JSON:
     raw=raw.replace(/^```json\s*/i,'').replace(/^```\s*/,'').replace(/\s*```$/,'').trim();
     const m=raw.match(/\{[\s\S]*\}/);
     let a=null;try{a=JSON.parse(m?m[0]:raw);}catch(e){a=null;}
-    if(a&&a.faults&&a.faults.length)showAI(a);else showAISmartFallback(veh,issue,catStr);
+    if(a&&a.faults&&a.faults.length)showAI(applyAgeFactor(a,veh));else showAISmartFallback(veh,issue,catStr);
   }catch(e){console.warn('Gemini network error',e);toast('⚠️ AI service unavailable — using smart estimate instead');showAISmartFallback(veh,issue,catStr);}
 }
 function showAISmartFallback(veh,issue,catStr){
@@ -541,7 +566,22 @@ function showAISmartFallback(veh,issue,catStr){
     partsDetail=[{part:'CV Axle Assembly',qty:1,spec:'OEM or Sona BLW equivalent for '+veh.make,urgency:'soon'},{part:'Wheel Bearing',qty:1,spec:'Check press-fit or bolt-in type',urgency:'check'},{part:'Suspension Bush Kit',qty:1,spec:'Front lower arm set',urgency:'monitor'}];
     warn='Check at low speed. Unsafe for highway.';low=1000;high=3000;
   }
-  showAI({faults,warn,parts,partsDetail,low,high,severity:'high'});
+  showAI(applyAgeFactor({faults,warn,parts,partsDetail,low,high,severity:'high'},veh));
+}
+// Adjust fault probabilities and price band for vehicle age. A near-new car shouldn't
+// show an 84% catastrophic-failure reading or a top-of-band price — it dampens wear-fault
+// probabilities and lowers the price range for newer vehicles.
+function applyAgeFactor(a,veh){
+  const age=Math.max(0,(new Date().getFullYear())-(parseInt(veh&&veh.year)||new Date().getFullYear()));
+  let priceMul=1,pctMul=1;
+  if(age<=3){priceMul=0.7;pctMul=0.75;}
+  else if(age<=7){priceMul=0.9;pctMul=0.9;}
+  else{priceMul=1.1;pctMul=1;}
+  if(a.faults)a.faults=a.faults.map(f=>({...f,pct:Math.max(8,Math.round((f.pct||50)*pctMul))}));
+  a.low=Math.round((a.low||800)*priceMul);
+  a.high=Math.round((a.high||2000)*priceMul);
+  a._vehAge=age;
+  return a;
 }
 function showAI(a){
   ge('ai-load').style.display='none';ge('ai-res').style.display='block';
@@ -571,7 +611,7 @@ function createJob(a){
     vehicleMake:selVeh.make,vehicleModel:selVeh.model,vehicleYear:selVeh.year,vehicleFuel:selVeh.fuel,
     vehicleType:selVeh.type||'car',
     estimateLow:Math.round(a.low),estimateHigh:Math.round(a.high),
-    partsNeeded:a.parts||'',partsDetail:a.partsDetail||[],
+    partsNeeded:a.parts||'',partsDetail:a.partsDetail||[],aiFaults:a.faults||[],
     status:'pending',mechanic:null,mechanicId:null,partType:selPT,
     createdAt:Date.now(),location:p.city||''};
   if(window._lat){job.lat=window._lat;job.lng=window._lng;}

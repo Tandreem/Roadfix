@@ -72,17 +72,23 @@ body{font-family:var(--fb);color:var(--tx);max-width:430px;margin:0 auto;positio
 </style>
 <script type="module">
 import{initializeApp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import{getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,onAuthStateChanged,sendPasswordResetEmail}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import{getDatabase,ref,set,push,onValue,update,get}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+import{getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,onAuthStateChanged,sendPasswordResetEmail,setPersistence,browserLocalPersistence}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import{getDatabase,ref,set,push,onValue,update,get,onDisconnect,goOnline}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 import{getStorage,ref as sref,uploadString,getDownloadURL}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
 const app=initializeApp({apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",authDomain:"roadfix-demo.firebaseapp.com",databaseURL:"https://roadfix-demo-default-rtdb.asia-southeast1.firebasedatabase.app",projectId:"roadfix-demo",storageBucket:"roadfix-demo.firebasestorage.app",messagingSenderId:"274952184107",appId:"1:274952184107:web:63188439d92ec31103a56e"});
 const auth=getAuth(app),db=getDatabase(app),storage=getStorage(app);
+// Keep mechanic signed in through weak/dropped signal, and let RTDB queue+flush writes on
+// reconnect so a low-network area degrades gracefully instead of hard-failing.
+setPersistence(auth,browserLocalPersistence).catch(()=>{});
+let _isConnected=true;
+onValue(ref(db,".info/connected"),s=>{_isConnected=s.val()===true;if(_isConnected){try{goOnline(db);}catch(e){}}});
 
 let uid=null,profile=null,chatUnsub=null,shownGig=false;
 let jobsUnsub=null,profUnsub=null,alertsUnsub=null,_listenersStarted=false;
 let completingJobIds=new Set(); // guards against double-tap double-crediting earnings
 let globalChatUnsub=null,chatSeenCount=0,chatWatchJobId=null;
 let selVehicleType='car'; // default to car mechanic
+window._geminiKey=localStorage.getItem("rf_gemini_key")||""; // shared with customer app for re-diagnosis
 
 function getJobId(){return localStorage.getItem("mrf_jobId")||null;}
 function setJobId(id){if(id)localStorage.setItem("mrf_jobId",id);else localStorage.removeItem("mrf_jobId");}
@@ -501,8 +507,110 @@ window.markArrived=()=>{
   // customer's app anything, so the customer could tap "Job done" before the mechanic
   // had even arrived. Now it actually updates the job status.
   update(ref(db,"jobs/"+jid),{status:"fixing",arrivedAt:Date.now()});
+  loadActiveJobDetails(jid);
   go("m-active");
 };
+// Populate the active-job screen with the parts list (Problem 4) and stash the current
+// AI diagnosis text for the "wrong diagnosis" screen (Problem 5).
+function loadActiveJobDetails(jid){
+  get(ref(db,"jobs/"+jid)).then(s=>{
+    const j=s.val();if(!j)return;
+    window._activeJob=j;
+    const ap=ge("active-parts");
+    if(ap){
+      if(j.partsDetail&&j.partsDetail.length){
+        ap.innerHTML='<div class="sl">🔧 Parts to carry</div>'+j.partsDetail.map(p=>`<div class="part-row"><div><div style="font-size:11px;font-weight:600;color:var(--pu)">${p.part} ×${p.qty||1}</div><div style="font-size:10px;color:var(--tx3)">${p.spec||""}</div></div><span class="bdg ${p.urgency==="immediate"?"b-r":"b-a"}">${p.urgency||"check"}</span></div>`).join('');
+        ap.style.display="block";
+      } else if(j.partsNeeded){ap.innerHTML='<div class="sl">🔧 Parts to carry</div><div style="font-size:11px;color:var(--tx2)">'+j.partsNeeded+'</div>';ap.style.display="block";}
+    }
+    const ro=ge("redo-original");
+    if(ro){const faultTxt=(j.aiFaults&&j.aiFaults.length)?j.aiFaults.map(f=>f.name+" ("+f.pct+"%)").join(", "):(j.issue||"—");ro.textContent=faultTxt;}
+  });
+}
+window.loadActiveJobDetails=loadActiveJobDetails; // called from the classic go() script on active/re-diagnosis screens
+// Problem 3: mechanic doesn't have the right tools on hand and needs to fetch them.
+window.needTools=()=>{
+  const jid=getJobId();if(!jid)return;
+  if(!confirm("Tell the customer you need to fetch tools and will return shortly?"))return;
+  update(ref(db,"jobs/"+jid),{status:"fetching_tools",toolsNote:"Mechanic went to collect the required tools/parts — returning shortly",updatedAt:Date.now()});
+  // auto-post into chat so the customer sees it in context too
+  push(ref(db,"chats/"+jid),{senderId:uid,senderName:(profile&&profile.name)||"Mechanic",senderRole:"mechanic",text:"I don't have the right tools with me for this — going to collect them and will be back shortly.",time:Date.now()}).catch(()=>{});
+  toast("Customer notified — you can head back to fetch tools");
+};
+// Problem 5: mechanic disputes the AI diagnosis and provides the real fault; AI re-analyses,
+// price is updated, and the customer is informed of the change.
+window.reanalyzeJob=async()=>{
+  const jid=getJobId();if(!jid){toast("No active job");return;}
+  const issue=(gv("redo-issue")||"").trim();
+  if(!issue){toast("Describe what the actual problem is first");return;}
+  const btn=ge("redo-btn");if(btn){btn.disabled=true;btn.style.opacity=".6";btn.innerHTML="Analysing...";}
+  const jobSnap=await get(ref(db,"jobs/"+jid));
+  const job=jobSnap.val()||{};
+  const veh={make:job.vehicleMake||"",model:job.vehicleModel||"",year:job.vehicleYear||"",fuel:job.vehicleFuel||"Petrol",type:job.vehicleType||"car"};
+  const result=await mechReanalyze(veh,issue);
+  if(btn){btn.disabled=false;btn.style.opacity="1";btn.innerHTML="🤖 Re-analyse with AI";}
+  if(!result){toast("Re-analysis failed — try again");return;}
+  const oldLow=job.estimateLow||0,oldHigh=job.estimateHigh||0;
+  const rr=ge("redo-result");
+  if(rr){
+    const diff=Math.round(((result.low+result.high)/2)-((oldLow+oldHigh)/2));
+    const diffTxt=diff>0?("Price increased by about ₹"+Math.abs(diff)):diff<0?("Price decreased by about ₹"+Math.abs(diff)):"Price unchanged";
+    rr.innerHTML='<div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r);padding:11px;margin-bottom:4px"><div style="font-size:12px;font-weight:700;color:var(--gn);margin-bottom:5px">Updated diagnosis</div>'+result.faults.map(f=>`<div style="font-size:11px;color:var(--tx2);margin-bottom:2px">• ${f.name} — ${f.pct}%</div>`).join('')+`<div style="font-size:13px;font-weight:700;color:var(--am);margin-top:7px">New estimate: ₹${result.low} – ₹${result.high}</div><div style="font-size:11px;color:${diff>0?'var(--rd)':'var(--gn)'};margin-top:3px">${diffTxt}</div><button class="btn b-gn" style="margin-top:9px" onclick="confirmReanalysis()">Confirm & notify customer</button></div>`;
+    rr.style.display="block";
+  }
+  window._pendingReanalysis={jid,result,issue};
+};
+window.confirmReanalysis=()=>{
+  const p=window._pendingReanalysis;if(!p)return;
+  const {jid,result,issue}=p;
+  update(ref(db,"jobs/"+jid),{
+    estimateLow:result.low,estimateHigh:result.high,
+    aiFaults:result.faults,partsDetail:result.partsDetail||[],parts:result.parts||"",
+    issue:issue,rediagnosed:true,rediagnosedAt:Date.now(),
+    rediagnosedBy:(profile&&profile.name)||"Mechanic",updatedAt:Date.now()
+  });
+  // Tell the customer through chat + a status flag their app already watches.
+  push(ref(db,"chats/"+jid),{senderId:uid,senderName:(profile&&profile.name)||"Mechanic",senderRole:"mechanic",text:"After inspecting your vehicle, the actual issue is different from the initial AI estimate. I've re-analysed it — the updated price is ₹"+result.low+"–₹"+result.high+". Please review.",time:Date.now()}).catch(()=>{});
+  window._pendingReanalysis=null;
+  toast("✅ Diagnosis updated — customer notified");
+  loadActiveJobDetails(jid);
+  go("m-active");
+};
+// Lightweight re-analysis: reuses the same Gemini setup as the customer app if a key is
+// present, else a keyword fallback so it always returns something usable.
+async function mechReanalyze(veh,issue){
+  const KEY=window._geminiKey||localStorage.getItem("rf_gemini_key")||"";
+  const vehAge=Math.max(0,(new Date().getFullYear())-(parseInt(veh.year)||new Date().getFullYear()));
+  if(KEY&&KEY.length>=20){
+    try{
+      const isOAuth=KEY.startsWith("AQ.");
+      const url="https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent"+(isOAuth?"":"?key="+KEY);
+      const headers={"Content-Type":"application/json"};if(isOAuth)headers["Authorization"]="Bearer "+KEY;
+      const prompt=`You are an expert mechanic AI re-diagnosing a vehicle in person. The on-site mechanic reports the REAL fault. Return ONLY raw JSON, no markdown.
+Vehicle: ${veh.make} ${veh.model} ${veh.year} ${veh.fuel}, age ${vehAge} years.
+Mechanic's finding: ${issue}
+Return ONLY: {"faults":[{"name":"fault","pct":90,"desc":"one sentence","col":"rd"}],"parts":"comma separated","partsDetail":[{"part":"name","qty":1,"spec":"spec","urgency":"immediate"}],"low":800,"high":2500}`;
+      const r=await fetch(url,{method:"POST",headers,body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.05,maxOutputTokens:600}})});
+      if(r.ok){
+        const d=await r.json();
+        let raw=(d.candidates&&d.candidates[0]&&d.candidates[0].content.parts[0].text)||"";
+        raw=raw.replace(/^```json\s*/i,"").replace(/^```\s*/,"").replace(/\s*```$/,"").trim();
+        const m=raw.match(/\{[\s\S]*\}/);
+        const a=JSON.parse(m?m[0]:raw);
+        if(a&&a.faults)return a;
+      }
+    }catch(e){/* fall through to fallback */}
+  }
+  // Keyword fallback
+  const il=issue.toLowerCase();
+  let faults,parts,partsDetail,low,high;
+  if(il.includes("cv")||il.includes("axle")||il.includes("joint")){faults=[{name:"CV axle worn / needs replacement",pct:92,desc:"Confirmed on inspection.",col:"rd"}];parts="CV axle assembly";partsDetail=[{part:"CV Axle Assembly",qty:1,spec:"OEM for "+veh.make,urgency:"immediate"}];low=1800;high=4500;}
+  else if(il.includes("clutch")){faults=[{name:"Clutch assembly failure",pct:90,desc:"Confirmed on inspection.",col:"rd"}];parts="Clutch kit";partsDetail=[{part:"Clutch Kit",qty:1,spec:"Plate + pressure plate + bearing",urgency:"immediate"}];low=4000;high=9000;}
+  else if(il.includes("engine")||il.includes("head")||il.includes("gasket")){faults=[{name:"Engine internal fault",pct:88,desc:"Confirmed on inspection.",col:"rd"}];parts="Head gasket, coolant";partsDetail=[{part:"Head Gasket",qty:1,spec:"OEM spec",urgency:"immediate"}];low=6000;high=15000;}
+  else{faults=[{name:issue.slice(0,40),pct:85,desc:"As reported by on-site mechanic.",col:"yw"}];parts="As assessed on-site";partsDetail=[{part:"As assessed",qty:1,spec:"Mechanic to specify",urgency:"check"}];low=1000;high=3500;}
+  const priceMul=vehAge<=3?0.8:vehAge<=7?0.95:1.1;
+  return {faults,parts,partsDetail,low:Math.round(low*priceMul),high:Math.round(high*priceMul)};
+}
 // Releases the job back to the open pool for another mechanic to pick up, and lets the
 // customer's app know via their own live listener. Previously there was no way for a
 // mechanic to back out of an accepted job at all — they'd just have to leave it hanging.
@@ -802,8 +910,7 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
   <div class="sb">
     <div class="sec">
       <div style="display:flex;gap:7px;margin-bottom:10px">
-        <div class="sb-it"><div class="sb-dot"></div>GPS ON · admin sees you</div>
-        <div class="sb-it"><div class="sb-dot"></div>🎥 Recording</div>
+        <div class="sb-it"><div class="sb-dot"></div><span id="gps-stat3">📍 GPS ON · admin sees you</span></div>
       </div>
       <div style="background:var(--bg3);border-radius:var(--r2);height:170px;overflow:hidden;border:1px solid var(--bdr2);margin-bottom:10px">
         <svg viewBox="0 0 380 170" width="100%" height="100%"><rect width="380" height="170" fill="#14221A"/><line x1="0" y1="85" x2="380" y2="85" stroke="#1A3020" stroke-width="10"/><line x1="190" y1="0" x2="190" y2="170" stroke="#1A3020" stroke-width="10"/><polyline points="85,132 85,85 225,85 225,120" stroke="#4ADE80" stroke-width="3" fill="none" stroke-dasharray="8,4"/><circle cx="225" cy="120" r="8" fill="#F87171"/><text x="225" y="135" fill="white" font-size="8" text-anchor="middle">Customer</text><circle cx="85" cy="132" r="8" fill="#4ADE80"/><text x="85" y="147" fill="white" font-size="8" text-anchor="middle">You</text></svg>
@@ -834,6 +941,13 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
       <div style="display:flex;gap:7px;margin-bottom:10px">
         <div class="sb-it"><div class="sb-dot"></div><span id="gps-stat2">📍 GPS ON</span></div>
       </div>
+      <!-- PARTS TO CARRY (Problem 4: was missing on the active screen) -->
+      <div id="active-parts" class="parts-box" style="display:none;margin-bottom:10px"></div>
+      <!-- AI DIAGNOSIS DISPUTE / TOOLS (Problems 3 & 5) -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+        <button class="btn b-ghost" style="color:var(--am);border-color:rgba(234,179,8,.35)" onclick="go('m-redoai')">🔍 Wrong diagnosis?</button>
+        <button class="btn b-ghost" style="color:var(--bl);border-color:rgba(96,165,250,.35)" onclick="needTools()">🧰 Need to fetch tools</button>
+      </div>
       <div class="sl">Checklist</div>
       <div class="card" style="padding:7px 12px;margin-bottom:9px">
         <div class="cr" onclick="chk(this)"><div style="font-size:16px;width:20px">⬜</div><div style="font-size:13px">Inspect and confirm fault</div></div>
@@ -843,6 +957,21 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
       </div>
       <button class="btn b-gn" onclick="completeJob()">✅ Mark job complete</button>
       <button class="btn b-ghost" style="color:var(--rd)" onclick="cantMakeIt()">Can't finish — release job</button>
+    </div>
+  </div>
+</div>
+<!-- MECHANIC RE-DIAGNOSIS SCREEN (Problem 5) -->
+<div id="m-redoai" class="scr">
+  <div class="topbar"><div class="back" onclick="go('m-active')">← Back</div><div class="pgt">Correct the diagnosis</div><div class="sp"></div></div>
+  <div class="sb">
+    <div class="sec">
+      <div style="background:var(--am2, rgba(234,179,8,.1));border:1px solid rgba(234,179,8,.3);border-radius:var(--r);padding:10px 12px;font-size:11px;color:var(--am);margin-bottom:11px">The AI diagnosis was based on the customer's description. If the real fault is different, describe what you actually found — the AI will re-analyse and the price will be updated. The customer is notified of the change.</div>
+      <div class="sl">AI originally said</div>
+      <div id="redo-original" style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r);padding:9px 11px;font-size:12px;color:var(--tx2);margin-bottom:11px">—</div>
+      <div class="sl">What's the actual problem?</div>
+      <div class="f"><textarea id="redo-issue" rows="3" placeholder="e.g. It's not the brakes — the CV joint is completely worn and the axle needs replacing" style="width:100%;resize:vertical;background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:13px;padding:9px 11px;outline:none"></textarea></div>
+      <div id="redo-result" style="display:none;margin-top:6px"></div>
+      <button class="btn b-gn" id="redo-btn" onclick="reanalyzeJob()" style="margin-top:9px">🤖 Re-analyse with AI</button>
     </div>
   </div>
 </div>
@@ -937,6 +1066,7 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
 var stk=["m-loading"],cur="m-loading";
 function go(id){var o=document.getElementById(cur),n=document.getElementById(id);if(!n)return;o.classList.remove("on");n.classList.add("on");if(stk[stk.length-1]!==id)stk.push(id);cur=id;var sb=n.querySelector(".sb");if(sb)sb.scrollTop=0;
   if(id==="m-gig"){const pid=localStorage.getItem("mrf_pendingGigId");if(pid)window.reopenGigScreen(pid);}
+  if((id==="m-active"||id==="m-redoai")&&window.loadActiveJobDetails){const jid=localStorage.getItem("mrf_jobId");if(jid)window.loadActiveJobDetails(jid);}
   if(id==="m-prebookings")loadMechPrebookings();
   if(id==="m-earn"&&typeof profile!=="undefined"&&profile){
     document.getElementById("earn-total").textContent="₹"+(profile.totalEarned||0).toLocaleString("en-IN");

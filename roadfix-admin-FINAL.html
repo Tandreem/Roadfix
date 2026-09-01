@@ -141,7 +141,7 @@ function renderAll(){updateKPIs();renderJobs();renderMechanics();renderCustomers
 
 function updateKPIs(){
   const jList=Object.values(J),mList=Object.values(M),cList=Object.values(C),aList=Object.values(A);
-  const active=jList.filter(j=>j.status&&j.status!=="done"&&j.status!=="customer_done").length;
+  const active=jList.filter(j=>j.status&&j.status!=="done"&&j.status!=="customer_done"&&j.status!=="cancelled").length;
   const done=jList.filter(j=>j.status==="done").length;
   const online=mList.filter(m=>m.status==="online"||m.status==="enroute").length;
   const verified=mList.filter(m=>m.verified).length;
@@ -169,7 +169,7 @@ function renderJobs(){
         <td>${j.customerName||"—"}</td>
         <td style="font-size:11px;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${j.vehicle||"—"}</td>
         <td>${j.mechanic||'<span class="muted">Unassigned</span>'}</td>
-        <td style="font-size:11px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(j.issue||"—").slice(0,35)}</td>
+        <td style="font-size:11px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(j.issue||"—").slice(0,35)}${j.rediagnosed?' <span title="Re-diagnosed by mechanic" style="color:var(--yw)">🔄</span>':''}</td>
         <td>${j.status==="done"&&j.finalPrice?'<span class="price-final">₹'+Math.round(j.finalPrice)+'</span>':'<span class="price-est">₹'+(j.estimateLow||"?")+"–"+(j.estimateHigh||"?")+"</span>"}</td>
         <td><span class="bdg ${sBadge(j.status)}">${sLabel(j.status)}</span></td>
         <td><span class="bdg ${pBadge(j.partType)}">${j.partType||"—"}</span></td>
@@ -314,8 +314,8 @@ function ago(ts){
   if(s<86400)return Math.floor(s/3600)+"h ago";
   return Math.floor(s/86400)+"d ago";
 }
-function sLabel(s){return{pending:"Posted",searching_mechanic:"Searching",mechanic_assigned:"Accepted ✅",enroute:"En route 🛵",fixing:"Fixing 🔧",customer_done:"Customer done",done:"Done ✓",declined:"Declined"}[s]||s||"—";}
-function sBadge(s){return{done:"b-g",fixing:"b-b",enroute:"b-p",mechanic_assigned:"b-g",searching_mechanic:"b-o",pending:"b-y",declined:"b-off",customer_done:"b-y"}[s]||"b-y";}
+function sLabel(s){return{pending:"Posted",searching_mechanic:"Searching",mechanic_assigned:"Accepted ✅",enroute:"En route 🛵",fixing:"Fixing 🔧",fetching_tools:"Fetching tools 🧰",customer_done:"Customer done",done:"Done ✓",declined:"Declined",cancelled:"Cancelled ✗"}[s]||s||"—";}
+function sBadge(s){return{done:"b-g",fixing:"b-b",fetching_tools:"b-y",enroute:"b-p",mechanic_assigned:"b-g",searching_mechanic:"b-o",pending:"b-y",declined:"b-off",cancelled:"b-off",customer_done:"b-y"}[s]||"b-y";}
 function pBadge(t){return t==="OEM"?"b-b":t==="ODM"?"b-g":"b-y";}
 function toast(msg){let t=document.getElementById("a-toast");if(!t){t=document.createElement("div");t.id="a-toast";t.style.cssText="position:fixed;bottom:18px;right:18px;background:var(--card);border:1px solid var(--bdr2);color:var(--tx);padding:9px 16px;border-radius:9px;font-size:13px;z-index:999;transition:opacity .3s";document.body.appendChild(t);}t.textContent=msg;t.style.opacity="1";clearTimeout(window._aT);window._aT=setTimeout(()=>{t.style.opacity="0";},2200);}
 setInterval(()=>{const e=document.getElementById("live-time");if(e)e.textContent=new Date().toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit",second:"2-digit"});},1000);

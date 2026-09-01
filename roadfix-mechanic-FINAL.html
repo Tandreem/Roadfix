@@ -525,6 +525,9 @@ function loadActiveJobDetails(jid){
     }
     const ro=ge("redo-original");
     if(ro){const faultTxt=(j.aiFaults&&j.aiFaults.length)?j.aiFaults.map(f=>f.name+" ("+f.pct+"%)").join(", "):(j.issue||"—");ro.textContent=faultTxt;}
+    // Make the active-screen buttons match the job's real state (fetching tools vs fixing),
+    // so a mechanic who navigates back mid-errand sees "I'm back" instead of "complete".
+    if(window.refreshActiveJobUI)window.refreshActiveJobUI(j.status);
   });
 }
 window.loadActiveJobDetails=loadActiveJobDetails; // called from the classic go() script on active/re-diagnosis screens
@@ -536,7 +539,31 @@ window.needTools=()=>{
   // auto-post into chat so the customer sees it in context too
   push(ref(db,"chats/"+jid),{senderId:uid,senderName:(profile&&profile.name)||"Mechanic",senderRole:"mechanic",text:"I don't have the right tools with me for this — going to collect them and will be back shortly.",time:Date.now()}).catch(()=>{});
   toast("Customer notified — you can head back to fetch tools");
+  refreshActiveJobUI("fetching_tools");
 };
+// Mechanic returns after fetching tools/parts — puts the job back into the "fixing" state
+// so both apps are consistent and the customer's confirm-&-pay flow works normally again.
+window.backWithTools=()=>{
+  const jid=getJobId();if(!jid)return;
+  update(ref(db,"jobs/"+jid),{status:"fixing",arrivedAt:Date.now(),toolsNote:null,updatedAt:Date.now()});
+  push(ref(db,"chats/"+jid),{senderId:uid,senderName:(profile&&profile.name)||"Mechanic",senderRole:"mechanic",text:"I'm back with the tools — resuming the job now.",time:Date.now()}).catch(()=>{});
+  toast("Welcome back — resuming the job");
+  refreshActiveJobUI("fixing");
+};
+// Swap the active-screen buttons based on whether the mechanic is currently "away fetching
+// tools" or actively fixing. Critically, "Mark job complete" is ONLY available while fixing —
+// this prevents the mechanic completing a job while status is stuck at fetching_tools, which
+// was silently blocking the customer's confirm-&-pay prompt (that prompt keys off 'fixing').
+function refreshActiveJobUI(status){
+  const fetchWrap=ge("active-fetch-wrap"),completeWrap=ge("active-complete-wrap"),toolsBtn=ge("active-tools-btn");
+  const isFetching=status==="fetching_tools";
+  if(fetchWrap)fetchWrap.style.display=isFetching?"block":"none";
+  if(completeWrap)completeWrap.style.display=isFetching?"none":"block";
+  if(toolsBtn)toolsBtn.style.display=isFetching?"none":"block";
+  const banner=ge("active-fetch-banner");
+  if(banner)banner.style.display=isFetching?"block":"none";
+}
+window.refreshActiveJobUI=refreshActiveJobUI;
 // Problem 5: mechanic disputes the AI diagnosis and provides the real fault; AI re-analyses,
 // price is updated, and the customer is informed of the change.
 window.reanalyzeJob=async()=>{
@@ -629,7 +656,10 @@ window.completeJob=()=>{
   // actually finalizes + credits earnings once status flips to "done" (i.e. once the
   // customer pays), regardless of which side acts first. This avoids crediting the
   // mechanic before the customer has actually confirmed/paid.
-  update(ref(db,"jobs/"+jid),{mechanic_done:true,updatedAt:Date.now()});
+  // We also force status to "fixing" here: if the mechanic completes straight from a
+  // "fetching_tools" state, leaving that status would hide the customer's confirm-&-pay
+  // prompt (which only shows on "fixing"), silently stalling the whole job.
+  update(ref(db,"jobs/"+jid),{mechanic_done:true,status:"fixing",updatedAt:Date.now()});
   get(ref(db,"jobs/"+jid)).then(s=>{
     const j=s.val();
     if(!(j&&j.status==="done")){toast("Marked done — waiting for customer to confirm & pay");}
@@ -943,10 +973,15 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
       </div>
       <!-- PARTS TO CARRY (Problem 4: was missing on the active screen) -->
       <div id="active-parts" class="parts-box" style="display:none;margin-bottom:10px"></div>
+      <!-- FETCHING-TOOLS banner: shown while the mechanic is away collecting tools/parts -->
+      <div id="active-fetch-banner" style="display:none;background:var(--bl2, rgba(96,165,250,.1));border:1.5px solid rgba(96,165,250,.4);border-radius:var(--r2);padding:11px;margin-bottom:10px">
+        <div style="font-size:12px;font-weight:700;color:var(--bl);margin-bottom:3px">🧰 Away fetching tools</div>
+        <div style="font-size:11px;color:var(--tx2)">The customer has been told you'll return shortly. Tap "I'm back" below once you're back on site to resume the job.</div>
+      </div>
       <!-- AI DIAGNOSIS DISPUTE / TOOLS (Problems 3 & 5) -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
         <button class="btn b-ghost" style="color:var(--am);border-color:rgba(234,179,8,.35)" onclick="go('m-redoai')">🔍 Wrong diagnosis?</button>
-        <button class="btn b-ghost" style="color:var(--bl);border-color:rgba(96,165,250,.35)" onclick="needTools()">🧰 Need to fetch tools</button>
+        <button id="active-tools-btn" class="btn b-ghost" style="color:var(--bl);border-color:rgba(96,165,250,.35)" onclick="needTools()">🧰 Need to fetch tools</button>
       </div>
       <div class="sl">Checklist</div>
       <div class="card" style="padding:7px 12px;margin-bottom:9px">
@@ -955,7 +990,14 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
         <div class="cr" onclick="chk(this)"><div style="font-size:16px;width:20px">⬜</div><div style="font-size:13px">Install new part</div></div>
         <div class="cr" onclick="chk(this)" style="border-bottom:none"><div style="font-size:16px;width:20px">⬜</div><div style="font-size:13px">Test and confirm repair complete</div></div>
       </div>
-      <button class="btn b-gn" onclick="completeJob()">✅ Mark job complete</button>
+      <!-- Shown only while away fetching tools -->
+      <div id="active-fetch-wrap" style="display:none">
+        <button class="btn b-bl" onclick="backWithTools()">↩ I'm back with the tools</button>
+      </div>
+      <!-- Shown while actively fixing (the normal state) -->
+      <div id="active-complete-wrap">
+        <button class="btn b-gn" onclick="completeJob()">✅ Mark job complete</button>
+      </div>
       <button class="btn b-ghost" style="color:var(--rd)" onclick="cantMakeIt()">Can't finish — release job</button>
     </div>
   </div>

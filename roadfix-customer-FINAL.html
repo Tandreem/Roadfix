@@ -114,7 +114,7 @@ let jobsUnsub=null,mechsUnsub=null,profUnsub=null,vehUnsub=null;
 let globalChatUnsub=null,chatSeenCount=0,chatWatchJobId=null;
 let jobHistory=[],allMechanics={},currentSearchRadius=2;
 let completingJobIds=new Set(); // guards against double-firing job completion from the live jobs listener
-let lastNotifiedJobStatus={},lastKnownMechanicId={},lastRediagnosedAt={};
+let lastNotifiedJobStatus={},lastKnownMechanicId={},lastRediagnosedAt={},lastMechDoneNotified={};
 window._geminiKey=localStorage.getItem('rf_gemini_key')||'';
 
 function getJobId(){return localStorage.getItem('rf_jobId')||null;}
@@ -164,21 +164,25 @@ function startApp(){
   });
   jobsUnsub=onValue(ref(db,'jobs'),snap=>{
     const all=snap.val()||{};
-    const active=Object.values(all).filter(j=>j.status&&j.status!=='done'&&j.status!=='cancelled').length;
-    tx('lf-jobs',String(active));
-    jobHistory=Object.values(all).filter(j=>j.customerId===uid&&j.status==='done').sort((a,b)=>(b.completedAt||0)-(a.completedAt||0));
-    renderHistory();
-    // Self-heal: if the locally cached job id doesn't belong to this signed-in customer
-    // (stale cache, shared device, incomplete earlier logout, etc.), drop it so we never
-    // show or act on someone else's job.
+    // Smoothness: this listener fires on ANY job change anywhere in the system (every other
+    // customer's bookings, every mechanic status tick). Recomputing everything each time
+    // causes visible jank. We build a lightweight signature of only what THIS customer's UI
+    // depends on, and skip the expensive work (history re-render, mechanic profile fetch,
+    // tracking rebuild) when that signature hasn't changed.
+    const activeCount=Object.values(all).filter(j=>j.status&&j.status!=='done'&&j.status!=='cancelled').length;
+    tx('lf-jobs',String(activeCount));
     const cachedId=getJobId();
     if(cachedId&&all[cachedId]&&all[cachedId].customerId!==uid){setJobId(null);}
     const myJob=Object.values(all).find(j=>j.customerId===uid&&j.status!=='done'&&j.status!=='cancelled');
+    const doneCount=Object.values(all).filter(j=>j.customerId===uid&&j.status==='done').length;
+    // Signature = everything the customer's own screens react to. Unrelated jobs changing
+    // won't alter this, so we early-out and avoid a needless re-render.
+    const sig=JSON.stringify([myJob?myJob.id:0,myJob?myJob.status:0,myJob?myJob.mechanicId:0,myJob?myJob.rediagnosedAt:0,myJob?myJob.mechanic_done:0,myJob?myJob.estimateLow:0,doneCount]);
+    if(sig===window._lastJobSig&&myJob){return;} // nothing this customer cares about changed
+    window._lastJobSig=sig;
+    jobHistory=Object.values(all).filter(j=>j.customerId===uid&&j.status==='done').sort((a,b)=>(b.completedAt||0)-(a.completedAt||0));
+    renderHistory();
     if(myJob){
-      // Price used to come only from window._aiResult (in-memory, wiped by an app reload
-      // or the OS reclaiming a backgrounded WebView) — now it's kept in sync with the
-      // durable job record too, so the payment screen never shows a stale/blank price.
-      window.currentJobPrice=myJob.estimateLow||window._aiResult&&Math.round(window._aiResult.low)||1550;
       watchChatForNotifications(myJob.id);
       if(!getJobId())setJobId(myJob.id);
       const L={pending:'Pending — waiting for mechanic',searching_mechanic:'🔍 Searching for mechanic...',mechanic_assigned:(myJob.mechanic||'?')+' accepted ✅',enroute:'🛵 '+(myJob.mechanic||'Mechanic')+' en route to you',fixing:'🔧 Being fixed',fetching_tools:'🧰 Mechanic fetching tools — returning shortly'};
@@ -201,6 +205,19 @@ function startApp(){
         toast('🔄 Diagnosis updated — new estimate ₹'+myJob.estimateLow+'–₹'+myJob.estimateHigh);
         notify('🔄 Diagnosis changed','The actual fault was different — new estimate ₹'+myJob.estimateLow+'–₹'+myJob.estimateHigh);
         window.currentJobPrice=myJob.estimateLow;
+      }
+      // Keep a persistent on-screen banner (not just a toast) whenever the job has been
+      // re-diagnosed, so the customer always sees the corrected fault and new price.
+      const rediagBox=ge('track-rediag');
+      if(rediagBox){
+        if(myJob.rediagnosed){
+          const faultsTxt=(myJob.aiFaults&&myJob.aiFaults.length)?myJob.aiFaults.map(f=>f.name).join(', '):(myJob.issue||'');
+          rediagBox.innerHTML='<div style="font-size:12px;font-weight:700;color:var(--am);margin-bottom:4px">🔄 Diagnosis updated by mechanic</div>'+
+            '<div style="font-size:11px;color:var(--tx2);margin-bottom:6px">The actual issue was different from the initial AI estimate:</div>'+
+            '<div style="font-size:12px;color:var(--tx);margin-bottom:6px">'+faultsTxt+'</div>'+
+            '<div style="font-size:14px;font-weight:800;color:var(--or)">Updated price: ₹'+myJob.estimateLow+' – ₹'+myJob.estimateHigh+'</div>';
+          rediagBox.style.display='block';
+        } else rediagBox.style.display='none';
       }
       // If a mechanic had been assigned but the job just reverted to "searching_mechanic"
       // with no mechanicId, that mechanic released/cancelled the job — previously this was
@@ -226,26 +243,53 @@ function startApp(){
         // The "Job done" button used to always show, even while the mechanic was still
         // enroute — meaning a customer could confirm+pay before any work was actually
         // done. It only appears once the mechanic has marked themselves arrived ('fixing').
+        // Once the MECHANIC taps "job complete" (mechanic_done), we switch the note to a
+        // clear "mechanic says the job is done — confirm & pay" prompt and fire a one-time
+        // notification, so the customer knows it's their turn to confirm.
         const doneWrap=ge('track-done-btn-wrap'),waitNote=ge('track-waiting-note');
-        if(myJob.status==='fixing'){if(doneWrap)doneWrap.style.display='block';if(waitNote)waitNote.style.display='none';}
-        else{if(doneWrap)doneWrap.style.display='none';if(waitNote)waitNote.style.display='block';}
-        if(myJob.mechanicId)get(ref(db,'mechanics/'+myJob.mechanicId)).then(s=>{
-          const m=s.val();
-          if(m&&m.pfp){const img=ge('track-pfp');if(img){img.src=m.pfp;img.style.display='block';ge('track-ini').style.display='none';}}
-          else tx('track-ini',(myJob.mechanic||'M').substr(0,2).toUpperCase());
-          // This used to hardcode "GPS ON" regardless of the mechanic's actual location status.
-          tx('track-gps-stat',m&&m.gpsOn?'✅ Verified · GPS ON':'✅ Verified · GPS unavailable');
-          // Real live ETA — the app already had a haversine() distance helper and both
-          // sides' live coordinates, but never once combined them into an actual ETA for
-          // the customer (the "eta:4" field elsewhere was written once and never used).
-          const etaBox=ge('track-eta');
-          if(etaBox&&m&&m.lat&&m.lng&&window._lat&&window._lng&&myJob.status!=='fixing'){
-            const km=haversine(window._lat,window._lng,m.lat,m.lng);
-            const mins=Math.max(1,Math.round(km/25*60)); // assumes ~25km/h average city speed
-            etaBox.style.display='block';
-            etaBox.textContent='🛵 Arriving in ~'+mins+' min ('+km.toFixed(1)+' km away)';
-          } else if(etaBox){etaBox.style.display='none';}
-        });
+        if(myJob.status==='fixing'){
+          if(doneWrap)doneWrap.style.display='block';
+          if(waitNote){
+            if(myJob.mechanic_done){
+              waitNote.style.display='block';
+              waitNote.style.color='var(--gn)';
+              waitNote.innerHTML='✅ '+(myJob.mechanic||'Your mechanic')+' marked the job complete. Please confirm & pay ₹'+(myJob.estimateLow||'')+(myJob.estimateHigh?('–₹'+myJob.estimateHigh):'')+'.';
+            } else {
+              waitNote.style.display='block';
+              waitNote.style.color='var(--tx3)';
+              waitNote.textContent='Mechanic is working on your vehicle...';
+            }
+          }
+          // One-time notification the moment the mechanic marks done.
+          if(myJob.mechanic_done&&lastMechDoneNotified[myJob.id]!==true){
+            lastMechDoneNotified[myJob.id]=true;
+            toast('✅ Mechanic marked the job done — confirm & pay');
+            notify('✅ Job complete',(myJob.mechanic||'Your mechanic')+' finished the job — tap to confirm & pay');
+          }
+        }
+        else{if(doneWrap)doneWrap.style.display='none';if(waitNote){waitNote.style.display='block';waitNote.style.color='var(--tx3)';waitNote.textContent='Waiting for mechanic to arrive and start work...';}}
+        // Watch the assigned mechanic on a dedicated lightweight listener (their own node),
+        // rather than re-fetching their whole profile inside this big jobs listener on every
+        // tick. This keeps the live ETA/GPS updating smoothly without the heavy per-tick cost.
+        if(myJob.mechanicId&&window._trackedMechId!==myJob.mechanicId){
+          window._trackedMechId=myJob.mechanicId;
+          if(window._mechTrackUnsub)window._mechTrackUnsub();
+          window._mechTrackUnsub=onValue(ref(db,'mechanics/'+myJob.mechanicId),ms=>{
+            const m=ms.val();if(!m)return;
+            if(m.pfp){const img=ge('track-pfp');if(img){img.src=m.pfp;img.style.display='block';const ini=ge('track-ini');if(ini)ini.style.display='none';}}
+            else tx('track-ini',(myJob.mechanic||'M').substr(0,2).toUpperCase());
+            tx('track-gps-stat',m.gpsOn?'✅ Verified · GPS ON':'✅ Verified · GPS unavailable');
+            const etaBox=ge('track-eta');
+            const curJob=window._currentTrackedJobStatus;
+            if(etaBox&&m.lat&&m.lng&&window._lat&&window._lng&&curJob!=='fixing'&&curJob!=='fetching_tools'){
+              const km=haversine(window._lat,window._lng,m.lat,m.lng);
+              const mins=Math.max(1,Math.round(km/25*60));
+              etaBox.style.display='block';
+              etaBox.textContent='🛵 Arriving in ~'+mins+' min ('+km.toFixed(1)+' km away)';
+            } else if(etaBox){etaBox.style.display='none';}
+          });
+        }
+        window._currentTrackedJobStatus=myJob.status;
         if(cur==='s-waiting'){toast('✅ '+myJob.mechanic+' accepted!');go('s-tracking');}
         if((cur==='s-home'||cur==='s-loading')&&myJob.status==='enroute')go('s-tracking');
         // Show GPS link
@@ -263,6 +307,8 @@ function startApp(){
     } else {
       watchChatForNotifications(null);
       if(!getJobId())tx('lf-status','None active');
+      // No active job — tear down the mechanic tracker so it isn't left running.
+      if(window._mechTrackUnsub){window._mechTrackUnsub();window._mechTrackUnsub=null;window._trackedMechId=null;}
     }
   });
   if(navigator.geolocation)navigator.geolocation.getCurrentPosition(p=>{window._lat=p.coords.latitude;window._lng=p.coords.longitude;},()=>{},{enableHighAccuracy:true,timeout:7000});
@@ -311,7 +357,7 @@ window.openActiveJob=()=>{
     const j=s.val();
     if(!j||j.status==='done'){setJobId(null);toast('Job already completed');return;}
     if(j.status==='pending'||j.status==='searching_mechanic'){go('s-mechs');}
-    else if(j.status==='mechanic_assigned'||j.status==='enroute'||j.status==='fixing'){
+    else if(j.status==='mechanic_assigned'||j.status==='enroute'||j.status==='fixing'||j.status==='fetching_tools'){
       if(j.mechanic){
         bookedMechPhone=j.mechanicPhone||'';bookedMechId=j.mechanicId||'';
         tx('track-mech',j.mechanic);
@@ -409,6 +455,8 @@ window.cancelPrebook=async(pbId)=>{
 window.doLogout=()=>{
   if(profUnsub)profUnsub();if(jobsUnsub)jobsUnsub();if(mechsUnsub)mechsUnsub();if(chatUnsub)chatUnsub();if(vehUnsub)vehUnsub();
   if(globalChatUnsub)globalChatUnsub();chatWatchJobId=null;chatSeenCount=0;
+  if(window._mechTrackUnsub){window._mechTrackUnsub();window._mechTrackUnsub=null;window._trackedMechId=null;}
+  window._lastJobSig=null;
   setJobId(null);signOut(auth);
 };
 
@@ -1269,6 +1317,9 @@ async function withBusy(btnId,busyLabel,fn){
           <div style="background:var(--rd2);border:1px solid rgba(239,68,68,.3);border-radius:var(--r);padding:8px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer" onclick="doSOS()"><div style="font-size:18px">🆘</div><div style="font-size:9px;color:var(--rd)">SOS</div></div>
         </div>
       </div>
+      <!-- Re-diagnosis banner: stays visible on the tracking screen so the customer always
+           sees the updated fault + new price, not just a toast that vanishes. -->
+      <div id="track-rediag" style="display:none;background:var(--am2, rgba(234,179,8,.1));border:1.5px solid rgba(234,179,8,.4);border-radius:var(--r2);padding:12px;margin-bottom:9px"></div>
       <div id="track-done-btn-wrap" style="display:none">
         <button class="btn b-bl" onclick="customerJobDone()">✅ Job done — Confirm & Pay</button>
       </div>

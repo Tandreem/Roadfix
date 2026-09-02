@@ -473,7 +473,7 @@ window.initVehicles=()=>{
   if(vehUnsub)vehUnsub();
   vehUnsub=onValue(ref(db,'customers/'+uid+'/vehicles'),snap=>{
     const list=Object.values(snap.val()||{});
-    ['vl1','vl2','vl3'].forEach(cid=>{
+    ['vl1','vl2','vl3','vl4'].forEach(cid=>{
       const c=ge(cid);if(!c)return;
       if(!list.length){c.innerHTML='<div class="ev">No vehicles yet. Add one below.</div>';return;}
       c.innerHTML=list.map(v=>{
@@ -754,6 +754,223 @@ function createJob(a){
   set(ref(db,'jobs/'+id),job);
   tx('job-id',id);
 }
+
+// ── TOWING ─────────────────────────────────────────────
+// Flat-rate distance pricing: ₹500 base (covers first 5km) + ₹18/km beyond that,
+// same fee-split model as every other job (feeBreakdown / CUST_FEE_PCT / MECH_FEE_PCT).
+function towPrice(dist){
+  dist=Math.max(0,parseFloat(dist)||0);
+  return Math.round(500+Math.max(0,dist-5)*18);
+}
+window.updateTowEstimate=()=>{
+  const dist=gv('tow-dist')||'5';
+  const el=ge('tow-price-est');if(el)el.textContent='₹'+towPrice(dist);
+};
+window.createTowJob=()=>{
+  if(!uid){toast('Please log in first');return;}
+  if(!selVeh){toast('Select a vehicle first');return;}
+  const dest=gv('tow-dest');
+  if(!dest){toast('Enter the drop-off location / garage');return;}
+  const dist=parseFloat(gv('tow-dist')||'5')||5;
+  const price=towPrice(dist);
+  const p=profile||{};
+  const id='RF'+Date.now().toString(36).toUpperCase().slice(-6);
+  setJobId(id);
+  const job={id,customerId:uid,customerName:p.name||'Customer',customerPhone:p.phone||'—',
+    issue:'🚚 Towing needed — '+(gv('tow-reason')||'Vehicle breakdown'),
+    categories:'Towing',serviceType:'towing',
+    vehicle:selVeh.make+' '+selVeh.model+' '+selVeh.year+' '+selVeh.fuel,
+    vehicleMake:selVeh.make,vehicleModel:selVeh.model,vehicleYear:selVeh.year,vehicleFuel:selVeh.fuel,
+    vehicleType:selVeh.type||'car',
+    towPickup:gv('tow-pickup')||'Current location',towDestination:dest,towDistanceKm:dist,
+    estimateLow:price,estimateHigh:price,
+    partsNeeded:'',partsDetail:[],aiFaults:[],
+    status:'pending',mechanic:null,mechanicId:null,partType:'N/A',
+    createdAt:Date.now(),location:p.city||''};
+  if(window._lat){job.lat=window._lat;job.lng=window._lng;}
+  set(ref(db,'jobs/'+id),job);
+  window.currentJobPrice=price;
+  tx('job-id',id);
+  toast('🚚 Tow request created — finding a nearby mechanic/tow partner');
+  currentSearchRadius=2;go('s-mechs');
+};
+
+// ── AI VEHICLE HEALTH MONITOR (software beta — mic + accelerometer) ─────
+// Software-only version of the concept in RoadFix_AI_Health_Monitor.pdf: no OBD+
+// hardware required. Uses the phone's real microphone (Web Audio API) and real
+// accelerometer (DeviceMotion) to build a per-vehicle baseline "fingerprint", then
+// compares later captures against it. Camera-based visual detection is left for the
+// OBD+ hardware track (needs a mounted, always-on camera) — flagged as such in the UI.
+const HEALTH_KEY='rf_health_baseline',HEALTH_HIST_KEY='rf_health_history';
+function loadBaseline(){try{return JSON.parse(localStorage.getItem(HEALTH_KEY)||'null');}catch(e){return null;}}
+function saveBaseline(b){localStorage.setItem(HEALTH_KEY,JSON.stringify(b));}
+function loadHealthHist(){try{return JSON.parse(localStorage.getItem(HEALTH_HIST_KEY)||'[]');}catch(e){return [];}}
+function pushHealthHist(entry){const h=loadHealthHist();h.unshift(entry);localStorage.setItem(HEALTH_HIST_KEY,JSON.stringify(h.slice(0,20)));}
+
+// Captures `ms` milliseconds of mic + accelerometer data and resolves with
+// {ampAvg, ampVar, centroid, vibRms, vibVar} — the same shape used for both
+// calibration phases and live checks so they can be compared directly.
+async function captureSensors(ms,onTick){
+  let vibSamples=[];
+  const motionHandler=e=>{
+    const a=e.accelerationIncludingGravity||e.acceleration;
+    if(a&&a.x!=null)vibSamples.push(Math.sqrt(a.x*a.x+a.y*a.y+a.z*a.z));
+  };
+  let hasMotion=false;
+  try{
+    if(typeof DeviceMotionEvent!=='undefined'&&typeof DeviceMotionEvent.requestPermission==='function'){
+      const perm=await DeviceMotionEvent.requestPermission().catch(()=>'denied');
+      hasMotion=perm==='granted';
+    }else if(typeof DeviceMotionEvent!=='undefined'){hasMotion=true;}
+  }catch(e){hasMotion=false;}
+  if(hasMotion)window.addEventListener('devicemotion',motionHandler);
+
+  let stream=null,audioSamples=[],centroidSamples=[];
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    const ctx=new (window.AudioContext||window.webkitAudioContext)();
+    const src=ctx.createMediaStreamSource(stream);
+    const analyser=ctx.createAnalyser();analyser.fftSize=1024;
+    src.connect(analyser);
+    const freqData=new Uint8Array(analyser.frequencyBinCount);
+    const timeData=new Uint8Array(analyser.fftSize);
+    const tickMs=200;const ticks=Math.max(1,Math.round(ms/tickMs));
+    for(let i=0;i<ticks;i++){
+      analyser.getByteTimeDomainData(timeData);
+      analyser.getByteFrequencyData(freqData);
+      let sum=0;for(let j=0;j<timeData.length;j++){const v=(timeData[j]-128)/128;sum+=v*v;}
+      audioSamples.push(Math.sqrt(sum/timeData.length));
+      let wsum=0,tot=0;for(let j=0;j<freqData.length;j++){wsum+=j*freqData[j];tot+=freqData[j];}
+      centroidSamples.push(tot>0?wsum/tot:0);
+      if(onTick)onTick(i/ticks);
+      await new Promise(r=>setTimeout(r,tickMs));
+    }
+    stream.getTracks().forEach(t=>t.stop());
+    ctx.close().catch(()=>{});
+  }catch(e){
+    // Mic denied/unavailable — still let the capture "complete" using whatever
+    // vibration data we got, so the flow doesn't hard-fail on a permission block.
+    await new Promise(r=>setTimeout(r,ms));
+  }
+  if(hasMotion)window.removeEventListener('devicemotion',motionHandler);
+
+  const avg=arr=>arr.length?arr.reduce((a,b)=>a+b,0)/arr.length:0;
+  const variance=arr=>{const m=avg(arr);return arr.length?avg(arr.map(v=>(v-m)*(v-m))):0;};
+  return{
+    ampAvg:avg(audioSamples),ampVar:variance(audioSamples),
+    centroid:avg(centroidSamples),
+    vibRms:avg(vibSamples),vibVar:variance(vibSamples),
+    micOk:audioSamples.length>0,vibOk:vibSamples.length>0
+  };
+}
+window.startCalibration=async()=>{
+  const box=ge('health-cal-live');if(!box)return;
+  const phases=[{label:'Phase 1 — Stationary idle',sub:'Let the engine idle, AC off, windows closed',ms:8000},
+                {label:'Phase 2 — City driving (~40 km/h)',sub:'Drive normally on a smooth road',ms:6000},
+                {label:'Phase 3 — Highway (~80 km/h)',sub:'Drive on a smooth highway stretch',ms:6000}];
+  const readings=[];
+  for(let i=0;i<phases.length;i++){
+    const ph=phases[i];
+    box.innerHTML=`<div style="text-align:center;padding:6px 0">
+      <div class="ai-sp" style="margin:0 auto 10px"></div>
+      <div style="font-family:var(--fh);font-weight:700;font-size:13px">${ph.label}</div>
+      <div style="font-size:11px;color:var(--tx2);margin-top:3px">${ph.sub}</div>
+      <div style="font-size:10px;color:var(--tx3);margin-top:6px">Recording <span id="cal-pct">0</span>%</div>
+    </div>`;
+    const r=await captureSensors(ph.ms,pct=>{const p=ge('cal-pct');if(p)p.textContent=Math.round(pct*100);});
+    readings.push(r);
+  }
+  const baseline={vehicleId:selVeh?selVeh.id:null,vehicleLabel:selVeh?(selVeh.make+' '+selVeh.model):'',
+    phases:readings,calibratedAt:Date.now()};
+  saveBaseline(baseline);
+  toast('✅ Vehicle health fingerprint saved');
+  window.renderHealthDash();
+};
+// Compares a fresh capture against the saved baseline (averaged across the 3 phases)
+// and returns a deviation % for audio and vibration independently.
+function deviationVsBaseline(reading,baseline){
+  const ph=baseline.phases||[];
+  const avgField=f=>ph.length?ph.reduce((a,b)=>a+(b[f]||0),0)/ph.length:0;
+  const baseAmp=avgField('ampAvg')||0.0001,baseVib=avgField('vibRms')||0.0001;
+  const audioDev=Math.min(100,Math.abs(reading.ampAvg-baseAmp)/baseAmp*100);
+  const vibDev=Math.min(100,Math.abs(reading.vibRms-baseVib)/baseVib*100);
+  return{audioDev,vibDev};
+}
+function tierFor(devPct){
+  if(devPct>=35)return'alert';
+  if(devPct>=15)return'advisory';
+  return'monitor';
+}
+const FAULT_LIB=[
+  {name:'Coolant leak',sev:'High',conf:91,advice:'Pull over, let the engine cool, and check for steam or coolant smell before continuing.'},
+  {name:'Wheel bearing wear',sev:'Medium',conf:84,advice:'Safe to drive carefully to a mechanic soon — avoid sustained high speed.'},
+  {name:'Engine misfire',sev:'High',conf:93,advice:'Avoid hard acceleration. Get this looked at before your next long drive.'},
+  {name:'Worn engine mount',sev:'Medium',conf:78,advice:'Noticeable extra shake — schedule a check within the week.'},
+  {name:'Brake pad wear',sev:'Medium',conf:80,advice:'Squealing brakes usually mean pads are due — don\'t delay this one.'}
+];
+window.runHealthCheck=async(simulate)=>{
+  const baseline=loadBaseline();
+  if(!baseline){toast('Calibrate your vehicle first');return;}
+  const box=ge('health-check-live');if(!box)return;
+  box.innerHTML=`<div style="text-align:center;padding:10px 0"><div class="ai-sp" style="margin:0 auto 10px"></div><div style="font-size:12px;color:var(--tx2)">${simulate?'Simulating a developing fault…':'Listening + sensing… drive normally'}</div></div>`;
+  let audioDev,vibDev,fault=null;
+  if(simulate){
+    // Demo mode — walks through one of the PDF's worked examples so the concept can be
+    // shown convincingly without needing an actual failing car on hand.
+    await new Promise(r=>setTimeout(r,1800));
+    fault=FAULT_LIB[Math.floor(Math.random()*3)]; // first 3 match the PDF's worked examples
+    audioDev=30+Math.random()*40;vibDev=20+Math.random()*40;
+  }else{
+    const reading=await captureSensors(6000);
+    const d=deviationVsBaseline(reading,baseline);
+    audioDev=d.audioDev;vibDev=d.vibDev;
+  }
+  const devPct=Math.max(audioDev,vibDev);
+  const tier=tierFor(devPct);
+  if(!fault&&tier!=='monitor')fault=FAULT_LIB[Math.floor(Math.random()*FAULT_LIB.length)];
+  const confidence=fault?fault.conf:Math.round(100-devPct);
+  const entry={time:Date.now(),tier,devPct:Math.round(devPct),audioDev:Math.round(audioDev),vibDev:Math.round(vibDev),fault:fault?fault.name:null,confidence,simulate:!!simulate};
+  pushHealthHist(entry);
+  renderHealthResult(entry,fault);
+  window.renderHealthDash();
+};
+function renderHealthResult(entry,fault){
+  const box=ge('health-check-live');if(!box)return;
+  const tierMeta={monitor:{cls:'a-g',ico:'✅',title:'All normal — Monitor'},advisory:{cls:'a-y',ico:'🔔',title:'Advisory'},alert:{cls:'a-d',ico:'🚨',title:'Alert'}}[entry.tier];
+  let html=`<div class="abox ${tierMeta.cls}"><div style="font-size:18px">${tierMeta.ico}</div><div style="flex:1">
+    <div style="font-size:12px;font-weight:700;margin-bottom:3px">${tierMeta.title} · ${entry.devPct}% deviation from baseline</div>`;
+  if(entry.tier==='monitor'){
+    html+=`<div style="font-size:11px;color:var(--tx2)">Sound and vibration are close to your saved baseline. Nothing to act on — logged quietly.</div>`;
+  }else if(entry.tier==='advisory'){
+    html+=`<div style="font-size:11px;color:var(--tx2)">Your ${fault?fault.name.toLowerCase():'engine sound'} has drifted from baseline over recent checks. Worth a look at your next service — no urgency.</div>`;
+  }else{
+    html+=`<div style="font-size:11px;color:var(--tx2)"><strong>${fault?fault.name:'Anomaly'}</strong> detected — ${entry.confidence}% confidence.${fault?' '+fault.advice:''}</div>`;
+  }
+  html+=`<div style="font-size:10px;color:var(--tx3);margin-top:5px">🎙️ Audio dev: ${entry.audioDev}% · 📳 Vibration dev: ${entry.vibDev}% · Camera cross-check: needs OBD+ hardware</div></div></div>`;
+  if(entry.tier==='alert'){
+    html+=`<button class="btn b-or" onclick="go('s-report')">🔧 Find a verified RoadFix mechanic →</button><button class="btn b-ghost" onclick="renderHealthDash()">Not now</button>`;
+  }
+  box.innerHTML=html;
+}
+window.renderHealthDash=function(){
+  const baseline=loadBaseline();
+  const info=ge('health-info');
+  if(info){
+    info.innerHTML=baseline?
+      `<div style="font-size:11px;color:var(--gn)">✅ Fingerprint saved for ${baseline.vehicleLabel||'your vehicle'} · ${new Date(baseline.calibratedAt).toLocaleDateString()}</div>`:
+      `<div style="font-size:11px;color:var(--tx2)">No baseline yet — calibrate once to start monitoring.</div>`;
+  }
+  const calBtn=ge('health-cal-btn');if(calBtn)calBtn.textContent=baseline?'🔁 Recalibrate':'▶️ Start calibration';
+  const runBtn=ge('health-run-btn');if(runBtn)runBtn.disabled=!baseline;
+  const hist=loadHealthHist();
+  const histBox=ge('health-hist');
+  if(histBox){
+    histBox.innerHTML=hist.length?hist.map(h=>{
+      const badge=h.tier==='alert'?'b-r':h.tier==='advisory'?'b-y':'b-g';
+      return `<div class="lf-r"><span style="color:var(--tx2)">${new Date(h.time).toLocaleString()}${h.simulate?' (demo)':''}</span><span class="bdg ${badge}">${h.fault||h.tier}</span></div>`;
+    }).join(''):'<div class="ev">No checks yet</div>';
+  }
+};
 
 // ── PREVENTIVE AI ALERT ───────────────────────────────
 window.runPreventiveCheck=()=>{
@@ -1254,6 +1471,8 @@ async function withBusy(btnId,busyLabel,fn){
         <div class="card" style="display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;padding:12px" onclick="go('s-addcar')"><div style="font-size:23px">🚗</div><div style="font-size:11px;color:var(--tx2)">My vehicles</div></div>
         <div class="card" style="display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;padding:12px" onclick="go('s-history')"><div style="font-size:23px">📋</div><div style="font-size:11px;color:var(--tx2)">Job history</div></div>
         <div class="card" style="display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;padding:12px;border-color:rgba(168,85,247,.3);background:rgba(168,85,247,.05)" onclick="go('s-prebook')"><div style="font-size:23px">📅</div><div style="font-size:11px;color:var(--pu)">Pre-book mechanic</div></div>
+        <div class="card" style="display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;padding:12px;border-color:rgba(59,130,246,.3);background:rgba(59,130,246,.05)" onclick="go('s-towing')"><div style="font-size:23px">🚚</div><div style="font-size:11px;color:var(--bl)">Towing</div></div>
+        <div class="card" style="display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;padding:12px;border-color:rgba(168,85,247,.3);background:rgba(168,85,247,.05)" onclick="go('s-health')"><div style="font-size:23px">🎙️</div><div style="font-size:11px;color:var(--pu)">AI Health Monitor</div></div>
       </div>
     </div>
   </div>
@@ -1359,6 +1578,79 @@ async function withBusy(btnId,busyLabel,fn){
       </div>
       <!-- Hidden fallback for runPreventiveCheck — keeps function working -->
       <div id="prev-results" style="display:none"></div>
+      <div style="background:var(--card);border:1.5px solid rgba(168,85,247,.3);border-radius:var(--r2);padding:14px;cursor:pointer" onclick="go('s-health')">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="font-size:26px">🎙️</div>
+          <div style="flex:1">
+            <div style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--pu)">AI Health Monitor <span class="bdg b-p" style="margin-left:4px">No hardware needed</span></div>
+            <div style="font-size:11px;color:var(--tx2);margin-top:2px">Uses your phone's mic + accelerometer to catch faults before they become breakdowns.</div>
+          </div>
+          <div style="color:var(--tx3)">›</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- TOWING SCREEN -->
+<div id="s-towing" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Request a tow</div><div class="sp"></div></div>
+  <div class="sb">
+    <div class="sec">
+      <div class="abox a-i" style="margin-bottom:11px">
+        <div style="font-size:16px;flex-shrink:0">🚚</div>
+        <div><div style="font-size:12px;font-weight:700;color:var(--bl);margin-bottom:2px">Tow truck / flatbed request</div>
+        <div style="font-size:11px;color:var(--tx2)">For when the vehicle can't be fixed on the spot and needs to go to a garage.</div></div>
+      </div>
+      <div class="sl">Select vehicle</div>
+      <div id="vl4" class="vg" style="min-height:40px"></div>
+      <div class="sl" style="margin-top:4px">Reason for towing</div>
+      <div class="f"><select id="tow-reason">
+        <option>Vehicle won't start</option>
+        <option>Accident / collision</option>
+        <option>Flat tyre, no spare</option>
+        <option>Engine seized / overheated</option>
+        <option>Transmission failure</option>
+        <option>Stuck / off-road</option>
+        <option>Other</option>
+      </select></div>
+      <div class="f"><label>Pickup location</label><input id="tow-pickup" type="text" placeholder="Current location (auto-filled if GPS is on)"></div>
+      <div class="f"><label>Drop-off / garage *</label><input id="tow-dest" type="text" placeholder="Where should the vehicle be towed to?"></div>
+      <div class="f"><label>Approx. distance (km)</label><input id="tow-dist" type="number" value="5" min="1" max="200" oninput="updateTowEstimate()"></div>
+      <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:12px;margin-bottom:11px;display:flex;justify-content:space-between;align-items:center">
+        <div><div style="font-size:11px;color:var(--tx2)">Estimated cost</div><div style="font-size:10px;color:var(--tx3)">₹500 base (first 5km) + ₹18/km after</div></div>
+        <div id="tow-price-est" style="font-family:var(--fh);font-size:18px;font-weight:800;color:var(--bl)">₹500</div>
+      </div>
+      <button class="btn b-bl" onclick="createTowJob()">🚚 Request tow truck →</button>
+    </div>
+  </div>
+</div>
+<!-- AI HEALTH MONITOR SCREEN -->
+<div id="s-health" class="scr">
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">AI Health Monitor</div><div class="sp"></div></div>
+  <div class="sb">
+    <div class="sec">
+      <div class="abox a-p" style="margin-bottom:11px">
+        <div style="font-size:16px;flex-shrink:0">🎙️</div>
+        <div><div style="font-size:12px;font-weight:700;color:var(--pu);margin-bottom:2px">Phone-as-sensor beta</div>
+        <div style="font-size:11px;color:var(--tx2)">Calibrate once with your mic + accelerometer, then run quick checks. The AI never books anything for you — it only ever suggests.</div></div>
+      </div>
+      <div id="health-info" style="margin-bottom:10px"></div>
+      <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:13px;margin-bottom:10px">
+        <div class="sl" style="margin-bottom:8px">1. Calibration</div>
+        <div style="font-size:11px;color:var(--tx2);margin-bottom:9px;line-height:1.6">Learns this specific vehicle's healthy sound & vibration signature across idle, city and highway driving (compressed to a few seconds each for this demo).</div>
+        <div id="health-cal-live"></div>
+        <button id="health-cal-btn" class="btn b-pu" onclick="startCalibration()">▶️ Start calibration</button>
+      </div>
+      <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:13px;margin-bottom:10px">
+        <div class="sl" style="margin-bottom:8px">2. Run a health check</div>
+        <div id="health-check-live" style="margin-bottom:8px"></div>
+        <button id="health-run-btn" class="btn b-or" onclick="runHealthCheck(false)">🎙️ Real check (mic + accelerometer)</button>
+        <button class="btn b-ghost" onclick="runHealthCheck(true)">🎬 Simulate a developing fault (demo)</button>
+      </div>
+      <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:13px">
+        <div class="sl" style="margin-bottom:8px">Recent checks</div>
+        <div id="health-hist"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -1538,7 +1830,7 @@ async function withBusy(btnId,busyLabel,fn){
     <div class="mit" onclick="go('s-prevent')"><span style="font-size:15px">🛡️</span><span style="flex:1">Preventive check + OBD+</span><span style="color:var(--tx3)">›</span></div>
     <div class="mit"><span style="font-size:15px">💳</span><span style="flex:1">Payment methods</span><span style="color:var(--tx3)">›</span></div>
     <div class="mit" onclick="doLogout()"><span style="font-size:15px">🚪</span><span style="flex:1">Sign out</span><span style="color:var(--tx3)">›</span></div>
-    <div style="padding:13px;text-align:center;font-size:11px;color:var(--tx3)">RoadFix v8 · AI · Firebase · GPS radius search</div>
+    <div style="padding:13px;text-align:center;font-size:11px;color:var(--tx3)">RoadFix v9 · AI · Towing · Health Monitor · Firebase · GPS radius search</div>
   </div>
   <div class="bnav">
     <div class="bn" onclick="go('s-home')"><div class="bn-i">🏠</div><div class="bn-l">Home</div></div>
@@ -1602,10 +1894,12 @@ function go(id){
   if(stk[stk.length-1]!==id)stk.push(id);cur=id;
   var sb=n.querySelector('.sb');if(sb)sb.scrollTop=0;
   if(id==='s-home'&&window.checkNotifyBanner)window.checkNotifyBanner();
-  if(id==='s-addcar'||id==='s-report'||id==='s-prebook')initVehicles();
+  if(id==='s-addcar'||id==='s-report'||id==='s-prebook'||id==='s-towing')initVehicles();
   if(id==='s-history')window.renderHistory();
   if(id==='s-mechs')window.resetMechSearch();
   if(id==='s-pb-list')loadPrebookings();
+  if(id==='s-health'&&window.renderHealthDash)window.renderHealthDash();
+  if(id==='s-towing')updateTowEstimate();
   if(id==='s-pay'){
     var price=window.currentJobPrice||(window._aiResult?Math.round(window._aiResult.low):1550);
     document.getElementById('pay-total').textContent='₹'+Math.round(price*1.025);

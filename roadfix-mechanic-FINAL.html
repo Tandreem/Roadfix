@@ -301,12 +301,28 @@ function populateGig(id,job){
   tx("gig-cust",job.customerName||"—");tx("gig-cph",job.customerPhone||"—");
   const vs=job.vehicle||((job.vehicleMake||"")+" "+(job.vehicleModel||"")+" "+(job.vehicleYear||"")+" "+(job.vehicleFuel||"")).trim();
   tx("gig-veh",vs||"Not specified");tx("gig-parts",job.partType||"OEM");tx("gig-cats",job.categories||"General");
-  // PARTS TO CARRY
-  const pc=ge("parts-to-carry");
-  if(pc&&job.partsDetail&&job.partsDetail.length){
-    pc.innerHTML='<div class="sl">🔧 Parts to carry</div>'+job.partsDetail.map(p=>`<div class="part-row"><div><div style="font-size:11px;font-weight:600;color:var(--pu)">${p.part} ×${p.qty||1}</div><div style="font-size:10px;color:var(--tx3)">${p.spec||""}</div></div><span class="bdg ${p.urgency==="immediate"?"b-r":"b-a"}">${p.urgency||"check"}</span></div>`).join('');
-    pc.style.display="block";
-  } else if(pc){pc.innerHTML='<div class="sl">🔧 Parts to carry</div><div style="font-size:11px;color:var(--tx2)">'+( job.partsNeeded||"General tools")+'</div>';pc.style.display="block";}
+  // AI Health Monitor origin badge — flags jobs that came from a customer's health-check
+  // alert rather than a manual "report issue", so the mechanic knows it's a pre-emptive job.
+  const ob=ge("gig-origin-badge");if(ob)ob.style.display=job.aiHealthOrigin?"inline-block":"none";
+  const isTow=job.serviceType==="towing";
+  const pc=ge("parts-to-carry"),tb=ge("tow-info-box");
+  if(isTow){
+    // TOWING — show pickup/destination/distance instead of a parts checklist.
+    if(pc)pc.style.display="none";
+    if(tb){
+      tb.style.display="block";
+      tx("tow-pickup-v",job.towPickup||"—");
+      tx("tow-dest-v",job.towDestination||"—");
+      tx("tow-dist-v",(job.towDistanceKm||"—")+" km");
+    }
+  } else {
+    if(tb)tb.style.display="none";
+    // PARTS TO CARRY
+    if(pc&&job.partsDetail&&job.partsDetail.length){
+      pc.innerHTML='<div class="sl">🔧 Parts to carry</div>'+job.partsDetail.map(p=>`<div class="part-row"><div><div style="font-size:11px;font-weight:600;color:var(--pu)">${p.part} ×${p.qty||1}</div><div style="font-size:10px;color:var(--tx3)">${p.spec||""}</div></div><span class="bdg ${p.urgency==="immediate"?"b-r":"b-a"}">${p.urgency||"check"}</span></div>`).join('');
+      pc.style.display="block";
+    } else if(pc){pc.innerHTML='<div class="sl">🔧 Parts to carry</div><div style="font-size:11px;color:var(--tx2)">'+( job.partsNeeded||"General tools")+'</div>';pc.style.display="block";}
+  }
   // CUSTOMER GPS LINK
   if(job.lat&&job.lng){
     const cgl=ge("cust-gps-link");
@@ -530,12 +546,23 @@ function loadActiveJobDetails(jid){
   get(ref(db,"jobs/"+jid)).then(s=>{
     const j=s.val();if(!j)return;
     window._activeJob=j;
-    const ap=ge("active-parts");
-    if(ap){
+    const ap=ge("active-parts"),atb=ge("active-tow-box");
+    if(j.serviceType==="towing"){
+      if(ap)ap.style.display="none";
+      if(atb){
+        atb.style.display="block";
+        tx("active-tow-pickup",j.towPickup||"—");
+        tx("active-tow-dest",j.towDestination||"—");
+        tx("active-tow-dist",(j.towDistanceKm||"—")+" km");
+      }
+    } else {
+      if(atb)atb.style.display="none";
+      if(ap){
       if(j.partsDetail&&j.partsDetail.length){
         ap.innerHTML='<div class="sl">🔧 Parts to carry</div>'+j.partsDetail.map(p=>`<div class="part-row"><div><div style="font-size:11px;font-weight:600;color:var(--pu)">${p.part} ×${p.qty||1}</div><div style="font-size:10px;color:var(--tx3)">${p.spec||""}</div></div><span class="bdg ${p.urgency==="immediate"?"b-r":"b-a"}">${p.urgency||"check"}</span></div>`).join('');
         ap.style.display="block";
       } else if(j.partsNeeded){ap.innerHTML='<div class="sl">🔧 Parts to carry</div><div style="font-size:11px;color:var(--tx2)">'+j.partsNeeded+'</div>';ap.style.display="block";}
+      }
     }
     const ro=ge("redo-original");
     if(ro){const faultTxt=(j.aiFaults&&j.aiFaults.length)?j.aiFaults.map(f=>f.name+" ("+f.pct+"%)").join(", "):(j.issue||"—");ro.textContent=faultTxt;}
@@ -945,7 +972,7 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
       <div style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:8px 11px;display:flex;align-items:center;gap:7px;margin-bottom:11px;animation:bi 1.5s 3"><span style="font-size:17px">🚨</span><span style="font-size:12px;font-weight:700;color:var(--rd);font-family:var(--fh)">New job — respond quickly!</span></div>
       <div style="background:var(--card);border:1.5px solid rgba(96,165,250,.28);border-radius:var(--r2);padding:15px;margin-bottom:10px">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:11px">
-          <div><div style="font-family:var(--fh);font-size:14px;font-weight:700" id="gig-issue">—</div><div style="font-size:11px;color:var(--tx2);margin-top:2px" id="gig-loc">—</div></div>
+          <div><span id="gig-origin-badge" style="display:none;font-size:9px;background:rgba(168,85,247,.15);color:var(--pu);border-radius:4px;padding:2px 5px;margin-bottom:3px;display:inline-block">🎙️ AI Health Monitor alert</span><div style="font-family:var(--fh);font-size:14px;font-weight:700" id="gig-issue">—</div><div style="font-size:11px;color:var(--tx2);margin-top:2px" id="gig-loc">—</div></div>
           <div style="text-align:right"><div style="font-family:var(--fh);font-size:22px;font-weight:800;color:var(--gn)" id="gig-price">₹—</div><div style="font-size:10px;color:var(--tx3);margin-top:2px" id="gig-earn"></div></div>
         </div>
         <!-- CUSTOMER GPS LINK -->
@@ -957,8 +984,15 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
           <div class="veh-row"><span class="vl">Parts type</span><span class="vv" id="gig-parts">—</span></div>
           <div class="veh-row"><span class="vl">Categories</span><span class="vv" id="gig-cats">—</span></div>
         </div>
-        <!-- PARTS TO CARRY -->
+        <!-- PARTS TO CARRY (hidden for towing jobs — see tow-info-box instead) -->
         <div id="parts-to-carry" class="parts-box" style="display:none"></div>
+        <!-- TOWING INFO (shown instead of parts-to-carry when serviceType==='towing') -->
+        <div id="tow-info-box" style="display:none;background:var(--bl2);border:1px solid rgba(96,165,250,.3);border-radius:var(--r);padding:10px 11px;margin-bottom:9px">
+          <div style="font-family:var(--fh);font-size:11px;font-weight:700;color:var(--bl);margin-bottom:5px">🚚 Towing job — no diagnosis needed</div>
+          <div class="veh-row"><span class="vl">Pickup</span><span class="vv" id="tow-pickup-v">—</span></div>
+          <div class="veh-row"><span class="vl">Drop-off</span><span class="vv" id="tow-dest-v">—</span></div>
+          <div class="veh-row"><span class="vl">Distance</span><span class="vv" id="tow-dist-v">—</span></div>
+        </div>
         <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r);padding:10px;margin-bottom:9px">
           <div style="font-size:11px;font-weight:600;margin-bottom:3px">Customer: <span id="gig-cust" style="color:var(--gn)">—</span></div>
           <div style="font-size:11px;color:var(--tx2)">Phone: <span id="gig-cph">—</span></div>
@@ -1009,6 +1043,12 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
       </div>
       <!-- PARTS TO CARRY (Problem 4: was missing on the active screen) -->
       <div id="active-parts" class="parts-box" style="display:none;margin-bottom:10px"></div>
+      <div id="active-tow-box" style="display:none;background:var(--bl2);border:1px solid rgba(96,165,250,.3);border-radius:var(--r);padding:10px 11px;margin-bottom:10px">
+        <div style="font-family:var(--fh);font-size:11px;font-weight:700;color:var(--bl);margin-bottom:5px">🚚 Towing job</div>
+        <div class="veh-row"><span class="vl">Pickup</span><span class="vv" id="active-tow-pickup">—</span></div>
+        <div class="veh-row"><span class="vl">Drop-off</span><span class="vv" id="active-tow-dest">—</span></div>
+        <div class="veh-row"><span class="vl">Distance</span><span class="vv" id="active-tow-dist">—</span></div>
+      </div>
       <!-- FETCHING-TOOLS banner: shown while the mechanic is away collecting tools/parts -->
       <div id="active-fetch-banner" style="display:none;background:var(--bl2, rgba(96,165,250,.1));border:1.5px solid rgba(96,165,250,.4);border-radius:var(--r2);padding:11px;margin-bottom:10px">
         <div style="font-size:12px;font-weight:700;color:var(--bl);margin-bottom:3px">🧰 Away fetching tools</div>

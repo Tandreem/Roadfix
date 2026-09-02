@@ -202,6 +202,9 @@ function updateKPIs(){
   const verified=mList.filter(m=>m.verified).length;
   const pending=mList.filter(m=>!m.verified).length;
   const sosActive=aList.filter(a=>a.status==="active"&&a.type&&a.type.includes("sos")).length;
+  const towJobs=jList.filter(j=>j.serviceType==="towing").length;
+  const healthJobs=jList.filter(j=>j.aiHealthOrigin).length;
+  setEl("d-tow",towJobs);setEl("d-health",healthJobs);
   setEl("d-active",active);setEl("d-done",done);setEl("d-online",online);setEl("d-verified",verified);
   setEl("d-custs",Object.keys(C).length);setEl("d-sos",sosActive);
   setEl("d-pending",pending);
@@ -220,7 +223,7 @@ function renderJobs(){
         <td>${j.customerName||"—"}</td>
         <td style="font-size:11px;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${j.vehicle||"—"}</td>
         <td>${j.mechanic||'<span class="muted">Unassigned</span>'}</td>
-        <td style="font-size:11px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(j.issue||"—").slice(0,35)}${j.rediagnosed?' <span title="Re-diagnosed by mechanic" style="color:var(--yw)">🔄</span>':''}</td>
+        <td style="font-size:11px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${j.serviceType==="towing"?'<span title="Towing job">🚚</span> ':''}${j.aiHealthOrigin?'<span title="Booked from an AI Health Monitor alert">🎙️</span> ':''}${(j.issue||"—").slice(0,35)}${j.rediagnosed?' <span title="Re-diagnosed by mechanic" style="color:var(--yw)">🔄</span>':''}</td>
         <td>${j.status==="done"&&j.finalPrice?'<span class="price-final">₹'+Math.round(j.finalPrice)+'</span>':'<span class="price-est">₹'+(j.estimateLow||"?")+"–"+(j.estimateHigh||"?")+"</span>"}</td>
         <td><span class="bdg ${sBadge(j.status)}">${sLabel(j.status)}</span></td>
         <td><span class="bdg ${pBadge(j.partType)}">${j.partType||"—"}</span></td>
@@ -547,6 +550,10 @@ tr.row-done td{opacity:.6}
           <div class="kpi" onclick="showView('v-custs')" title="Customers"><div class="kpi-ico">👥</div><div class="kpi-val" style="color:var(--yw)" id="d-custs">0</div><div class="kpi-lbl">Customers</div><div class="kpi-hint">↗ Click to manage</div></div>
           <div class="kpi" onclick="showView('v-alerts')" title="Active SOS"><div class="kpi-ico">🚨</div><div class="kpi-val" style="color:var(--rd)" id="d-sos">0</div><div class="kpi-lbl">Active SOS</div><div class="kpi-hint">↗ Click to view</div></div>
           <div class="kpi" onclick="showView('v-mechs')" title="Pending verification"><div class="kpi-ico">⏳</div><div class="kpi-val" style="color:var(--yw)" id="d-pending">0</div><div class="kpi-lbl">Pending verify</div><div class="kpi-hint">↗ Click to verify</div></div>
+        </div>
+        <div class="kpi-grid-3" style="margin-top:10px">
+          <div class="kpi" onclick="showView('v-jobs')" title="Towing jobs"><div class="kpi-ico">🚚</div><div class="kpi-val" style="color:var(--bl)" id="d-tow">0</div><div class="kpi-lbl">Towing jobs</div><div class="kpi-hint">↗ Click to view</div></div>
+          <div class="kpi" onclick="showView('v-jobs')" title="AI Health Monitor originated jobs"><div class="kpi-ico">🎙️</div><div class="kpi-val" style="color:var(--pu)" id="d-health">0</div><div class="kpi-lbl">AI Health Monitor jobs</div><div class="kpi-hint">↗ Booked from an alert</div></div>
         </div>
         <div class="info-box">
           <h3>🎯 Admin guide</h3>

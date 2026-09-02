@@ -750,6 +750,9 @@ function createJob(a){
     partsNeeded:a.parts||'',partsDetail:a.partsDetail||[],aiFaults:a.faults||[],
     status:'pending',mechanic:null,mechanicId:null,partType:selPT,
     createdAt:Date.now(),location:p.city||''};
+  // If this job was booked straight from an AI Health Monitor Alert, tag it so the
+  // mechanic app (and admin revenue view) can tell it apart from a manually-reported issue.
+  if(localStorage.getItem('rf_health_origin')){job.aiHealthOrigin=true;localStorage.removeItem('rf_health_origin');}
   if(window._lat){job.lat=window._lat;job.lng=window._lng;}
   set(ref(db,'jobs/'+id),job);
   tx('job-id',id);
@@ -948,7 +951,7 @@ function renderHealthResult(entry,fault){
   }
   html+=`<div style="font-size:10px;color:var(--tx3);margin-top:5px">🎙️ Audio dev: ${entry.audioDev}% · 📳 Vibration dev: ${entry.vibDev}% · Camera cross-check: needs OBD+ hardware</div></div></div>`;
   if(entry.tier==='alert'){
-    html+=`<button class="btn b-or" onclick="go('s-report')">🔧 Find a verified RoadFix mechanic →</button><button class="btn b-ghost" onclick="renderHealthDash()">Not now</button>`;
+    html+=`<button class="btn b-or" onclick="localStorage.setItem('rf_health_origin','1');go('s-report')">🔧 Find a verified RoadFix mechanic →</button><button class="btn b-ghost" onclick="renderHealthDash()">Not now</button>`;
   }
   box.innerHTML=html;
 }

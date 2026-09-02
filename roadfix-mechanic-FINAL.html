@@ -193,10 +193,13 @@ function startListeners(){
         // guarded so it only ever fires once per job regardless of which side finished first.
         if(!completingJobIds.has(myJobId)){
           completingJobIds.add(myJobId);
-          const earn=820;
+          // Mechanic is paid the repair charge minus RoadFix's 10% commission. The customer
+          // app writes mechanicPayout on the job; fall back to computing it if it's missing.
+          const repair=j.repairPrice||j.finalPrice||j.estimateLow||0;
+          const earn=j.mechanicPayout!=null?j.mechanicPayout:Math.round(repair*0.90);
           update(ref(db,"mechanics/"+uid),{status:"online",activeJob:null,totalJobs:(profile&&profile.totalJobs||0)+1,totalEarned:(profile&&profile.totalEarned||0)+earn});
           toast("✅ Payment received — job complete!");
-          notify("✅ Job complete","Payment received — ₹"+earn+" credited to your earnings");
+          notify("✅ Job complete","₹"+earn+" credited (after 10% RoadFix fee)");
         }
         window._lastCompletedJobId=myJobId; // the rating screen (m-done) needs this to know which job to rate
         setJobId(null);setPendingGigId(null);shownGig=false;tx("active-job","None");hideGigBanner();watchChatForNotifications(null);
@@ -292,6 +295,9 @@ function hideGigBanner(){localStorage.removeItem("mrf_pendingGigId");const pv=ge
 function populateGig(id,job){
   tx("gig-issue",job.issue||"—");tx("gig-loc","📍 "+(job.location||"—"));
   tx("gig-price","₹"+(job.estimateLow||"—")+"–"+(job.estimateHigh||"—"));
+  // Show the mechanic their actual take-home (repair − 10% RoadFix fee).
+  const lo=Math.round((job.estimateLow||0)*0.90),hi=Math.round((job.estimateHigh||0)*0.90);
+  const ge2=ge("gig-earn");if(ge2)ge2.textContent="You earn ₹"+lo+"–₹"+hi+" (after 10% fee)";
   tx("gig-cust",job.customerName||"—");tx("gig-cph",job.customerPhone||"—");
   const vs=job.vehicle||((job.vehicleMake||"")+" "+(job.vehicleModel||"")+" "+(job.vehicleYear||"")+" "+(job.vehicleFuel||"")).trim();
   tx("gig-veh",vs||"Not specified");tx("gig-parts",job.partType||"OEM");tx("gig-cats",job.categories||"General");
@@ -940,7 +946,7 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
       <div style="background:var(--card);border:1.5px solid rgba(96,165,250,.28);border-radius:var(--r2);padding:15px;margin-bottom:10px">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:11px">
           <div><div style="font-family:var(--fh);font-size:14px;font-weight:700" id="gig-issue">—</div><div style="font-size:11px;color:var(--tx2);margin-top:2px" id="gig-loc">—</div></div>
-          <div style="text-align:right"><div style="font-family:var(--fh);font-size:22px;font-weight:800;color:var(--gn)" id="gig-price">₹—</div></div>
+          <div style="text-align:right"><div style="font-family:var(--fh);font-size:22px;font-weight:800;color:var(--gn)" id="gig-price">₹—</div><div style="font-size:10px;color:var(--tx3);margin-top:2px" id="gig-earn"></div></div>
         </div>
         <!-- CUSTOMER GPS LINK -->
         <a id="cust-gps-link" href="#" target="_blank" style="display:none;background:var(--bl2);border:1px solid rgba(96,165,250,.3);border-radius:var(--r);padding:8px 11px;text-align:center;font-size:12px;color:var(--bl);text-decoration:none;font-weight:600;display:block;margin-bottom:9px">📍 Navigate to customer — Google Maps →</a>

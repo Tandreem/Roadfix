@@ -142,7 +142,42 @@ function startListeners(){
   });
 }
 
-function renderAll(){updateKPIs();renderJobs();renderMechanics();renderCustomers();renderAlerts();}
+function renderAll(){updateKPIs();renderJobs();renderMechanics();renderCustomers();renderAlerts();renderFinance();}
+// Finance: total real platform revenue, customer spend and mechanic payouts from every
+// completed paid job. Uses the fee fields the customer app now writes; falls back to
+// computing the 14%/10% split from the repair price for older jobs that predate them.
+function renderFinance(){
+  const done=Object.entries(J).filter(([,j])=>j.status==="done");
+  let platform=0,custSpend=0,mechPayout=0,custFee=0,mechFee=0;
+  const rows=done.map(([id,j])=>{
+    const repair=j.repairPrice||j.finalPrice||j.estimateLow||0;
+    const cf=j.custFee!=null?j.custFee:Math.round(repair*0.14);
+    const mf=j.mechFee!=null?j.mechFee:Math.round(repair*0.10);
+    const paid=j.customerPaid!=null?j.customerPaid:repair+cf;
+    const got=j.mechanicPayout!=null?j.mechanicPayout:repair-mf;
+    const fee=j.platformFee!=null?j.platformFee:cf+mf;
+    platform+=fee;custSpend+=paid;mechPayout+=got;custFee+=cf;mechFee+=mf;
+    return {id,cust:j.customerName||"—",mech:j.mechanic||"—",repair,paid,got,fee};
+  });
+  setEl("f-platform","₹"+platform.toLocaleString("en-IN"));
+  setEl("f-cust-spend","₹"+custSpend.toLocaleString("en-IN"));
+  setEl("f-mech-payout","₹"+mechPayout.toLocaleString("en-IN"));
+  setEl("f-cust-fee","₹"+custFee.toLocaleString("en-IN"));
+  setEl("f-mech-fee","₹"+mechFee.toLocaleString("en-IN"));
+  setEl("f-jobs",String(rows.length));
+  const tb=document.getElementById("finance-tbody");
+  if(tb){
+    tb.innerHTML=rows.length?rows.sort((a,b)=>b.fee-a.fee).map(r=>`<tr>
+      <td><span class="mono">#${(r.id||"").slice(-6)}</span></td>
+      <td style="font-size:12px">${escapeHtml(r.cust)}</td>
+      <td style="font-size:12px">${escapeHtml(r.mech)}</td>
+      <td>₹${r.repair}</td>
+      <td style="color:var(--or)">₹${r.paid}</td>
+      <td style="color:var(--bl)">₹${r.got}</td>
+      <td style="color:var(--gn);font-weight:700">₹${r.fee}</td>
+    </tr>`).join(""):'<tr><td colspan="7" class="empty-row">No completed paid jobs yet</td></tr>';
+  }
+}
 
 function updateKPIs(){
   const jList=Object.values(J),mList=Object.values(M),cList=Object.values(C),aList=Object.values(A);
@@ -457,6 +492,7 @@ tr.row-done td{opacity:.6}
     <div class="sb-sec">Operations</div>
     <div class="sb-item active" id="si-dash" onclick="showView('v-dash')"><div class="sb-ico">📊</div>Dashboard</div>
     <div class="sb-item" id="si-jobs" onclick="showView('v-jobs')"><div class="sb-ico">🔧</div>Live jobs</div>
+    <div class="sb-item" id="si-finance" onclick="showView('v-finance')"><div class="sb-ico">💰</div>Finance</div>
     <div class="sb-item" id="si-alerts" onclick="showView('v-alerts')"><div class="sb-ico">🚨</div>Alerts & SOS<span class="bdg b-y" id="br-badge" style="display:none;margin-left:auto;font-size:9px">👎 0</span></div>
     <div class="sb-sec">People</div>
     <div class="sb-item" id="si-mechs" onclick="showView('v-mechs')"><div class="sb-ico">👷</div>Mechanics</div>
@@ -507,6 +543,28 @@ tr.row-done td{opacity:.6}
         <div class="table-wrap">
           <div class="table-head"><div class="table-head-title">All jobs — live from Firebase</div><span class="bdg b-g">● Synced</span></div>
           <div style="overflow-x:auto"><table><thead><tr><th style="width:80px">Job</th><th style="width:100px">Customer</th><th style="width:110px">Vehicle</th><th style="width:100px">Mechanic</th><th>Issue</th><th style="width:90px">Price</th><th style="width:90px">Status</th><th style="width:50px">Parts</th><th style="width:40px">Del</th></tr></thead><tbody id="jobs-tbody-2"><tr><td colspan="9" class="empty-row">No jobs yet</td></tr></tbody></table></div>
+        </div>
+      </div>
+      <div id="v-finance" class="view">
+        <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr)">
+          <div class="kpi" style="border-color:rgba(34,197,94,.35)"><div class="kpi-ico">💰</div><div class="kpi-val" style="color:var(--gn)" id="f-platform">₹0</div><div class="kpi-lbl">Your platform earnings</div><div class="kpi-hint">14% from customers + 10% from mechanics</div></div>
+          <div class="kpi"><div class="kpi-ico">🧾</div><div class="kpi-val" style="color:var(--or)" id="f-cust-spend">₹0</div><div class="kpi-lbl">Total customer spend</div><div class="kpi-hint">what customers paid in total</div></div>
+          <div class="kpi"><div class="kpi-ico">🔧</div><div class="kpi-val" style="color:var(--bl)" id="f-mech-payout">₹0</div><div class="kpi-lbl">Paid out to mechanics</div><div class="kpi-hint">after 10% commission</div></div>
+        </div>
+        <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr)">
+          <div class="kpi"><div class="kpi-ico">📥</div><div class="kpi-val" style="color:var(--gn);font-size:15px" id="f-cust-fee">₹0</div><div class="kpi-lbl">From customer fees (14%)</div></div>
+          <div class="kpi"><div class="kpi-ico">📤</div><div class="kpi-val" style="color:var(--gn);font-size:15px" id="f-mech-fee">₹0</div><div class="kpi-lbl">From mechanic fees (10%)</div></div>
+          <div class="kpi"><div class="kpi-ico">✅</div><div class="kpi-val" style="font-size:15px" id="f-jobs">0</div><div class="kpi-lbl">Completed paid jobs</div></div>
+        </div>
+        <div class="info-box">
+          <h3>💡 How the money works</h3>
+          <div class="info-step"><div class="info-n">1</div><div>Customer pays <strong>repair + 14%</strong> through RoadFix (UPI / card / wallet — not cash).</div></div>
+          <div class="info-step"><div class="info-n">2</div><div>RoadFix keeps its cut and <strong>pays the mechanic repair − 10%</strong> via payment-gateway payout/settlement.</div></div>
+          <div class="info-step"><div class="info-n">3</div><div>Your earnings per job = <strong>14% + 10% = 24% of the repair charge</strong>. These totals are computed live from every completed paid job.</div></div>
+        </div>
+        <div class="table-wrap">
+          <div class="table-head"><div class="table-head-title">Completed jobs — money breakdown</div><span class="bdg b-g">● Live</span></div>
+          <div style="overflow-x:auto"><table><thead><tr><th style="width:80px">Job</th><th style="width:110px">Customer</th><th style="width:100px">Mechanic</th><th style="width:90px">Repair</th><th style="width:100px">Customer paid</th><th style="width:100px">Mechanic got</th><th style="width:100px">Your fee</th></tr></thead><tbody id="finance-tbody"><tr><td colspan="7" class="empty-row">No completed paid jobs yet</td></tr></tbody></table></div>
         </div>
       </div>
       <div id="v-alerts" class="view">
@@ -561,9 +619,9 @@ tr.row-done td{opacity:.6}
   </div>
 </div>
 <script>
-var views=["v-dash","v-jobs","v-alerts","v-mechs","v-custs","v-pb"];
-var siMap={"v-dash":"si-dash","v-jobs":"si-jobs","v-alerts":"si-alerts","v-mechs":"si-mechs","v-custs":"si-custs","v-pb":"si-pb"};
-var titles={"v-dash":"Dashboard","v-jobs":"Live jobs","v-alerts":"Alerts & SOS","v-mechs":"Mechanics","v-custs":"Customers","v-pb":"Pre-bookings"};
+var views=["v-dash","v-jobs","v-finance","v-alerts","v-mechs","v-custs","v-pb"];
+var siMap={"v-dash":"si-dash","v-jobs":"si-jobs","v-finance":"si-finance","v-alerts":"si-alerts","v-mechs":"si-mechs","v-custs":"si-custs","v-pb":"si-pb"};
+var titles={"v-dash":"Dashboard","v-jobs":"Live jobs","v-finance":"Finance","v-alerts":"Alerts & SOS","v-mechs":"Mechanics","v-custs":"Customers","v-pb":"Pre-bookings"};
 function showView(id){
   views.forEach(v=>{var e=document.getElementById(v);if(e)e.classList.remove("active");});
   var n=document.getElementById(id);if(n)n.classList.add("active");

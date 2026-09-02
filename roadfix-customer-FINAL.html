@@ -515,10 +515,29 @@ function fIco(f,t){
 }
 
 // ── PHOTO + VOICE ─────────────────────────────────────
-window.doPhoto=()=>{
-  const i=document.createElement('input');i.type='file';i.accept='image/*';i.capture='environment';
-  i.onchange=async e=>{const f=e.target.files[0];if(!f)return;const pv=ge('photo-prev');if(pv)pv.src='';const d=await b64(f);window._photo=d;if(pv){pv.src=d;pv.style.display='block';}const ta=ge('ptxt');if(ta&&!ta.value)ta.value='[Photo attached] ';toast('📷 Photo attached');};
+// Camera capture (rear camera directly).
+window.doPhoto=()=>openPhotoPicker(true);
+// Gallery/file picker (no forced camera).
+window.doGallery=()=>openPhotoPicker(false);
+function openPhotoPicker(useCamera){
+  const i=document.createElement('input');i.type='file';i.accept='image/*';if(useCamera)i.capture='environment';
+  i.onchange=async e=>{
+    const f=e.target.files[0];if(!f)return;
+    const d=await resizeImg(f); // compress before storing/sending
+    window._photo=d;
+    const pv=ge('photo-prev');if(pv){pv.src=d;pv.style.display='block';}
+    const rm=ge('photo-remove');if(rm)rm.style.display='inline-flex';
+    toast(useCamera?'📷 Photo captured':'🖼️ Photo attached');
+  };
   i.click();
+}
+// Remove the attached photo.
+window.removePhoto=()=>{
+  window._photo=null;
+  const pv=ge('photo-prev');if(pv){pv.src='';pv.style.display='none';}
+  const rm=ge('photo-remove');if(rm)rm.style.display='none';
+  const ta=ge('ptxt');if(ta)ta.value=ta.value.replace('[Photo attached] ','');
+  toast('🗑️ Photo removed');
 };
 window.doVoice=async()=>{
   // If wrapped in a native Android shell with a voice bridge exposed, use that —
@@ -550,35 +569,84 @@ window.onVoiceResult=(text)=>{
 // ── AI ANALYSIS ───────────────────────────────────────
 window.startAI=()=>{
   if(!selVeh){toast('⚠️ Select a vehicle first!');go('s-addcar');return;}
+  const issue=gv('ptxt')||'';
+  if(!issue.trim()&&!window._photo){toast('Please describe the problem or attach a photo first');return;}
+  // Ask a few clarifying questions BEFORE diagnosing — this materially reduces wrong
+  // diagnoses. Questions adapt to what the customer already described.
+  window._followupAnswers='';
+  showFollowups(issue);
+};
+// Pick relevant clarifying questions from the described issue.
+function buildFollowups(issue){
+  const t=(issue||'').toLowerCase();
+  const q=[];
+  q.push({q:'When does the problem happen?',opts:['All the time','Only when driving','Only at start','Randomly']});
+  if(/noise|sound|clunk|rattle|grind|squeal|knock/.test(t)) q.push({q:'What does the sound do when you speed up?',opts:['Gets louder','Stays same','Goes away','Not sure']});
+  if(/brake|stop/.test(t)) q.push({q:'Do you feel it in the brake pedal?',opts:['Vibration','Soft/spongy','Nothing unusual','Not sure']});
+  if(/start|crank|ignition|battery/.test(t)) q.push({q:'What happens when you turn the key?',opts:['Nothing','Clicking','Cranks slowly','Starts then dies']});
+  if(/smoke|smell|burn|overheat|temp/.test(t)) q.push({q:'What colour is the smoke/smell?',opts:['White','Blue','Black','Burning smell']});
+  if(q.length<2) q.push({q:'How severe does it feel?',opts:['Minor','Moderate','Serious','Car undriveable']});
+  return q.slice(0,3);
+}
+function showFollowups(issue){
+  const qs=buildFollowups(issue);
+  window._followupQs=qs;window._followupPicks={};
+  go('s-followup');
+  const box=ge('followup-box');
+  if(box){
+    box.innerHTML=qs.map((item,qi)=>`<div style="margin-bottom:13px"><div class="sl">${item.q}</div><div style="display:flex;flex-wrap:wrap;gap:6px">${item.opts.map(o=>`<div class="cat" onclick="pickFollowup(${qi},'${o.replace(/'/g,"")}',this)">${o}</div>`).join('')}</div></div>`).join('');
+  }
+}
+window.pickFollowup=(qi,val,el)=>{
+  window._followupPicks[qi]=val;
+  const grp=el.parentElement;qsa2(grp,'.cat').forEach(c=>c.classList.remove('sel'));el.classList.add('sel');
+};
+function qsa2(parent,sel){return Array.from(parent.querySelectorAll(sel));}
+window.skipFollowups=()=>{runDiagnosisNow();};
+window.submitFollowups=()=>{
+  const qs=window._followupQs||[];const picks=window._followupPicks||{};
+  window._followupAnswers=qs.map((item,i)=>picks[i]?(item.q+' → '+picks[i]):'').filter(Boolean).join('\n');
+  runDiagnosisNow();
+};
+function runDiagnosisNow(){
   go('s-ai');
   ge('ai-load').style.display='flex';ge('ai-res').style.display='none';
   tx('ai-veh-txt','Analysing: '+selVeh.make+' '+selVeh.model+' '+selVeh.year+' '+selVeh.fuel);
   runAI(selVeh,gv('ptxt')||'Vehicle problem',cats.length?cats.join(', '):'General');
-};
+}
 function round50(n){return Math.round(n/50)*50;}
 async function runAI(veh,issue,catStr){
   const KEY=window._geminiKey||'';
   const isEV=veh.fuel==='Electric';
   const isBike=veh.type==='bike';
-  // Newer vehicles are less likely to have serious mechanical failures and are usually
-  // cheaper to fix (parts under warranty age, less wear). Pass the age to the AI so its
-  // fault probabilities and price band reflect that.
   const vehAge=Math.max(0,(new Date().getFullYear())-(parseInt(veh.year)||new Date().getFullYear()));
   const ageNote=vehAge<=3?'This vehicle is NEARLY NEW (under 3 years old) — serious mechanical failures are unlikely, most issues are minor/under warranty, and repair costs should be LOW.':vehAge<=7?'This vehicle is moderately aged (3-7 years) — normal wear items expected, moderate repair costs.':'This vehicle is older (7+ years) — wear-related failures more likely, repair costs may be higher.';
-  const prompt=`You are an expert vehicle mechanic AI. Return ONLY a raw JSON object. No markdown. No explanation. No backticks.
+  const followups=window._followupAnswers?('\nAdditional details the customer provided:\n'+window._followupAnswers):'';
+  const hasPhoto=!!window._photo;
+  const prompt=`You are an expert vehicle mechanic AI diagnosing a real car/motorcycle problem. Think step by step and be thorough to minimise the risk of a wrong diagnosis.
+${hasPhoto?'An image is attached. FIRST verify it actually shows a vehicle or a vehicle part. If the image shows people, faces, animals, food, documents, screenshots, or anything NOT related to a vehicle, you MUST reject it.\n':''}
+IMPORTANT — RELEVANCE CHECK: RoadFix only diagnoses vehicle mechanical/electrical problems. If the customer's request is NOT about a vehicle problem (e.g. it's about a person, a general question, unrelated to the vehicle), OR the attached image is not a vehicle, respond with ONLY: {"reject":true,"rejectReason":"short reason"}
+Otherwise, diagnose thoroughly.
 Vehicle: ${veh.make} ${veh.model} ${veh.year} ${veh.fuel}${isEV?' (ELECTRIC)':''}${isBike?' (LUXURY MOTORCYCLE)':''}
 Vehicle age: ${vehAge} years. ${ageNote}
-Problem: ${issue}
-Categories: ${catStr}
-Factor the vehicle age into fault probabilities and the price range: a newer vehicle should have lower fault probabilities for wear items and a lower price band.
-Return ONLY this JSON:
+Problem described: ${issue}
+Categories: ${catStr}${followups}
+Factor the vehicle age into fault probabilities and price. A newer vehicle = lower fault probabilities for wear items and a lower price band.
+Return ONLY raw JSON (no markdown, no backticks). Either the reject object above, OR:
 {"faults":[{"name":"specific fault","pct":87,"desc":"one sentence","col":"rd"},{"name":"specific fault","pct":61,"desc":"one sentence","col":"yw"},{"name":"specific fault","pct":38,"desc":"one sentence","col":"bl"}],"warn":"safety warning or empty","parts":"comma separated parts","partsDetail":[{"part":"CV Axle","qty":1,"spec":"OEM spec for ${veh.make} ${veh.model}","urgency":"immediate"}],"low":800,"high":2500,"severity":"high"}`;
   if(!KEY||KEY.length<20){showAISmartFallback(veh,issue,catStr);return;}
   const isOAuth=KEY.startsWith('AQ.');
   const url='https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent'+(isOAuth?'':'?key='+KEY);
   const headers={'Content-Type':'application/json'};if(isOAuth)headers['Authorization']='Bearer '+KEY;
+  // Build multimodal parts — include the photo so the AI can both diagnose from it AND
+  // verify it's actually a vehicle (rejecting people/other images as requested).
+  const parts=[{text:prompt}];
+  if(hasPhoto){
+    const m=String(window._photo).match(/^data:(image\/[a-zA-Z]+);base64,(.*)$/);
+    if(m)parts.push({inline_data:{mime_type:m[1],data:m[2]}});
+  }
   try{
-    const r=await fetch(url,{method:'POST',headers,body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.05,maxOutputTokens:600}})});
+    const r=await fetch(url,{method:'POST',headers,body:JSON.stringify({contents:[{parts}],generationConfig:{temperature:0.05,maxOutputTokens:700}})});
     if(!r.ok){const et=await r.text().catch(()=>'');console.warn('Gemini API error',r.status,et);toast('⚠️ AI service unavailable — using smart estimate instead');showAISmartFallback(veh,issue,catStr);return;}
     const d=await r.json();
     if(!d.candidates||!d.candidates[0]){showAISmartFallback(veh,issue,catStr);return;}
@@ -586,8 +654,21 @@ Return ONLY this JSON:
     raw=raw.replace(/^```json\s*/i,'').replace(/^```\s*/,'').replace(/\s*```$/,'').trim();
     const m=raw.match(/\{[\s\S]*\}/);
     let a=null;try{a=JSON.parse(m?m[0]:raw);}catch(e){a=null;}
+    if(a&&a.reject){showAIRejected(a.rejectReason||'This doesn\'t look like a vehicle problem.');return;}
     if(a&&a.faults&&a.faults.length)showAI(applyAgeFactor(a,veh));else showAISmartFallback(veh,issue,catStr);
   }catch(e){console.warn('Gemini network error',e);toast('⚠️ AI service unavailable — using smart estimate instead');showAISmartFallback(veh,issue,catStr);}
+}
+// Shown when the AI determines the request/image isn't a vehicle problem it can diagnose.
+function showAIRejected(reason){
+  const load=ge('ai-load'),res=ge('ai-res');
+  if(load)load.style.display='none';
+  if(res){
+    res.style.display='block';
+    res.innerHTML='<div style="text-align:center;padding:26px 16px"><div style="font-size:46px;margin-bottom:10px">🚫</div>'+
+      '<div style="font-family:var(--fh);font-size:17px;font-weight:800;margin-bottom:7px">Can\'t diagnose this</div>'+
+      '<div style="font-size:13px;color:var(--tx2);line-height:1.6;margin-bottom:16px">'+reason+'<br><br>RoadFix only diagnoses vehicle problems. Please describe an issue with your car or bike, and attach a photo of the vehicle or the affected part (not people or other objects).</div>'+
+      '<button class="btn b-or" onclick="removePhoto();go(\'s-report\')" style="max-width:220px;margin:0 auto">← Try again</button></div>';
+  }
 }
 function showAISmartFallback(veh,issue,catStr){
   const il=(issue||'').toLowerCase(),cl=(catStr||'').toLowerCase(),isEV=veh&&veh.fuel==='Electric';
@@ -824,6 +905,23 @@ window.doSOS=()=>{
 };
 
 // ── PAYMENT ───────────────────────────────────────────
+// ── PLATFORM FEE MODEL ────────────────────────────────
+// repair price = what the mechanic charges for the work (AI estimate).
+// Customer pays repair + 14%. Mechanic receives repair − 10%. RoadFix keeps both cuts.
+const CUST_FEE_PCT=0.14, MECH_FEE_PCT=0.10;
+function feeBreakdown(repair){
+  repair=Math.round(repair||0);
+  const custFee=Math.round(repair*CUST_FEE_PCT);
+  const mechFee=Math.round(repair*MECH_FEE_PCT);
+  return {
+    repair,
+    custFee,
+    mechFee,
+    customerPays:repair+custFee,      // what the customer is charged
+    mechanicGets:repair-mechFee,      // what the mechanic is paid out
+    platformEarns:custFee+mechFee     // RoadFix revenue on this job
+  };
+}
 window.selPayMethod2=(method,el)=>{
   selPayMethod=method;
   qsa('.pm').forEach(e=>e.classList.remove('sel'));
@@ -831,17 +929,21 @@ window.selPayMethod2=(method,el)=>{
   const detail=ge('pay-detail');
   if(!detail)return;
   const price=window.currentJobPrice||(window._aiResult?Math.round(window._aiResult.low):1550);
-  const platform=Math.round(price*0.025); // 2.5% platform fee
-  const mechCut=Math.round((price-platform)*0.98); // 1-2% from mechanic
-  const total=price+platform;
+  const f=feeBreakdown(price);
   const methods={
-    'UPI':'<div style="background:var(--bg3);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">Pay via UPI</div><div style="font-size:11px;color:var(--tx2)">UPI ID: roadfix@paytm</div><div style="font-size:11px;color:var(--tx2);margin-top:3px">Scan QR at mechanic site</div></div>',
-    'Cash':'<div style="background:var(--bg3);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">Pay with Cash</div><div style="font-size:11px;color:var(--tx2)">Pay mechanic directly in cash after job completion.</div></div>',
-    'Card':'<div style="background:var(--bg3);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">Pay by Card</div><div style="font-size:11px;color:var(--tx2)">Swipe at mechanic POS terminal or pay via bank app</div></div>',
-    'Wallet':'<div style="background:var(--bg3);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">Digital Wallet</div><div style="font-size:11px;color:var(--tx2)">Paytm · PhonePe · GPay accepted</div></div>',
+    'UPI':'<div style="background:var(--bg3);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">Pay via UPI (through RoadFix)</div><div style="font-size:11px;color:var(--tx2)">Secure UPI payment — RoadFix pays the mechanic after the job.</div></div>',
+    'Cash':'<div style="background:var(--rd2);border:1px solid rgba(239,68,68,.25);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--rd)">Cash not available</div><div style="font-size:11px;color:var(--tx2)">Payments go through RoadFix so your job is protected and the mechanic is paid securely. Please choose UPI, Card or Wallet.</div></div>',
+    'Card':'<div style="background:var(--bg3);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">Pay by Card (through RoadFix)</div><div style="font-size:11px;color:var(--tx2)">Secure card payment — RoadFix settles with the mechanic after completion.</div></div>',
+    'Wallet':'<div style="background:var(--bg3);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">Digital Wallet (through RoadFix)</div><div style="font-size:11px;color:var(--tx2)">Paytm · PhonePe · GPay — RoadFix pays the mechanic after the job.</div></div>',
   };
-  detail.innerHTML=(methods[method]||'')+'<div class="rr" style="border-top:2px solid var(--bdr2);padding-top:8px"><strong>Total</strong><strong style="color:var(--or)">₹'+total+'</strong></div>';
-  tx('pay-total','₹'+total);
+  detail.innerHTML=(methods[method]||'')+
+    '<div class="rr"><span style="color:var(--tx2)">Repair charge</span><span>₹'+f.repair+'</span></div>'+
+    '<div class="rr"><span style="color:var(--tx2)">Platform &amp; service fee</span><span>₹'+f.custFee+'</span></div>'+
+    '<div class="rr" style="border-top:2px solid var(--bdr2);padding-top:8px;margin-top:4px"><strong>Total to pay</strong><strong style="color:var(--or)">₹'+f.customerPays+'</strong></div>';
+  tx('pay-total','₹'+f.customerPays);
+  // Cash is intentionally not selectable for commission collection — block continue on it.
+  const payBtn=ge('pay-complete-btn');
+  if(payBtn){if(method==='Cash'){payBtn.disabled=true;payBtn.style.opacity='.5';}else{payBtn.disabled=false;payBtn.style.opacity='1';}}
 };
 
 window.customerJobDone=()=>{
@@ -854,14 +956,18 @@ window.customerJobDone=()=>{
 };
 window.finishJob=async()=>{
   const jid=getJobId();if(!jid)return;
+  if(selPayMethod==='Cash'){toast('Please choose UPI, Card or Wallet — cash isn\'t supported');return;}
   if(completingJobIds.has(jid)){setJobId(null);window._aiResult=null;clearActiveJobBanner();go('s-home');return;}
   completingJobIds.add(jid);
   const price=window.currentJobPrice||(window._aiResult?Math.round(window._aiResult.low):1550);
+  const f=feeBreakdown(price);
   const rating=selRating||5;
   const reasonEl=ge('cust-rate-reason');
   const ratingReason=reasonEl?reasonEl.value.trim():'';
-  update(ref(db,'jobs/'+jid),{customer_done:true,status:'done',finalPrice:price,paymentMethod:selPayMethod,rating,ratingReason,completedAt:Date.now()});
-  update(ref(db,'customers/'+uid),{totalJobs:(profile&&profile.totalJobs||0)+1,totalSpend:(profile&&profile.totalSpend||0)+price});
+  // Store the full fee split on the job so the admin finance page can total real revenue.
+  update(ref(db,'jobs/'+jid),{customer_done:true,status:'done',finalPrice:price,repairPrice:f.repair,customerPaid:f.customerPays,mechanicPayout:f.mechanicGets,platformFee:f.platformEarns,custFee:f.custFee,mechFee:f.mechFee,paymentMethod:selPayMethod,rating,ratingReason,completedAt:Date.now()});
+  // Customer's lifetime spend reflects what they actually paid (repair + customer fee).
+  update(ref(db,'customers/'+uid),{totalJobs:(profile&&profile.totalJobs||0)+1,totalSpend:(profile&&profile.totalSpend||0)+f.customerPays});
   // Update the mechanic's real average rating (was previously hardcoded at 5.0 and never touched).
   try{
     const jobSnap=await get(ref(db,'jobs/'+jid));
@@ -1190,9 +1296,11 @@ async function withBusy(btnId,busyLabel,fn){
       <div class="sl">Describe the problem</div>
       <textarea id="ptxt" rows="3" style="background:var(--bg3);border:1px solid var(--bdr2);border-radius:var(--r);color:var(--tx);font-family:var(--fb);font-size:14px;padding:9px 11px;width:100%;outline:none;resize:none" placeholder="e.g. Loud clunking on left turns, vibrates at speed..."></textarea>
       <img id="photo-prev" src="" alt="" style="display:none;width:100%;border-radius:var(--r);margin-top:7px;max-height:150px;object-fit:cover">
+      <div id="photo-remove" style="display:none;margin-top:5px;text-align:right"><span onclick="removePhoto()" style="font-size:11px;color:var(--rd);cursor:pointer;display:inline-flex;align-items:center;gap:3px">🗑️ Remove photo</span></div>
       <div class="ia-row" style="margin-top:7px">
         <div class="ia" onclick="doVoice()"><div style="font-size:18px">🎙️</div><div style="font-size:10px;color:var(--tx2)">Voice</div></div>
         <div class="ia" onclick="doPhoto()"><div style="font-size:18px">📷</div><div style="font-size:10px;color:var(--tx2)">Camera</div></div>
+        <div class="ia" onclick="doGallery()"><div style="font-size:18px">🖼️</div><div style="font-size:10px;color:var(--tx2)">Gallery</div></div>
         <div class="ia" onclick="go('s-prevent')"><div style="font-size:18px">🛡️</div><div style="font-size:10px;color:var(--tx2)">Preventive</div></div>
       </div>
     </div>
@@ -1251,6 +1359,17 @@ async function withBusy(btnId,busyLabel,fn){
       </div>
       <!-- Hidden fallback for runPreventiveCheck — keeps function working -->
       <div id="prev-results" style="display:none"></div>
+    </div>
+  </div>
+</div>
+<div id="s-followup" class="scr">
+  <div class="topbar"><div class="back" onclick="go('s-report')">← Back</div><div class="pgt">A few quick questions</div><div class="sp"></div></div>
+  <div class="sb">
+    <div class="sec">
+      <div style="background:var(--bl2, rgba(59,130,246,.1));border:1px solid rgba(59,130,246,.3);border-radius:var(--r);padding:10px 12px;font-size:11px;color:var(--bl);margin-bottom:13px">🤖 Answering these helps the AI diagnose more accurately and reduces the chance of a wrong estimate. Tap the option that fits best.</div>
+      <div id="followup-box"></div>
+      <button class="btn b-or" onclick="submitFollowups()">Continue to diagnosis →</button>
+      <button class="btn b-ghost" onclick="skipFollowups()">Skip — just diagnose</button>
     </div>
   </div>
 </div>
@@ -1388,7 +1507,7 @@ async function withBusy(btnId,busyLabel,fn){
         <div class="sl" id="cust-rate-label">Write a review (optional)</div>
         <div class="f"><textarea id="cust-rate-reason" rows="2" placeholder="How was your experience with the mechanic?" style="width:100%;resize:vertical"></textarea></div>
       </div>
-      <button class="btn b-or" onclick="finishJob()">Pay & complete →</button>
+      <button class="btn b-or" id="pay-complete-btn" onclick="finishJob()">Pay & complete →</button>
     </div>
   </div>
 </div>

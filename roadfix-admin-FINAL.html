@@ -148,7 +148,16 @@ function startListeners(){
   });
 }
 
-function renderAll(){updateKPIs();renderJobs();renderMechanics();renderCustomers();renderAlerts();renderFinance();}
+function renderAll(){
+  // Each section is isolated so one failing render can't abort the rest (which is exactly
+  // what happened when escapeHtml was undefined — alerts/mechanics/customers all vanished).
+  try{updateKPIs();}catch(e){console.error("updateKPIs",e);}
+  try{renderJobs();}catch(e){console.error("renderJobs",e);}
+  try{renderMechanics();}catch(e){console.error("renderMechanics",e);}
+  try{renderCustomers();}catch(e){console.error("renderCustomers",e);}
+  try{renderAlerts();}catch(e){console.error("renderAlerts",e);}
+  try{renderFinance();}catch(e){console.error("renderFinance",e);}
+}
 // Finance: total real platform revenue, customer spend and mechanic payouts from every
 // completed paid job. Uses the fee fields the customer app now writes; falls back to
 // computing the 14%/10% split from the repair price for older jobs that predate them.
@@ -376,6 +385,12 @@ window.unblacklistUser=(role,id,name)=>{
 };
 
 function setEl(id,val){const e=document.getElementById(id);if(e)e.textContent=val;}
+// HTML-escape helpers. These were referenced by renderAlerts/renderMechanics/renderCustomers
+// but never defined in this file — their absence threw a ReferenceError that aborted the
+// whole render, which is why the alerts list (and mechanic/customer tables) showed nothing
+// even though the KPI counts were correct.
+function escapeHtml(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");}
+function escapeQuotes(s){return String(s==null?"":s).replace(/\\/g,"\\\\").replace(/'/g,"\\'").replace(/"/g,"&quot;");}
 // FIX 49: ago with title tooltip showing absolute date
 function renderPrebookings(pbs){
   const c=document.getElementById("pb-tbody");if(!c)return;

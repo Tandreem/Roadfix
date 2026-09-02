@@ -139,6 +139,12 @@ function startListeners(){
     // Separate badge for pending bad reviews on the Alerts sidebar item.
     const brBadge=document.getElementById("br-badge");
     if(brBadge){if(activeBadReviews.length>0){brBadge.textContent="👎 "+activeBadReviews.length;brBadge.style.display="inline-flex";}else brBadge.style.display="none";}
+  },err=>{
+    // Surface a read failure instead of silently showing nothing — almost always means the
+    // Firebase rules don't grant this admin read access to /alerts.
+    console.error("alerts read failed",err);
+    const c=document.getElementById("alerts-container");
+    if(c)c.innerHTML='<div class="empty-card" style="color:var(--rd)">⚠️ Can\'t load alerts: '+((err&&err.message)||"permission denied")+'<br><br>Check that your Firebase rules allow this admin to read <b>/alerts</b>.</div>';
   });
 }
 

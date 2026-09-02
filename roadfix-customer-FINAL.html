@@ -146,6 +146,13 @@ function startApp(){
   profUnsub=onValue(ref(db,'customers/'+uid),snap=>{
     const p=snap.val();if(!p)return;
     profile=p;
+    // Blacklist enforcement: an admin can blacklist a customer with repeated bad reviews.
+    // If so, sign them out and block access with a clear message.
+    if(p.blacklisted){
+      if(profUnsub)profUnsub();if(jobsUnsub)jobsUnsub();if(mechsUnsub)mechsUnsub();
+      alert('Your account has been suspended due to repeated policy violations. Please contact RoadFix support.');
+      signOut(auth);go('s-login');return;
+    }
     qsa('.c-name').forEach(e=>e.textContent=p.name||'');
     qsa('.c-first').forEach(e=>e.textContent='Hi, '+(p.name||'there').split(' ')[0]+' 👋');
     qsa('.c-phone').forEach(e=>e.textContent=(p.phone||'')+(p.city?' · '+p.city:''));
@@ -852,26 +859,47 @@ window.finishJob=async()=>{
   const price=window.currentJobPrice||(window._aiResult?Math.round(window._aiResult.low):1550);
   const rating=selRating||5;
   const reasonEl=ge('cust-rate-reason');
-  const ratingReason=(rating<=3&&reasonEl)?reasonEl.value.trim():'';
+  const ratingReason=reasonEl?reasonEl.value.trim():'';
   update(ref(db,'jobs/'+jid),{customer_done:true,status:'done',finalPrice:price,paymentMethod:selPayMethod,rating,ratingReason,completedAt:Date.now()});
   update(ref(db,'customers/'+uid),{totalJobs:(profile&&profile.totalJobs||0)+1,totalSpend:(profile&&profile.totalSpend||0)+price});
   // Update the mechanic's real average rating (was previously hardcoded at 5.0 and never touched).
   try{
     const jobSnap=await get(ref(db,'jobs/'+jid));
-    const mechId=jobSnap.val()&&jobSnap.val().mechanicId;
+    const jobData=jobSnap.val()||{};
+    const mechId=jobData.mechanicId;
     if(mechId){
       const mSnap=await get(ref(db,'mechanics/'+mechId));
       const m=mSnap.val()||{};
       const priorCount=m.ratingCount||m.totalJobs||0;
       const priorAvg=parseFloat(m.rating)||5.0;
       const newAvg=((priorAvg*priorCount)+rating)/(priorCount+1);
-      update(ref(db,'mechanics/'+mechId),{rating:newAvg.toFixed(1),ratingCount:priorCount+1});
+      const isBad=rating<=2;
+      const badCount=(m.badReviewCount||0)+(isBad?1:0);
+      update(ref(db,'mechanics/'+mechId),{rating:newAvg.toFixed(1),ratingCount:priorCount+1,badReviewCount:badCount});
+      // Store the full review so admin (and future UI) can see the actual feedback, not just an average.
+      push(ref(db,'reviews/'+mechId),{
+        fromRole:'customer',fromName:(profile&&profile.name)||'Customer',fromId:uid,
+        aboutRole:'mechanic',aboutName:jobData.mechanic||m.name||'Mechanic',
+        rating,reason:ratingReason,jobId:jid,time:Date.now()
+      }).catch(()=>{});
+      // Bad review (≤2★) → raise an alert in the admin panel.
+      if(isBad){
+        push(ref(db,'alerts'),{
+          type:'bad_review',status:'active',
+          name:jobData.mechanic||m.name||'Mechanic',
+          about:'mechanic',aboutId:mechId,
+          rating,reason:ratingReason||'(no reason given)',
+          fromName:(profile&&profile.name)||'Customer',
+          badCount,
+          app:'customer',time:Date.now()
+        }).catch(()=>{});
+      }
     }
   }catch(e){/* rating aggregate is best-effort — job completion above already succeeded */}
   selRating=5;
   qsa('.star').forEach(s=>s.classList.add('on'));
-  const reasonWrap=ge('cust-rate-reason-wrap'),reasonBox=ge('cust-rate-reason');
-  if(reasonWrap)reasonWrap.style.display='none';if(reasonBox)reasonBox.value='';
+  const reasonBox=ge('cust-rate-reason');if(reasonBox)reasonBox.value='';
+  const lbl=ge('cust-rate-label');if(lbl)lbl.textContent='Write a review (optional)';
   setJobId(null);window._aiResult=null;clearActiveJobBanner();go('s-home');
 };
 
@@ -939,7 +967,10 @@ let selRating=5;
 window.rateStar=i=>{
   selRating=i+1;
   qsa('.star').forEach((s,j)=>s.classList.toggle('on',j<=i));
-  const w=ge('cust-rate-reason-wrap');if(w)w.style.display=selRating<=3?'block':'none';
+  // Review box is always visible now; only the prompt changes with the star count so a
+  // low rating nudges the customer to explain (which feeds the admin bad-review alert).
+  const lbl=ge('cust-rate-label');
+  if(lbl)lbl.textContent=selRating<=2?'What went wrong? (helps us act on it)':selRating<=3?'Anything we could improve?':'Write a review (optional)';
 };
 window.saveGeminiKey=()=>{const inp=ge('gemini-key-inp');if(!inp)return;const k=inp.value.trim();window._geminiKey=k;localStorage.setItem('rf_gemini_key',k);const st=ge('ai-key-status');if(k){toast('✅ Gemini key saved');if(st)st.textContent='(Gemini live ✅)';}else{toast('Key cleared');if(st)st.textContent='(Smart mode)';}};
 // Save OBD+ waitlist interest against this customer so it's a real lead list, not just a toast.
@@ -1350,12 +1381,12 @@ async function withBusy(btnId,busyLabel,fn){
       </div>
       <div id="pay-detail" class="pbox"></div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:9px"><div style="font-family:var(--fh);font-size:11px;color:var(--tx3)">Total to pay</div><div style="font-family:var(--fh);font-size:22px;font-weight:800;color:var(--or)" id="pay-total">₹—</div></div>
-      <div style="display:flex;justify-content:center;gap:6px;margin-bottom:11px">
+      <div style="display:flex;justify-content:center;gap:6px;margin-bottom:9px">
         <span class="star on" onclick="rateStar(0)">⭐</span><span class="star on" onclick="rateStar(1)">⭐</span><span class="star on" onclick="rateStar(2)">⭐</span><span class="star on" onclick="rateStar(3)">⭐</span><span class="star on" onclick="rateStar(4)">⭐</span>
       </div>
-      <div id="cust-rate-reason-wrap" style="display:none;margin-bottom:11px">
-        <div class="sl">What went wrong?</div>
-        <div class="f"><textarea id="cust-rate-reason" rows="2" placeholder="e.g. Mechanic was late, overcharged, rude..." style="width:100%;resize:vertical"></textarea></div>
+      <div id="cust-rate-reason-wrap" style="margin-bottom:11px">
+        <div class="sl" id="cust-rate-label">Write a review (optional)</div>
+        <div class="f"><textarea id="cust-rate-reason" rows="2" placeholder="How was your experience with the mechanic?" style="width:100%;resize:vertical"></textarea></div>
       </div>
       <button class="btn b-or" onclick="finishJob()">Pay & complete →</button>
     </div>

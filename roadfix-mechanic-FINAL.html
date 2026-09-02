@@ -141,7 +141,15 @@ function startApp(p){
   if(profUnsub)profUnsub();
   profUnsub=onValue(ref(db,"mechanics/"+uid),snap=>{
     const mp=snap.val();if(!mp)return;
-    profile=mp;applyProfile(mp);
+    profile=mp;
+    // Blacklist enforcement: an admin can blacklist a mechanic with repeated bad reviews.
+    if(mp.blacklisted){
+      if(profUnsub)profUnsub();
+      try{update(ref(db,"mechanics/"+uid),{status:"offline"});}catch(e){}
+      alert("Your account has been suspended due to repeated bad reviews. Please contact RoadFix support.");
+      signOut(auth);return;
+    }
+    applyProfile(mp);
     if(!mp.verified){if(cur!=="m-pending")go("m-pending");tx("m-pending-uid","Account ID: "+uid);}
     else if(!_listenersStarted){
       _listenersStarted=true;
@@ -671,16 +679,18 @@ let selMechRating=5;
 window.rateMechStar=i=>{
   selMechRating=i+1;
   qsa(".star").forEach((s,j)=>s.classList.toggle("on",j<=i));
-  const w=ge("mech-rate-reason-wrap");if(w)w.style.display=selMechRating<=3?"block":"none";
+  const lbl=ge("mech-rate-label");
+  if(lbl)lbl.textContent=selMechRating<=2?"What went wrong? (helps us act on it)":selMechRating<=3?"Anything that could be better?":"Write a review (optional)";
 };
 window.submitCustomerRating=async()=>{
   const jid=window._lastCompletedJobId;if(!jid){go("m-home");return;}
   const rating=selMechRating||5;
   const reasonEl=ge("mech-rate-reason");
-  const reason=(rating<=3&&reasonEl)?reasonEl.value.trim():"";
+  const reason=reasonEl?reasonEl.value.trim():"";
   try{
     const jobSnap=await get(ref(db,"jobs/"+jid));
-    const custId=jobSnap.val()&&jobSnap.val().customerId;
+    const jobData=jobSnap.val()||{};
+    const custId=jobData.customerId;
     update(ref(db,"jobs/"+jid),{customerRating:rating,customerRatingReason:reason});
     if(custId){
       const cSnap=await get(ref(db,"customers/"+custId));
@@ -688,13 +698,33 @@ window.submitCustomerRating=async()=>{
       const priorCount=c.ratingCount||c.totalJobs||0;
       const priorAvg=parseFloat(c.rating)||5.0;
       const newAvg=((priorAvg*priorCount)+rating)/(priorCount+1);
-      update(ref(db,"customers/"+custId),{rating:newAvg.toFixed(1),ratingCount:priorCount+1});
+      const isBad=rating<=2;
+      const badCount=(c.badReviewCount||0)+(isBad?1:0);
+      update(ref(db,"customers/"+custId),{rating:newAvg.toFixed(1),ratingCount:priorCount+1,badReviewCount:badCount});
+      // Store the full review so admin can see the actual feedback.
+      push(ref(db,"reviews/"+custId),{
+        fromRole:"mechanic",fromName:(profile&&profile.name)||"Mechanic",fromId:uid,
+        aboutRole:"customer",aboutName:jobData.customerName||c.name||"Customer",
+        rating,reason,jobId:jid,time:Date.now()
+      }).catch(()=>{});
+      // Bad review (≤2★) → raise an alert in the admin panel.
+      if(isBad){
+        push(ref(db,"alerts"),{
+          type:"bad_review",status:"active",
+          name:jobData.customerName||c.name||"Customer",
+          about:"customer",aboutId:custId,
+          rating,reason:reason||"(no reason given)",
+          fromName:(profile&&profile.name)||"Mechanic",
+          badCount,
+          app:"mechanic",time:Date.now()
+        }).catch(()=>{});
+      }
     }
   }catch(e){/* best-effort — job completion already succeeded regardless */}
   selMechRating=5;window._lastCompletedJobId=null;
   qsa(".star").forEach(s=>s.classList.add("on"));
-  const reasonWrap=ge("mech-rate-reason-wrap"),reasonBox=ge("mech-rate-reason");
-  if(reasonWrap)reasonWrap.style.display="none";if(reasonBox)reasonBox.value="";
+  const reasonBox=ge("mech-rate-reason");if(reasonBox)reasonBox.value="";
+  const lbl=ge("mech-rate-label");if(lbl)lbl.textContent="Write a review (optional)";
   toast("✅ Rating submitted");go("m-home");
 };
 
@@ -1026,9 +1056,9 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
       <div style="display:flex;justify-content:center;gap:6px;margin-bottom:9px">
         <span class="star on" onclick="rateMechStar(0)">⭐</span><span class="star on" onclick="rateMechStar(1)">⭐</span><span class="star on" onclick="rateMechStar(2)">⭐</span><span class="star on" onclick="rateMechStar(3)">⭐</span><span class="star on" onclick="rateMechStar(4)">⭐</span>
       </div>
-      <div id="mech-rate-reason-wrap" style="display:none;margin-bottom:11px">
-        <div class="sl">What went wrong?</div>
-        <div class="f"><textarea id="mech-rate-reason" rows="2" placeholder="e.g. Customer was rude, wasted my time, gave wrong location..." style="width:100%;resize:vertical"></textarea></div>
+      <div id="mech-rate-reason-wrap" style="margin-bottom:11px">
+        <div class="sl" id="mech-rate-label">Write a review (optional)</div>
+        <div class="f"><textarea id="mech-rate-reason" rows="2" placeholder="How was your experience with this customer?" style="width:100%;resize:vertical"></textarea></div>
       </div>
       <button class="btn b-gn" onclick="submitCustomerRating()">Submit rating</button>
     </div>

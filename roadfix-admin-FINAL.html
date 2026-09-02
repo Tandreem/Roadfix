@@ -123,17 +123,22 @@ function startListeners(){
   });
   _unsubAlerts=onValue(ref(db,"alerts"),s=>{
     A=s.val()||{};renderAll();
-    const active=Object.values(A).filter(a=>a.status==="active");
+    // Only real SOS alerts drive the red SOS sidebar/badge — bad-review alerts are also
+    // status:active but shouldn't be counted as emergencies.
+    const activeSos=Object.values(A).filter(a=>a.status==="active"&&a.type&&a.type.includes("sos"));
+    const activeBadReviews=Object.values(A).filter(a=>a.status==="active"&&a.type==="bad_review");
     const sos=document.getElementById("sos-sidebar");
     const badge=document.getElementById("sos-badge");
-    if(active.length>0){
-      if(sos){sos.style.display="flex";sos.querySelector(".sos-cnt").textContent=active.length+" Active SOS";}
-      // FIX 38: only show badge when SOS exists
-      if(badge){badge.textContent="🆘 "+active.length;badge.style.display="inline-flex";}
+    if(activeSos.length>0){
+      if(sos){sos.style.display="flex";sos.querySelector(".sos-cnt").textContent=activeSos.length+" Active SOS";}
+      if(badge){badge.textContent="🆘 "+activeSos.length;badge.style.display="inline-flex";}
     } else {
       if(sos)sos.style.display="none";
       if(badge)badge.style.display="none";
     }
+    // Separate badge for pending bad reviews on the Alerts sidebar item.
+    const brBadge=document.getElementById("br-badge");
+    if(brBadge){if(activeBadReviews.length>0){brBadge.textContent="👎 "+activeBadReviews.length;brBadge.style.display="inline-flex";}else brBadge.style.display="none";}
   });
 }
 
@@ -146,16 +151,12 @@ function updateKPIs(){
   const online=mList.filter(m=>m.status==="online"||m.status==="enroute").length;
   const verified=mList.filter(m=>m.verified).length;
   const pending=mList.filter(m=>!m.verified).length;
-  const sosActive=aList.filter(a=>a.status==="active").length;
-  // FIX 18: GMV counts all jobs with estimateLow (not just finalPrice)
-  const gmv=jList.filter(j=>j.status==="done").reduce((s,j)=>s+(j.finalPrice||j.estimateLow||0),0);
+  const sosActive=aList.filter(a=>a.status==="active"&&a.type&&a.type.includes("sos")).length;
   setEl("d-active",active);setEl("d-done",done);setEl("d-online",online);setEl("d-verified",verified);
   setEl("d-custs",Object.keys(C).length);setEl("d-sos",sosActive);
-  setEl("d-gmv",gmv>0?"₹"+Math.round(gmv).toLocaleString("en-IN"):"₹0");
   setEl("d-pending",pending);
   setEl("d-m-online",online);setEl("d-m-verified",verified);setEl("d-m-pending",pending);
   setEl("d-c-total",Object.keys(C).length);setEl("d-c-jobs",jList.length);
-  setEl("d-c-gmv",gmv>0?"₹"+Math.round(gmv).toLocaleString("en-IN"):"₹0");
 }
 
 function renderJobs(){
@@ -191,8 +192,14 @@ function renderMechanics(){
     const pfpHtml=m.pfp?`<img src="${m.pfp}" style="width:26px;height:26px;border-radius:50%;object-fit:cover;flex-shrink:0">`:`<div class="mini-av" style="background:${m.vehicleType==='car'?'#1D4ED8':'#7C3AED'}">${(m.name||"M").substr(0,2).toUpperCase()}</div>`;
     const gpsStr=m.lat?`<a href="https://maps.google.com/?q=${m.lat},${m.lng}" target="_blank" style="color:var(--gn);font-size:10px">${m.lat.toFixed(3)}°N</a>`:(m.gpsOn?"ON":"OFF");
     const speciality=m.brandSpeciality||m.skills||"General";
-    return `<tr>
-      <td><div style="display:flex;align-items:center;gap:6px">${pfpHtml}<span style="font-size:12px">${m.name||"—"}</span></div></td>
+    const nm=(m.name||"").replace(/'/g,"");
+    const blBadge=m.blacklisted?' <span class="bdg b-r" style="font-size:9px">🚫 BLACKLISTED</span>':'';
+    const badBadge=(m.badReviewCount>0)?` <span class="bdg b-y" style="font-size:9px" title="${m.badReviewCount} bad review(s)">👎${m.badReviewCount}</span>`:'';
+    const blBtn=m.blacklisted
+      ? `<button class="action-btn green" style="font-size:10px" onclick="unblacklistUser('mechanic','${uid}','${nm}')">Un-blacklist</button>`
+      : `<button class="del-btn" style="font-size:10px" onclick="blacklistUser('mechanic','${uid}','${nm}')">🚫</button>`;
+    return `<tr${m.blacklisted?' style="opacity:.55"':''}>
+      <td><div style="display:flex;align-items:center;gap:6px">${pfpHtml}<span style="font-size:12px">${m.name||"—"}</span>${blBadge}${badBadge}</div></td>
       <td style="font-size:11px">${m.phone||"—"}</td>
       <td style="font-size:11px">${m.city||"—"}</td>
       <td style="font-size:11px;max-width:90px">${speciality.split(",")[0]}</td>
@@ -202,7 +209,7 @@ function renderMechanics(){
         ? '<span class="bdg b-g" style="font-size:11px">✅ Verified</span>'
         : `<div style="display:flex;gap:4px;align-items:center"><span class="bdg b-y" style="font-size:10px">⏳</span><button class="action-btn" style="font-size:12px;padding:4px 10px;font-weight:700;background:var(--gn2);color:var(--gn);border:1px solid var(--gn)" onclick="verifyMech('${uid}')">✓ Verify</button></div>`
       }</td>
-      <td><button class="del-btn" onclick="delMech('${uid}','${(m.name||"").replace(/'/g,"")}')">🗑</button></td>
+      <td><div style="display:flex;gap:3px;align-items:center">${blBtn}<button class="del-btn" onclick="delMech('${uid}','${nm}')">🗑</button></div></td>
     </tr>`;
   }
 
@@ -236,14 +243,20 @@ function renderCustomers(){
   Object.values(J).forEach(j=>{if(j.customerId)jobsByCustomer[j.customerId]=(jobsByCustomer[j.customerId]||0)+1;});
   tb.innerHTML=list.map(([uid,c])=>{
     const pfpHtml=c.pfp?`<img src="${c.pfp}" style="width:26px;height:26px;border-radius:50%;object-fit:cover;flex-shrink:0">`:`<div class="mini-av" style="background:rgba(249,115,22,.2);color:#F97316;border:1px solid #F97316">${(c.name||"C").substr(0,2).toUpperCase()}</div>`;
-    return `<tr>
-      <td><div style="display:flex;align-items:center;gap:6px">${pfpHtml}<span>${c.name||"—"}</span></div></td>
+    const cnm=(c.name||"").replace(/'/g,"");
+    const blBadge=c.blacklisted?' <span class="bdg b-r" style="font-size:9px">🚫 BLACKLISTED</span>':'';
+    const badBadge=(c.badReviewCount>0)?` <span class="bdg b-y" style="font-size:9px" title="${c.badReviewCount} bad review(s)">👎${c.badReviewCount}</span>`:'';
+    const blBtn=c.blacklisted
+      ? `<button class="action-btn green" style="font-size:10px" onclick="unblacklistUser('customer','${uid}','${cnm}')">Un-BL</button>`
+      : `<button class="del-btn" style="font-size:10px" onclick="blacklistUser('customer','${uid}','${cnm}')">🚫</button>`;
+    return `<tr${c.blacklisted?' style="opacity:.55"':''}>
+      <td><div style="display:flex;align-items:center;gap:6px">${pfpHtml}<span>${c.name||"—"}</span>${blBadge}${badBadge}</div></td>
       <td>${c.phone||"—"}</td>
       <td>${c.email||"—"}</td>
       <td>${c.city||"—"}</td>
       <td style="font-weight:600;color:var(--or)">${jobsByCustomer[uid]||0}</td>
       <td class="muted" title="${c.createdAt?new Date(c.createdAt).toLocaleString("en-IN"):""}">${ago(c.createdAt)}</td>
-      <td><button class="del-btn" onclick="delCust('${uid}','${(c.name||"").replace(/'/g,"")}')">🗑 Del</button></td>
+      <td><div style="display:flex;gap:3px;align-items:center">${blBtn}<button class="del-btn" onclick="delCust('${uid}','${cnm}')">🗑</button></div></td>
     </tr>`;
   }).join("");
 }
@@ -251,15 +264,36 @@ function renderCustomers(){
 function renderAlerts(){
   const container=document.getElementById("alerts-container");if(!container)return;
   const list=Object.entries(A).sort((a,b)=>(b[1].time||0)-(a[1].time||0));
-  if(!list.length){container.innerHTML='<div class="empty-card">No alerts yet. SOS from any app appears here in under 1 second with GPS + Google Maps link.</div>';return;}
-  // FIX 30: no infinite animation on resolved alerts
-  container.innerHTML=list.map(([id,a])=>`
-    <div class="alert-card ${a.status==="active"?"alert-active":"alert-done"}">
+  if(!list.length){container.innerHTML='<div class="empty-card">No alerts yet. SOS and bad-review alerts from any app appear here in real time.</div>';return;}
+  container.innerHTML=list.map(([id,a])=>{
+    if(a.type==="bad_review"){
+      // Bad-review alert: shows who was reviewed badly, the stars, the reason, and how many
+      // bad reviews they've now accumulated — with a one-click Blacklist action.
+      const stars="⭐".repeat(a.rating||1);
+      const many=(a.badCount||0)>=3;
+      return `<div class="alert-card ${a.status==="active"?"alert-active":"alert-done"}" style="${a.status==="active"?"background:var(--yw2);border-color:rgba(234,179,8,.4)":""}">
+        <div style="font-size:22px;flex-shrink:0">👎</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:600;margin-bottom:3px">Bad review — <strong>${escapeHtml(a.name||"?")}</strong> <span class="muted">(${a.about||"user"})</span></div>
+          <div style="font-size:12px;color:var(--yw);margin-top:2px">${stars} (${a.rating||"?"}/5) · by ${escapeHtml(a.fromName||"—")}</div>
+          <div style="font-size:11px;color:var(--tx2);margin-top:3px">"${escapeHtml(a.reason||"(no reason given)")}"</div>
+          <div style="font-size:11px;margin-top:3px;color:${many?"var(--rd)":"var(--tx3)"}">${many?"⚠️ ":""}${a.badCount||1} bad review${(a.badCount||1)>1?"s":""} total${many?" — consider blacklisting":""}</div>
+          <div style="font-size:10px;color:var(--tx3);margin-top:2px">${a.time?new Date(a.time).toLocaleString("en-IN"):""}</div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex-shrink:0">
+          <span class="bdg ${a.status==="active"?"b-y":"b-g"}">${a.status==="active"?"new":"reviewed"}</span>
+          ${a.aboutId?`<button class="del-btn" style="background:var(--rd);color:#fff" onclick="blacklistUser('${a.about}','${a.aboutId}','${escapeQuotes(a.name||"")}')">🚫 Blacklist</button>`:""}
+          ${a.status==="active"?`<button class="action-btn green" onclick="resolveAlert('${id}')">Dismiss</button>`:""}
+          <button class="del-btn" onclick="delAlert('${id}')">🗑</button>
+        </div>
+      </div>`;
+    }
+    return `<div class="alert-card ${a.status==="active"?"alert-active":"alert-done"}">
       <div style="font-size:22px;flex-shrink:0">${a.type&&a.type.includes("sos")?"🆘":"⚠️"}</div>
       <div style="flex:1;min-width:0">
-        <div style="font-size:13px;font-weight:600;margin-bottom:3px">${a.type==="customer_sos"?"Customer SOS":a.type==="mechanic_sos"?"Mechanic SOS":"Alert"} — <strong>${a.name||"?"}</strong></div>
-        <div style="font-size:11px;color:var(--tx2);margin-top:2px">📞 ${a.phone||"—"} · App: ${a.app||"—"}</div>
-        <div style="font-size:11px;color:var(--tx2);margin-top:2px">📍 ${a.location||"—"}</div>
+        <div style="font-size:13px;font-weight:600;margin-bottom:3px">${a.type==="customer_sos"?"Customer SOS":a.type==="mechanic_sos"?"Mechanic SOS":"Alert"} — <strong>${escapeHtml(a.name||"?")}</strong></div>
+        <div style="font-size:11px;color:var(--tx2);margin-top:2px">📞 ${escapeHtml(a.phone||"—")} · App: ${escapeHtml(a.app||"—")}</div>
+        <div style="font-size:11px;color:var(--tx2);margin-top:2px">📍 ${escapeHtml(a.location||"—")}</div>
         ${a.mapsLink?`<a href="${a.mapsLink}" target="_blank" style="font-size:11px;color:var(--bl)">📌 Open in Google Maps →</a>`:""}
         <div style="font-size:10px;color:var(--tx3);margin-top:2px">${a.time?new Date(a.time).toLocaleString("en-IN"):""}</div>
       </div>
@@ -268,7 +302,8 @@ function renderAlerts(){
         ${a.status==="active"?`<button class="action-btn green" onclick="resolveAlert('${id}')">Resolve</button>`:""}
         <button class="del-btn" onclick="delAlert('${id}')">🗑</button>
       </div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
 }
 
 window.verifyMech=uid=>{
@@ -282,6 +317,22 @@ window.delCust=(uid,name)=>{if(!confirm("Delete customer \""+name+"\"? This cann
 window.delJob=id=>{if(!confirm("Delete this job? This cannot be undone."))return;remove(ref(db,"jobs/"+id)).then(()=>toast("Deleted")).catch(e=>toast("❌ Delete failed: "+(e.message||e.code)));};
 window.delAlert=id=>{remove(ref(db,"alerts/"+id));toast("Alert removed");};
 window.resolveAlert=id=>{update(ref(db,"alerts/"+id),{status:"resolved",resolvedAt:Date.now()});};
+// Blacklist / un-blacklist a mechanic or customer. Blacklisting sets a flag that each app's
+// profile listener checks — a blacklisted user is signed out and blocked on their next tick.
+window.blacklistUser=(role,id,name)=>{
+  const node=role==="mechanic"?"mechanics/":"customers/";
+  if(!confirm("Blacklist "+role+' "'+name+'"?\n\nThey will be signed out and blocked from using the app until you un-blacklist them.'))return;
+  update(ref(db,node+id),{blacklisted:true,blacklistedAt:Date.now()})
+    .then(()=>toast("🚫 "+name+" blacklisted"))
+    .catch(e=>toast("❌ Failed: "+(e.message||e.code)));
+};
+window.unblacklistUser=(role,id,name)=>{
+  const node=role==="mechanic"?"mechanics/":"customers/";
+  if(!confirm("Remove blacklist for "+role+' "'+name+'"? They will regain access.'))return;
+  update(ref(db,node+id),{blacklisted:false})
+    .then(()=>toast("✅ "+name+" un-blacklisted"))
+    .catch(e=>toast("❌ Failed: "+(e.message||e.code)));
+};
 
 function setEl(id,val){const e=document.getElementById(id);if(e)e.textContent=val;}
 // FIX 49: ago with title tooltip showing absolute date
@@ -406,7 +457,7 @@ tr.row-done td{opacity:.6}
     <div class="sb-sec">Operations</div>
     <div class="sb-item active" id="si-dash" onclick="showView('v-dash')"><div class="sb-ico">📊</div>Dashboard</div>
     <div class="sb-item" id="si-jobs" onclick="showView('v-jobs')"><div class="sb-ico">🔧</div>Live jobs</div>
-    <div class="sb-item" id="si-alerts" onclick="showView('v-alerts')"><div class="sb-ico">🚨</div>Alerts & SOS</div>
+    <div class="sb-item" id="si-alerts" onclick="showView('v-alerts')"><div class="sb-ico">🚨</div>Alerts & SOS<span class="bdg b-y" id="br-badge" style="display:none;margin-left:auto;font-size:9px">👎 0</span></div>
     <div class="sb-sec">People</div>
     <div class="sb-item" id="si-mechs" onclick="showView('v-mechs')"><div class="sb-ico">👷</div>Mechanics</div>
     <div class="sb-item" id="si-custs" onclick="showView('v-custs')"><div class="sb-ico">👥</div>Customers</div>
@@ -433,13 +484,12 @@ tr.row-done td{opacity:.6}
           <div class="kpi" onclick="showView('v-jobs')" title="View all jobs"><div class="kpi-ico">🔧</div><div class="kpi-val" style="color:var(--or)" id="d-active">0</div><div class="kpi-lbl">Active jobs</div><div class="kpi-hint">↗ Click to view</div></div>
           <div class="kpi" onclick="showView('v-jobs')" title="Completed jobs"><div class="kpi-ico">✅</div><div class="kpi-val" style="color:var(--gn)" id="d-done">0</div><div class="kpi-lbl">Completed</div><div class="kpi-hint">↗ Click to view</div></div>
           <div class="kpi" onclick="showView('v-mechs')" title="Mechanics online"><div class="kpi-ico">👷</div><div class="kpi-val" style="color:var(--bl)" id="d-online">0</div><div class="kpi-lbl">Mechanics online</div><div class="kpi-hint">↗ Click to manage</div></div>
-          <div class="kpi"><div class="kpi-ico">💰</div><div class="kpi-val" style="color:var(--gn)" id="d-gmv">₹0</div><div class="kpi-lbl">GMV (completed)</div></div>
+          <div class="kpi" onclick="showView('v-mechs')" title="Verified mechanics"><div class="kpi-ico">✅</div><div class="kpi-val" style="color:var(--gn)" id="d-verified">0</div><div class="kpi-lbl">Verified mechs</div><div class="kpi-hint">↗ Click to view</div></div>
         </div>
-        <div class="kpi-grid">
+        <div class="kpi-grid-3">
           <div class="kpi" onclick="showView('v-custs')" title="Customers"><div class="kpi-ico">👥</div><div class="kpi-val" style="color:var(--yw)" id="d-custs">0</div><div class="kpi-lbl">Customers</div><div class="kpi-hint">↗ Click to manage</div></div>
           <div class="kpi" onclick="showView('v-alerts')" title="Active SOS"><div class="kpi-ico">🚨</div><div class="kpi-val" style="color:var(--rd)" id="d-sos">0</div><div class="kpi-lbl">Active SOS</div><div class="kpi-hint">↗ Click to view</div></div>
           <div class="kpi" onclick="showView('v-mechs')" title="Pending verification"><div class="kpi-ico">⏳</div><div class="kpi-val" style="color:var(--yw)" id="d-pending">0</div><div class="kpi-lbl">Pending verify</div><div class="kpi-hint">↗ Click to verify</div></div>
-          <div class="kpi" onclick="showView('v-mechs')" title="Verified mechanics"><div class="kpi-ico">✅</div><div class="kpi-val" style="color:var(--gn)" id="d-verified">0</div><div class="kpi-lbl">Verified mechs</div><div class="kpi-hint">↗ Click to view</div></div>
         </div>
         <div class="info-box">
           <h3>🎯 Admin guide</h3>
@@ -475,10 +525,9 @@ tr.row-done td{opacity:.6}
         </div>
       </div>
       <div id="v-custs" class="view">
-        <div class="kpi-grid-3" style="margin-bottom:12px">
+        <div class="kpi-grid" style="grid-template-columns:repeat(2,1fr);margin-bottom:12px">
           <div class="kpi"><div class="kpi-ico">👥</div><div class="kpi-val" style="color:var(--bl)" id="d-c-total">0</div><div class="kpi-lbl">Registered customers</div></div>
           <div class="kpi"><div class="kpi-ico">🔧</div><div class="kpi-val" style="color:var(--or)" id="d-c-jobs">0</div><div class="kpi-lbl">Total jobs</div></div>
-          <div class="kpi"><div class="kpi-ico">💰</div><div class="kpi-val" style="color:var(--gn)" id="d-c-gmv">₹0</div><div class="kpi-lbl">GMV</div></div>
         </div>
         <div class="table-wrap">
           <div class="table-head"><div class="table-head-title">All customers (role=customer only)</div><span class="bdg b-g">● Live</span></div>

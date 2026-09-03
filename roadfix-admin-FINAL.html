@@ -207,10 +207,15 @@ function renderFinance(){
     </tr>`).join(""):'<tr><td colspan="9" class="empty-row">No completed paid jobs yet</td></tr>';
   }
 }
-// Per-mechanic monthly settlement: nets every completed job since this mechanic was last
-// marked "paid" into one owed-either-direction total, because cash jobs (mechanic owes us
-// the 10% cut) and digital jobs (we owe the mechanic repair − 10%) pull in opposite
-// directions and previously nothing combined them into a single payable figure at all.
+// Per-mechanic monthly settlement: for every mechanic, tally how many jobs they did, what
+// those jobs were worth in total, RoadFix's 10% cut of that, and therefore the actual
+// amount to hand over (or collect) — since every job (cash or digital) carries the same
+// 10% platform fee either way, just collected differently:
+//  • Digital job: RoadFix already holds the full amount, so it pays out (repair − fee).
+//  • Cash job: the mechanic already collected the full amount directly, so their fee on
+//    that job comes out of what RoadFix owes them from their digital jobs instead.
+// Only counts jobs completed since this mechanic was last marked "paid", so a monthly
+// payout run never double-counts a job that was already settled.
 function computeMechSettlements(){
   const perMech={};
   Object.entries(J).forEach(([id,j])=>{
@@ -220,30 +225,37 @@ function computeMechSettlements(){
     const repair=j.repairPrice||j.finalPrice||j.estimateLow||0;
     const isCash=j.paymentMethod==="Cash";
     const mf=j.mechFee!=null?j.mechFee:Math.round(repair*0.10);
-    const got=j.mechanicPayout!=null?j.mechanicPayout:(isCash?repair:repair-mf);
-    const settledByMechanic=j.settledByMechanic!=null?j.settledByMechanic:isCash;
-    const p=perMech[j.mechanicId]||(perMech[j.mechanicId]={mechId:j.mechanicId,digitalEarned:0,cashFeeOwed:0,jobCount:0});
+    const p=perMech[j.mechanicId]||(perMech[j.mechanicId]={mechId:j.mechanicId,jobCount:0,totalRepair:0,totalFee:0,cashCollected:0});
     p.jobCount++;
-    if(settledByMechanic)p.cashFeeOwed+=mf; else p.digitalEarned+=got;
+    p.totalRepair+=repair;
+    p.totalFee+=mf;
+    if(isCash)p.cashCollected+=repair; // already in the mechanic's hand, not owed by RoadFix
   });
   return Object.values(perMech).map(p=>({
     ...p,
     name:(M[p.mechId]&&M[p.mechId].name)||"—",
-    net:p.digitalEarned-p.cashFeeOwed // positive = you owe mechanic, negative = mechanic owes you
+    // What's actually left to hand the mechanic: everything they did, minus RoadFix's fee
+    // on all of it, minus whatever they already collected in cash.
+    net:p.totalRepair-p.totalFee-p.cashCollected // positive = you owe mechanic, negative = mechanic owes you
   })).sort((a,b)=>Math.abs(b.net)-Math.abs(a.net));
 }
 function renderPayouts(){
   const tb=document.getElementById("payouts-tbody");
   if(!tb)return;
   const list=computeMechSettlements();
-  if(!list.length){tb.innerHTML='<tr><td colspan="6" class="empty-row">No unsettled completed jobs right now.</td></tr>';return;}
+  const lbl=document.getElementById("payout-month-label");
+  if(lbl)lbl.textContent=new Date().toLocaleDateString("en-IN",{month:"long",year:"numeric"});
+  const badge=document.getElementById("payout-badge");
+  if(badge){if(list.length){badge.textContent=String(list.length);badge.style.display="inline-flex";}else badge.style.display="none";}
+  if(!list.length){tb.innerHTML='<tr><td colspan="7" class="empty-row">No unsettled completed jobs right now.</td></tr>';return;}
   tb.innerHTML=list.map(p=>`<tr>
     <td style="font-size:12px">${escapeHtml(p.name)}</td>
     <td>${p.jobCount}</td>
-    <td style="color:var(--bl)">₹${p.digitalEarned.toLocaleString("en-IN")}</td>
-    <td style="color:var(--yw)">₹${p.cashFeeOwed.toLocaleString("en-IN")}</td>
-    <td style="font-weight:700;color:${p.net>=0?"var(--gn)":"var(--rd)"}">${p.net>=0?"You owe ₹"+p.net.toLocaleString("en-IN"):"Owes you ₹"+Math.abs(p.net).toLocaleString("en-IN")}</td>
-    <td><button class="action-btn green" style="font-size:11px" onclick="markMechSettled('${p.mechId}','${escapeHtml(p.name).replace(/'/g,"")}',${p.net})">✅ Mark month paid</button></td>
+    <td>₹${p.totalRepair.toLocaleString("en-IN")}</td>
+    <td style="color:var(--yw)">− ₹${p.totalFee.toLocaleString("en-IN")}</td>
+    <td style="color:var(--tx3)">${p.cashCollected?"− ₹"+p.cashCollected.toLocaleString("en-IN")+" (cash kept)":"—"}</td>
+    <td style="font-weight:700;color:${p.net>=0?"var(--gn)":"var(--rd)"}">${p.net>=0?"Pay ₹"+p.net.toLocaleString("en-IN"):"Collect ₹"+Math.abs(p.net).toLocaleString("en-IN")}</td>
+    <td><button class="action-btn green" style="font-size:11px" onclick="markMechSettled('${p.mechId}','${escapeHtml(p.name).replace(/'/g,"")}',${p.net})">✅ Mark paid (27th)</button></td>
   </tr>`).join("");
 }
 // Closes out this mechanic's running balance: logs what was settled (so there's a paper
@@ -582,7 +594,7 @@ tr.row-done td{opacity:.6}
     <div class="sb-item active" id="si-dash" onclick="showView('v-dash')"><div class="sb-ico">📊</div>Dashboard</div>
     <div class="sb-item" id="si-jobs" onclick="showView('v-jobs')"><div class="sb-ico">🔧</div>Live jobs</div>
     <div class="sb-item" id="si-finance" onclick="showView('v-finance')"><div class="sb-ico">💰</div>Finance</div>
-    <div class="sb-item" id="si-payouts" onclick="showView('v-payouts')"><div class="sb-ico">💵</div>Mechanic Payouts</div>
+    <div class="sb-item" id="si-payouts" onclick="showView('v-payouts')"><div class="sb-ico">💵</div>Pay Mechanics<span class="bdg b-g" id="payout-badge" style="display:none;margin-left:auto;font-size:9px">0</span></div>
     <div class="sb-item" id="si-alerts" onclick="showView('v-alerts')"><div class="sb-ico">🚨</div>Alerts & SOS<span class="bdg b-y" id="br-badge" style="display:none;margin-left:auto;font-size:9px">👎 0</span></div>
     <div class="sb-sec">People</div>
     <div class="sb-item" id="si-mechs" onclick="showView('v-mechs')"><div class="sb-ico">👷</div>Mechanics</div>
@@ -658,19 +670,20 @@ tr.row-done td{opacity:.6}
         </div>
         <div class="table-wrap">
           <div class="table-head"><div class="table-head-title">Completed jobs — money breakdown</div><span class="bdg b-g">● Live</span></div>
+          <div style="padding:8px 15px;font-size:11px;color:var(--tx2);border-bottom:1px solid var(--bdr)">👉 Want the per-mechanic total to actually pay out each month? See <span style="color:var(--gn);cursor:pointer;font-weight:700" onclick="showView('v-payouts')">Pay Mechanics →</span></div>
           <div style="overflow-x:auto"><table><thead><tr><th style="width:80px">Job</th><th style="width:110px">Customer</th><th style="width:100px">Mechanic</th><th style="width:70px">Method</th><th style="width:90px">Repair</th><th style="width:100px">Customer paid</th><th style="width:100px">Mechanic got</th><th style="width:100px">Your fee</th><th style="width:120px">Settlement</th></tr></thead><tbody id="finance-tbody"><tr><td colspan="9" class="empty-row">No completed paid jobs yet</td></tr></tbody></table></div>
         </div>
       </div>
       <div id="v-payouts" class="view">
         <div class="info-box">
-          <h3>💵 Monthly mechanic settlement</h3>
-          <div class="info-step"><div class="info-n">1</div><div>Digital jobs (UPI/Card/Wallet) mean <strong>you owe the mechanic</strong> — you were paid directly, so their share is still with you.</div></div>
-          <div class="info-step"><div class="info-n">2</div><div>Cash jobs mean <strong>the mechanic owes you</strong> — they were paid directly, so your 10% commission is still with them.</div></div>
-          <div class="info-step"><div class="info-n">3</div><div>The <strong>Net</strong> column nets both directions into one number. Once you've actually paid/collected it, click <strong>Mark month paid</strong> — this resets their balance to zero so old jobs never get counted again.</div></div>
+          <h3>💵 Mechanic payout — <span id="payout-month-label" style="color:var(--gn)">this month</span>, paid on the 27th</h3>
+          <div class="info-step"><div class="info-n">1</div><div>Every job — cash or digital — carries the same <strong>10% RoadFix fee</strong>. <strong>Total job value</strong> and <strong>Platform fee</strong> below are added up across ALL of a mechanic's jobs, so you can see exactly how many jobs they did and how much that fee cut comes to.</div></div>
+          <div class="info-step"><div class="info-n">2</div><div>On <strong>cash</strong> jobs the mechanic already collected the money directly, so that amount is subtracted too (<strong>cash kept</strong>) — it doesn't need to be paid out again.</div></div>
+          <div class="info-step"><div class="info-n">3</div><div>What's left is the <strong>Pay on 27th</strong> column — the actual amount to hand each mechanic this month (or, if it's negative, what they still owe you). Click <strong>Mark paid</strong> once you've actually paid them — this resets their count to zero so the same jobs never get counted twice.</div></div>
         </div>
         <div class="table-wrap">
-          <div class="table-head"><div class="table-head-title">Outstanding balance per mechanic</div><span class="bdg b-g">● Live</span></div>
-          <div style="overflow-x:auto"><table><thead><tr><th style="width:140px">Mechanic</th><th style="width:70px">Jobs</th><th style="width:130px">Digital earned (owed to them)</th><th style="width:130px">Cash fee owed (owed by them)</th><th style="width:160px">Net settlement</th><th style="width:150px">Action</th></tr></thead><tbody id="payouts-tbody"><tr><td colspan="6" class="empty-row">No unsettled completed jobs right now.</td></tr></tbody></table></div>
+          <div class="table-head"><div class="table-head-title">Per-mechanic payout — jobs done this cycle</div><span class="bdg b-g">● Live</span></div>
+          <div style="overflow-x:auto"><table><thead><tr><th style="width:140px">Mechanic</th><th style="width:70px">Jobs done</th><th style="width:130px">Total job value</th><th style="width:120px">Platform fee (10%)</th><th style="width:150px">Cash kept by mechanic</th><th style="width:150px">Pay on 27th</th><th style="width:150px">Action</th></tr></thead><tbody id="payouts-tbody"><tr><td colspan="7" class="empty-row">No unsettled completed jobs right now.</td></tr></tbody></table></div>
         </div>
       </div>
       <div id="v-alerts" class="view">
@@ -727,7 +740,7 @@ tr.row-done td{opacity:.6}
 <script>
 var views=["v-dash","v-jobs","v-finance","v-payouts","v-alerts","v-mechs","v-custs","v-pb"];
 var siMap={"v-dash":"si-dash","v-jobs":"si-jobs","v-finance":"si-finance","v-payouts":"si-payouts","v-alerts":"si-alerts","v-mechs":"si-mechs","v-custs":"si-custs","v-pb":"si-pb"};
-var titles={"v-dash":"Dashboard","v-jobs":"Live jobs","v-finance":"Finance","v-payouts":"Mechanic Payouts","v-alerts":"Alerts & SOS","v-mechs":"Mechanics","v-custs":"Customers","v-pb":"Pre-bookings"};
+var titles={"v-dash":"Dashboard","v-jobs":"Live jobs","v-finance":"Finance","v-payouts":"Pay Mechanics","v-alerts":"Alerts & SOS","v-mechs":"Mechanics","v-custs":"Customers","v-pb":"Pre-bookings"};
 function showView(id){
   views.forEach(v=>{var e=document.getElementById(v);if(e)e.classList.remove("active");});
   var n=document.getElementById(id);if(n)n.classList.add("active");

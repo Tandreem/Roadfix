@@ -95,6 +95,17 @@ window.adminLogout=()=>{
 };
 
 let J={},M={},C={},A={};
+// Tracks whether each listener has received its FIRST snapshot yet. Without this, the KPIs
+// below show "0" the instant the page loads and again the instant a listener is merely slow
+// — completely indistinguishable from "there is genuinely no data". Showing "…" until the
+// first real snapshot arrives at least makes it honest about what's still loading vs. what
+// actually came back empty.
+let _mechsLoaded=false,_custsLoaded=false,_jobsLoaded=false;
+// Console timing so a slow load is actually diagnosable instead of a guess: open devtools
+// → Console right after a refresh and you'll see how many seconds each node actually took
+// to arrive. If /mechanics or /customers takes far longer than /jobs, that points at a
+// specific node (rules, size, index) rather than a general connection problem.
+const _loadT0=performance.now();
 // Unsubscribe functions to prevent stacking
 let _unsubJobs=null,_unsubMechs=null,_unsubCusts=null,_unsubAlerts=null;
 function startListeners(){
@@ -103,13 +114,21 @@ function startListeners(){
   if(_unsubMechs)_unsubMechs();
   if(_unsubCusts)_unsubCusts();
   if(_unsubAlerts)_unsubAlerts();
-  _unsubJobs=onValue(ref(db,"jobs"),s=>{J=s.val()||{};renderAll();});
+  _unsubJobs=onValue(ref(db,"jobs"),s=>{
+    J=s.val()||{};
+    if(!_jobsLoaded){_jobsLoaded=true;console.log("[RoadFix admin] /jobs first snapshot after",Math.round(performance.now()-_loadT0),"ms —",Object.keys(J).length,"jobs");}
+    renderAll();
+  });
   // BUGFIX: neither of these had an error callback, so if Firebase rules ever blocked this
   // admin from reading /mechanics or /customers, onValue would just never fire — M/C stay
   // at their empty {} default forever, every KPI quietly shows 0, and there is NO visible
   // sign that anything actually went wrong (looks identical to "there's genuinely no data
   // yet"). Both now surface a real error instead of failing silently.
-  _unsubMechs=onValue(ref(db,"mechanics"),s=>{M=s.val()||{};renderAll();},err=>{
+  _unsubMechs=onValue(ref(db,"mechanics"),s=>{
+    M=s.val()||{};
+    if(!_mechsLoaded){_mechsLoaded=true;console.log("[RoadFix admin] /mechanics first snapshot after",Math.round(performance.now()-_loadT0),"ms —",Object.keys(M).length,"mechanics");}
+    renderAll();
+  },err=>{
     console.error("mechanics read failed",err);
     toast("⚠️ Can't load mechanics: "+((err&&err.message)||"permission denied")+" — check Firebase rules for /mechanics");
   });
@@ -118,6 +137,7 @@ function startListeners(){
     const all=s.val()||{};
     C={};
     Object.entries(all).forEach(([id,c])=>{if(!c.role||c.role==="customer")C[id]=c;});
+    if(!_custsLoaded){_custsLoaded=true;console.log("[RoadFix admin] /customers first snapshot after",Math.round(performance.now()-_loadT0),"ms —",Object.keys(all).length,"raw,",Object.keys(C).length,"counted as customers");}
     renderAll();
   },err=>{
     console.error("customers read failed",err);
@@ -336,12 +356,16 @@ function updateKPIs(){
   const sosActive=aList.filter(a=>a.status==="active"&&a.type&&a.type.includes("sos")).length;
   const towJobs=jList.filter(j=>j.serviceType==="towing").length;
   const healthJobs=jList.filter(j=>j.aiHealthOrigin).length;
+  // Shows "…" instead of "0" for anything whose listener hasn't delivered its first
+  // snapshot yet, so a slow load reads as "still loading" instead of "confirmed empty".
+  const mv=_mechsLoaded?String(online):"…",vv=_mechsLoaded?String(verified):"…",pv=_mechsLoaded?String(pending):"…";
+  const cv=_custsLoaded?String(Object.keys(C).length):"…";
   setEl("d-tow",towJobs);setEl("d-health",healthJobs);
-  setEl("d-active",active);setEl("d-done",done);setEl("d-online",online);setEl("d-verified",verified);
-  setEl("d-custs",Object.keys(C).length);setEl("d-sos",sosActive);
-  setEl("d-pending",pending);
-  setEl("d-m-online",online);setEl("d-m-verified",verified);setEl("d-m-pending",pending);
-  setEl("d-c-total",Object.keys(C).length);setEl("d-c-jobs",jList.length);
+  setEl("d-active",active);setEl("d-done",done);setEl("d-online",mv);setEl("d-verified",vv);
+  setEl("d-custs",cv);setEl("d-sos",sosActive);
+  setEl("d-pending",pv);
+  setEl("d-m-online",mv);setEl("d-m-verified",vv);setEl("d-m-pending",pv);
+  setEl("d-c-total",cv);setEl("d-c-jobs",jList.length);
 }
 
 function renderJobs(){

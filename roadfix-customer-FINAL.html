@@ -773,6 +773,29 @@ function createJob(a){
 }
 
 // ── TOWING ─────────────────────────────────────────────
+// BUGFIX: the pickup field's placeholder used to promise "auto-filled if GPS is on" but
+// nothing anywhere ever actually did that — window._lat/_lng were captured once at app
+// startup and never connected to this screen at all, so customers always had to type their
+// own location by hand (impossible to give real coordinates while stranded). This actually
+// grabs a fresh GPS fix, fills the field with something readable, and keeps the raw
+// lat/lng so the job record gets a real, clickable pickup location for the mechanic/admin
+// — the same way SOS already does.
+window._towPickupLat=null;window._towPickupLng=null;
+window.useTowPickupGPS=()=>{
+  const status=ge('tow-gps-status'),btn=ge('tow-gps-btn'),inp=ge('tow-pickup');
+  if(!navigator.geolocation){if(status)status.textContent='⚠️ GPS not available on this device/browser — please type your location.';return;}
+  if(btn){btn.disabled=true;btn.textContent='📍 Locating…';}
+  if(status){status.style.color='var(--tx3)';status.textContent='Getting your live location…';}
+  navigator.geolocation.getCurrentPosition(pos=>{
+    window._towPickupLat=pos.coords.latitude;window._towPickupLng=pos.coords.longitude;
+    if(inp)inp.value=pos.coords.latitude.toFixed(5)+'°N, '+pos.coords.longitude.toFixed(5)+'°E (live GPS)';
+    if(status){status.style.color='var(--gn)';status.textContent='✅ Live location captured — the mechanic gets an exact pin, not a typed address.';}
+    if(btn){btn.disabled=false;btn.textContent='📍 Update location';}
+  },err=>{
+    if(status){status.style.color='var(--rd)';status.textContent='⚠️ Couldn\'t get your location ('+(err&&err.message?err.message:'permission denied')+') — please type it instead.';}
+    if(btn){btn.disabled=false;btn.textContent='📍 Use my location';}
+  },{enableHighAccuracy:true,timeout:8000});
+};
 // Flat-rate distance pricing: ₹500 base (covers first 5km) + ₹18/km beyond that,
 // same fee-split model as every other job (feeBreakdown / CUST_FEE_PCT / MECH_FEE_PCT).
 function towPrice(dist){
@@ -804,7 +827,12 @@ window.createTowJob=()=>{
     partsNeeded:'',partsDetail:[],aiFaults:[],
     status:'pending',mechanic:null,mechanicId:null,partType:'N/A',
     createdAt:Date.now(),location:p.city||''};
-  if(window._lat){job.lat=window._lat;job.lng=window._lng;}
+  // Prefer the live GPS fix taken specifically for this tow request; fall back to whatever
+  // general location the app grabbed at startup if the customer never tapped the button.
+  if(window._towPickupLat){
+    job.lat=window._towPickupLat;job.lng=window._towPickupLng;
+    job.towPickupMapsLink='https://maps.google.com/?q='+window._towPickupLat+','+window._towPickupLng;
+  }else if(window._lat){job.lat=window._lat;job.lng=window._lng;}
   set(ref(db,'jobs/'+id),job);
   window.currentJobPrice=price;
   tx('job-id',id);
@@ -1824,7 +1852,13 @@ async function withBusy(btnId,busyLabel,fn){
         <option>Stuck / off-road</option>
         <option>Other</option>
       </select></div>
-      <div class="f"><label>Pickup location</label><input id="tow-pickup" type="text" placeholder="Current location (auto-filled if GPS is on)"></div>
+      <div class="f"><label>Pickup location</label>
+        <div style="display:flex;gap:6px">
+          <input id="tow-pickup" type="text" placeholder="Tap 'Use my location' or type an address" style="flex:1">
+          <button type="button" class="btn b-ghost" style="width:auto;padding:0 12px;white-space:nowrap" onclick="useTowPickupGPS()" id="tow-gps-btn">📍 Use my location</button>
+        </div>
+        <div id="tow-gps-status" style="font-size:10px;color:var(--tx3);margin-top:3px"></div>
+      </div>
       <div class="f"><label>Drop-off / garage *</label><input id="tow-dest" type="text" placeholder="Where should the vehicle be towed to?"></div>
       <div class="f"><label>Approx. distance (km)</label><input id="tow-dist" type="number" value="5" min="1" max="200" oninput="updateTowEstimate()"></div>
       <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:12px;margin-bottom:11px;display:flex;justify-content:space-between;align-items:center">
@@ -2111,7 +2145,7 @@ function go(id){
   if(id==='s-mechs')window.resetMechSearch();
   if(id==='s-pb-list')loadPrebookings();
   if(id==='s-health'&&window.renderHealthDash)window.renderHealthDash();
-  if(id==='s-towing')updateTowEstimate();
+  if(id==='s-towing'){updateTowEstimate();if(!window._towPickupLat)useTowPickupGPS();}
   if(id==='s-pay'){
     var price=window.currentJobPrice||(window._aiResult?Math.round(window._aiResult.low):1550);
     document.getElementById('pay-total').textContent='₹'+Math.round(price*1.025);

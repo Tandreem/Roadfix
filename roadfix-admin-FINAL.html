@@ -104,13 +104,24 @@ function startListeners(){
   if(_unsubCusts)_unsubCusts();
   if(_unsubAlerts)_unsubAlerts();
   _unsubJobs=onValue(ref(db,"jobs"),s=>{J=s.val()||{};renderAll();});
-  _unsubMechs=onValue(ref(db,"mechanics"),s=>{M=s.val()||{};renderAll();});
+  // BUGFIX: neither of these had an error callback, so if Firebase rules ever blocked this
+  // admin from reading /mechanics or /customers, onValue would just never fire — M/C stay
+  // at their empty {} default forever, every KPI quietly shows 0, and there is NO visible
+  // sign that anything actually went wrong (looks identical to "there's genuinely no data
+  // yet"). Both now surface a real error instead of failing silently.
+  _unsubMechs=onValue(ref(db,"mechanics"),s=>{M=s.val()||{};renderAll();},err=>{
+    console.error("mechanics read failed",err);
+    toast("⚠️ Can't load mechanics: "+((err&&err.message)||"permission denied")+" — check Firebase rules for /mechanics");
+  });
   // FIX 14: only show real customers (role=customer)
   _unsubCusts=onValue(ref(db,"customers"),s=>{
     const all=s.val()||{};
     C={};
     Object.entries(all).forEach(([id,c])=>{if(!c.role||c.role==="customer")C[id]=c;});
     renderAll();
+  },err=>{
+    console.error("customers read failed",err);
+    toast("⚠️ Can't load customers: "+((err&&err.message)||"permission denied")+" — check Firebase rules for /customers");
   });
   // Pre-bookings listener
   onValue(ref(db,"prebookings"),s=>{
@@ -290,20 +301,29 @@ window.markMechSettled=(mechId,name,net)=>{
 // strikes reach the limit, admin is prompted to blacklist them outright — reusing the same
 // blacklist flow already used elsewhere, so a repeat offender can actually be locked out.
 window.markMissedSubmission=(mechId,name)=>{
-  if(!confirm(name+" didn't hand in today's cash collections?\n\nThis adds a ₹"+CASH_PENALTY_FEE+" penalty fee (deducted from their payout) and logs a strike."))return;
+  if(!confirm(name+" didn't hand in today's cash collections?\n\nThis adds a ₹"+CASH_PENALTY_FEE+" penalty fee (deducted from what you pay them) and logs a strike."))return;
   const mech=M[mechId]||{};
   const strikes=(mech.missedSubmissions||0)+1;
   const penaltyOwed=(mech.penaltyOwed||0)+CASH_PENALTY_FEE;
+  // BUGFIX: this used to call renderPayouts() immediately after firing off the Firebase
+  // update() — but update() is async and the local M cache only refreshes once its listener
+  // round-trips, so the very next render was still using the OLD penaltyOwed and the toast
+  // never stated a new amount at all (there wasn't one to state yet). Updating the local
+  // cache here immediately means the recalculated payout is correct straight away, and the
+  // toast can now actually say what the new number is.
+  M[mechId]={...mech,missedSubmissions:strikes,penaltyOwed};
   update(ref(db,"mechanics/"+mechId),{missedSubmissions:strikes,penaltyOwed});
   push(ref(db,"settlements/"+mechId),{mechId,name,type:"penalty",amount:CASH_PENALTY_FEE,strikes,at:Date.now(),by:"admin"});
+  renderPayouts();renderMechanics();
+  const updated=computeMechSettlements().find(p=>p.mechId===mechId);
+  const amtText=updated?(updated.net>=0?"You now pay them ₹"+updated.net.toLocaleString("en-IN"):"They now owe you ₹"+Math.abs(updated.net).toLocaleString("en-IN")):"";
   if(strikes>=PENALTY_STRIKE_LIMIT){
     if(confirm(name+" has now missed their end-of-day cash hand-in "+strikes+" times.\n\nBlacklist this mechanic now?")){
       blacklistUser("mechanic",mechId,name);
       return; // blacklistUser already toasts + the M listener will re-render everything
     }
   }
-  toast("⚠️ ₹"+CASH_PENALTY_FEE+" penalty added — "+name+" now has "+strikes+" strike(s)");
-  renderPayouts();renderMechanics();
+  toast("⚠️ ₹"+CASH_PENALTY_FEE+" penalty added — "+name+" has "+strikes+" strike(s). "+amtText);
 };
 
 function updateKPIs(){

@@ -115,7 +115,17 @@ let globalChatUnsub=null,chatSeenCount=0,chatWatchJobId=null;
 let jobHistory=[],allMechanics={},currentSearchRadius=2;
 let completingJobIds=new Set(); // guards against double-firing job completion from the live jobs listener
 let lastNotifiedJobStatus={},lastKnownMechanicId={},lastRediagnosedAt={},lastMechDoneNotified={};
-window._geminiKey=localStorage.getItem('rf_gemini_key')||'';
+// BUGFIX: previously this was ONLY ever populated from localStorage, which starts empty
+// for every single visitor — nobody sees a "paste your Gemini key" box unless they dig
+// into Settings, so in practice runAI() below always fell through to the canned
+// keyword-matching fallback and NOBODY ever got a real Gemini diagnosis, silently.
+// DEFAULT_GEMINI_KEY lets you ship one working key so the app calls real Gemini out of
+// the box; a key pasted into Settings by an individual user still overrides it.
+// ⚠️ This key ships inside the page source (this is a static HTML file with no backend),
+// so anyone can view-source and read it. Only put a key here that has a billing cap /
+// restricted quota set in Google AI Studio — never a production/unrestricted key.
+const DEFAULT_GEMINI_KEY='';
+window._geminiKey=localStorage.getItem('rf_gemini_key')||DEFAULT_GEMINI_KEY||'';
 
 function getJobId(){return localStorage.getItem('rf_jobId')||null;}
 function setJobId(id){if(id)localStorage.setItem('rf_jobId',id);else localStorage.removeItem('rf_jobId');}
@@ -895,9 +905,34 @@ function deviationVsBaseline(reading,baseline){
   const ph=baseline.phases||[];
   const avgField=f=>ph.length?ph.reduce((a,b)=>a+(b[f]||0),0)/ph.length:0;
   const baseAmp=avgField('ampAvg')||0.0001,baseVib=avgField('vibRms')||0.0001;
+  const baseCentroid=avgField('centroid')||0.0001,baseAmpVar=avgField('ampVar')||0.0001;
   const audioDev=Math.min(100,Math.abs(reading.ampAvg-baseAmp)/baseAmp*100);
   const vibDev=Math.min(100,Math.abs(reading.vibRms-baseVib)/baseVib*100);
-  return{audioDev,vibDev};
+  // Extra features (frequency brightness + amplitude irregularity) so the fault picked
+  // below can actually be tied to what the sensors saw, instead of guessed at random.
+  const centroidDev=Math.min(100,Math.abs((reading.centroid||0)-baseCentroid)/baseCentroid*100);
+  const ampVarDev=Math.min(100,Math.abs((reading.ampVar||0)-baseAmpVar)/baseAmpVar*100);
+  return{audioDev,vibDev,centroidDev,ampVarDev};
+}
+// BUGFIX: this used to be `FAULT_LIB[Math.floor(Math.random()*FAULT_LIB.length)]` — a real
+// sensor reading was captured and a real deviation % was computed, but the actual fault
+// *name* shown to the customer was picked at random and had nothing to do with the
+// reading. That's the "no real diagnosis" bug. This replaces it with a small deterministic
+// classifier driven by the measured features:
+//  - vibration-dominant deviation  -> chassis/mechanical fault (bearing vs engine mount,
+//    split by how severe the vibration deviation is)
+//  - audio-dominant + brighter/higher-pitched sound (centroid shift) -> brake squeal
+//  - audio-dominant + erratic/irregular amplitude (variance shift)   -> engine misfire
+//  - audio-dominant with neither signature standing out              -> coolant leak (catch-all)
+// It's still a simple heuristic, not a trained model, but it now actually depends on the
+// reading instead of a dice roll.
+function classifyFault(d){
+  const{audioDev=0,vibDev=0,centroidDev=0,ampVarDev=0}=d||{};
+  const byName=n=>FAULT_LIB.find(f=>f.name===n);
+  if(vibDev>audioDev*1.2)return vibDev>=35?byName('Wheel bearing wear'):byName('Worn engine mount');
+  if(centroidDev>=20)return byName('Brake pad wear');
+  if(ampVarDev>=20)return byName('Engine misfire');
+  return byName('Coolant leak');
 }
 function tierFor(devPct){
   if(devPct>=35)return'alert';
@@ -916,21 +951,29 @@ window.runHealthCheck=async(simulate)=>{
   if(!baseline){toast('Calibrate your vehicle first');return;}
   const box=ge('health-check-live');if(!box)return;
   box.innerHTML=`<div style="text-align:center;padding:10px 0"><div class="ai-sp" style="margin:0 auto 10px"></div><div style="font-size:12px;color:var(--tx2)">${simulate?'Simulating a developing fault…':'Listening + sensing… drive normally'}</div></div>`;
-  let audioDev,vibDev,fault=null;
+  let audioDev,vibDev,fault=null,dev=null;
   if(simulate){
     // Demo mode — walks through one of the PDF's worked examples so the concept can be
-    // shown convincingly without needing an actual failing car on hand.
+    // shown convincingly without needing an actual failing car on hand. Fault is still
+    // chosen first here (this path is explicitly labelled "Simulating…" in the UI), but
+    // the deviation numbers now match the category of fault picked instead of both being
+    // independently randomised and possibly contradicting each other.
     await new Promise(r=>setTimeout(r,1800));
-    fault=FAULT_LIB[Math.floor(Math.random()*3)]; // first 3 match the PDF's worked examples
-    audioDev=30+Math.random()*40;vibDev=20+Math.random()*40;
+    const demoFaults=FAULT_LIB.slice(0,3); // first 3 match the PDF's worked examples
+    fault=demoFaults[Math.floor(Math.random()*demoFaults.length)];
+    const vibLed=fault.name==='Wheel bearing wear'||fault.name==='Worn engine mount';
+    audioDev=vibLed?10+Math.random()*15:30+Math.random()*40;
+    vibDev=vibLed?30+Math.random()*40:10+Math.random()*15;
   }else{
     const reading=await captureSensors(6000);
-    const d=deviationVsBaseline(reading,baseline);
-    audioDev=d.audioDev;vibDev=d.vibDev;
+    dev=deviationVsBaseline(reading,baseline);
+    audioDev=dev.audioDev;vibDev=dev.vibDev;
   }
   const devPct=Math.max(audioDev,vibDev);
   const tier=tierFor(devPct);
-  if(!fault&&tier!=='monitor')fault=FAULT_LIB[Math.floor(Math.random()*FAULT_LIB.length)];
+  // Real diagnosis: pick the fault whose signature matches what the sensors actually
+  // measured (see classifyFault above), instead of a random guess disconnected from it.
+  if(!fault&&tier!=='monitor')fault=classifyFault(dev||{audioDev,vibDev});
   const confidence=fault?fault.conf:Math.round(100-devPct);
   const entry={time:Date.now(),tier,devPct:Math.round(devPct),audioDev:Math.round(audioDev),vibDev:Math.round(vibDev),fault:fault?fault.name:null,confidence,simulate:!!simulate};
   pushHealthHist(entry);

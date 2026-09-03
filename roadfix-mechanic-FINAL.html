@@ -88,7 +88,10 @@ let jobsUnsub=null,profUnsub=null,alertsUnsub=null,_listenersStarted=false;
 let completingJobIds=new Set(); // guards against double-tap double-crediting earnings
 let globalChatUnsub=null,chatSeenCount=0,chatWatchJobId=null;
 let selVehicleType='car'; // default to car mechanic
-window._geminiKey=localStorage.getItem("rf_gemini_key")||""; // shared with customer app for re-diagnosis
+// BUGFIX: same key-gating issue as the customer app — see the matching comment there.
+// Keep this DEFAULT_GEMINI_KEY in sync with the customer app's value.
+const DEFAULT_GEMINI_KEY='';
+window._geminiKey=localStorage.getItem("rf_gemini_key")||DEFAULT_GEMINI_KEY||""; // shared with customer app for re-diagnosis
 
 function getJobId(){return localStorage.getItem("mrf_jobId")||null;}
 function setJobId(id){if(id)localStorage.setItem("mrf_jobId",id);else localStorage.removeItem("mrf_jobId");}

@@ -86,6 +86,9 @@ onValue(ref(db,".info/connected"),s=>{_isConnected=s.val()===true;if(_isConnecte
 let uid=null,profile=null,chatUnsub=null,shownGig=false;
 let jobsUnsub=null,profUnsub=null,alertsUnsub=null,_listenersStarted=false;
 let completingJobIds=new Set(); // guards against double-tap double-crediting earnings
+// Cached snapshot of every job, refreshed on each Firebase update — used so the Earnings
+// screen can total up "how much cash did I collect today" without a separate listener.
+let allJobsCache={};
 let globalChatUnsub=null,chatSeenCount=0,chatWatchJobId=null;
 let selVehicleType='car'; // default to car mechanic
 // BUGFIX: same key-gating issue as the customer app — see the matching comment there.
@@ -182,6 +185,7 @@ function startListeners(){
   if(jobsUnsub)jobsUnsub();if(alertsUnsub)alertsUnsub();
   jobsUnsub=onValue(ref(db,"jobs"),snap=>{
     const all=snap.val()||{};
+    allJobsCache=all;
     // Restore active job
     const myJobId=getJobId();
     if(myJobId&&all[myJobId]){
@@ -1124,14 +1128,18 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
   <div class="sb">
     <div class="sec">
       <div style="background:linear-gradient(135deg,rgba(74,222,128,.12),rgba(74,222,128,.04));border:1px solid rgba(74,222,128,.18);border-radius:var(--r2);padding:16px;text-align:center;margin-bottom:11px">
-        <div style="font-size:11px;color:var(--tx2);margin-bottom:3px">Total earned (keep 100%)</div>
+        <div style="font-size:11px;color:var(--tx2);margin-bottom:3px">Total earned (after RoadFix's 10% fee)</div>
         <div style="font-family:var(--fh);font-size:36px;font-weight:800;color:var(--gn)" id="earn-total">₹0</div>
       </div>
       <div class="card" style="padding:10px 12px">
         <div class="er"><div style="color:var(--tx2)">Total gigs</div><div style="font-weight:600" id="earn-jobs">0</div></div>
         <div class="er"><div style="color:var(--tx2)">Rating</div><div style="font-weight:600;color:var(--am)" id="earn-rat">5.0 ⭐</div></div>
       </div>
-      <div style="background:var(--gn2);border:1px solid rgba(74,222,128,.2);border-radius:var(--r);padding:9px 11px;font-size:11px;color:var(--gn)">💚 No middleman. You earn directly from customers.</div>
+      <div style="background:var(--am2, rgba(234,179,8,.1));border:1px solid rgba(234,179,8,.3);border-radius:var(--r);padding:10px 12px;display:flex;gap:9px;margin-bottom:11px" id="cash-today-box-wrap">
+        <div style="font-size:16px;flex-shrink:0">💵</div>
+        <div id="cash-today-box" style="flex:1"><div style="font-size:11px;color:var(--tx2)">Loading…</div></div>
+      </div>
+      <div style="background:var(--gn2);border:1px solid rgba(74,222,128,.2);border-radius:var(--r);padding:9px 11px;font-size:11px;color:var(--gn)">💚 Digital job payouts (UPI/Card/Wallet) and your net cash-job earnings are paid out every weekend.</div>
     </div>
   </div>
   <div class="bnav">
@@ -1203,6 +1211,21 @@ function go(id){var o=document.getElementById(cur),n=document.getElementById(id)
     document.getElementById("p-rat").textContent=(profile.rating||5.0).toString().substr(0,3)+"⭐";
     document.getElementById("p-earn").textContent="₹"+Math.round((profile.totalEarned||0)/1000)+"k";
     if(document.getElementById("vtype-badge-profile"))document.getElementById("vtype-badge-profile").textContent="✅ "+(profile.vehicleType==="luxbike"?"Luxury bike":"Car")+" mechanic";
+    // How much cash this mechanic needs to hand in to RoadFix today — every cash job they
+    // completed today, added up. This is what the end-of-day reminder below is asking for.
+    const todayStart=new Date();todayStart.setHours(0,0,0,0);
+    let cashToday=0,cashJobsToday=0;
+    Object.values(allJobsCache||{}).forEach(j=>{
+      if(j.mechanicId===uid&&j.status==="done"&&j.paymentMethod==="Cash"&&(j.completedAt||0)>=todayStart.getTime()){
+        cashToday+=j.repairPrice||j.finalPrice||j.estimateLow||0;cashJobsToday++;
+      }
+    });
+    const cashBox=document.getElementById("cash-today-box");
+    if(cashBox){
+      cashBox.innerHTML=cashJobsToday
+        ?`<div style="font-weight:700;color:var(--yw);margin-bottom:2px">₹${cashToday.toLocaleString("en-IN")} to hand in today</div><div style="font-size:11px;color:var(--tx2)">From ${cashJobsToday} cash job${cashJobsToday>1?"s":""} today — submit this to RoadFix before you log off. Your weekly pay (digital jobs, after RoadFix's 10% fee) goes out every weekend.</div>`
+        :`<div style="font-weight:700;color:var(--yw);margin-bottom:2px">No cash collected today</div><div style="font-size:11px;color:var(--tx2)">If a customer pays you in cash, remember to hand it in to RoadFix by end of day. Your weekly pay (after RoadFix's 10% fee) goes out every weekend.</div>`;
+    }
   }
 }
 function back(){if(stk.length<2)return;stk.pop();var p=stk[stk.length-1];document.getElementById(cur).classList.remove("on");document.getElementById(p).classList.add("on");cur=p;}

@@ -182,7 +182,7 @@ function renderFinance(){
     const settledByMechanic=j.settledByMechanic!=null?j.settledByMechanic:isCash;
     platform+=fee;custSpend+=paid;custFee+=cf;mechFee+=mf;
     if(settledByMechanic)owedFromMechs+=mf; else owedToMechs+=got;
-    return {id,cust:j.customerName||"—",mech:j.mechanic||"—",repair,paid,got,fee,method:j.paymentMethod||"—",settledByMechanic};
+    return {id,cust:j.customerName||"—",mech:j.mechanic||"—",custId:j.customerId||"",mechId:j.mechanicId||"",repair,paid,got,fee,method:j.paymentMethod||"—",settledByMechanic};
   });
   setEl("f-platform","₹"+platform.toLocaleString("en-IN"));
   setEl("f-cust-spend","₹"+custSpend.toLocaleString("en-IN"));
@@ -196,8 +196,8 @@ function renderFinance(){
   if(tb){
     tb.innerHTML=rows.length?rows.sort((a,b)=>b.fee-a.fee).map(r=>`<tr>
       <td><span class="mono">#${(r.id||"").slice(-6)}</span></td>
-      <td style="font-size:12px">${escapeHtml(r.cust)}</td>
-      <td style="font-size:12px">${escapeHtml(r.mech)}</td>
+      <td style="font-size:12px">${r.custId?`<span style="cursor:pointer;color:var(--tx)" title="Open in Customers" onclick="jumpToCust('${r.custId}')">${escapeHtml(r.cust)} 🔗</span>`:escapeHtml(r.cust)}</td>
+      <td style="font-size:12px">${r.mechId?`<span style="cursor:pointer;color:var(--tx)" title="Open in Mechanics" onclick="jumpToMech('${r.mechId}')">${escapeHtml(r.mech)} 🔗</span>`:escapeHtml(r.mech)}</td>
       <td><span class="bdg ${r.method==="Cash"?"b-y":"b-b"}" style="font-size:9px">${escapeHtml(r.method)}</span></td>
       <td>₹${r.repair}</td>
       <td style="color:var(--or)">₹${r.paid}</td>
@@ -216,6 +216,9 @@ function renderFinance(){
 //    that job comes out of what RoadFix owes them from their digital jobs instead.
 // Only counts jobs completed since this mechanic was last marked "paid", so a monthly
 // payout run never double-counts a job that was already settled.
+// Adjustable knobs for the end-of-day cash policy: how much a missed cash hand-in costs,
+// and how many misses before admin gets prompted to consider blacklisting.
+const CASH_PENALTY_FEE=100,PENALTY_STRIKE_LIMIT=3;
 function computeMechSettlements(){
   const perMech={};
   Object.entries(J).forEach(([id,j])=>{
@@ -231,44 +234,76 @@ function computeMechSettlements(){
     p.totalFee+=mf;
     if(isCash)p.cashCollected+=repair; // already in the mechanic's hand, not owed by RoadFix
   });
-  return Object.values(perMech).map(p=>({
-    ...p,
-    name:(M[p.mechId]&&M[p.mechId].name)||"—",
-    // What's actually left to hand the mechanic: everything they did, minus RoadFix's fee
-    // on all of it, minus whatever they already collected in cash.
-    net:p.totalRepair-p.totalFee-p.cashCollected // positive = you owe mechanic, negative = mechanic owes you
-  })).sort((a,b)=>Math.abs(b.net)-Math.abs(a.net));
+  return Object.values(perMech).map(p=>{
+    const mech=M[p.mechId]||{};
+    const penaltyOwed=mech.penaltyOwed||0;
+    return{
+      ...p,
+      name:mech.name||"—",
+      strikes:mech.missedSubmissions||0,
+      penaltyOwed,
+      // What's actually left to hand the mechanic: everything they did, minus RoadFix's
+      // fee on all of it, minus cash they already kept, minus any unpaid penalty fees for
+      // not handing in cash at end of day.
+      net:p.totalRepair-p.totalFee-p.cashCollected-penaltyOwed // + = you owe mechanic, − = mechanic owes you
+    };
+  }).sort((a,b)=>Math.abs(b.net)-Math.abs(a.net));
 }
 function renderPayouts(){
   const tb=document.getElementById("payouts-tbody");
   if(!tb)return;
   const list=computeMechSettlements();
-  const lbl=document.getElementById("payout-month-label");
-  if(lbl)lbl.textContent=new Date().toLocaleDateString("en-IN",{month:"long",year:"numeric"});
   const badge=document.getElementById("payout-badge");
   if(badge){if(list.length){badge.textContent=String(list.length);badge.style.display="inline-flex";}else badge.style.display="none";}
-  if(!list.length){tb.innerHTML='<tr><td colspan="7" class="empty-row">No unsettled completed jobs right now.</td></tr>';return;}
+  if(!list.length){tb.innerHTML='<tr><td colspan="8" class="empty-row">No unsettled completed jobs right now.</td></tr>';return;}
   tb.innerHTML=list.map(p=>`<tr>
-    <td style="font-size:12px">${escapeHtml(p.name)}</td>
+    <td style="font-size:12px">${escapeHtml(p.name)}${p.strikes?` <span class="bdg b-r" style="font-size:9px" title="${p.strikes} missed end-of-day cash hand-in(s)">⚠️${p.strikes}</span>`:""}</td>
     <td>${p.jobCount}</td>
     <td>₹${p.totalRepair.toLocaleString("en-IN")}</td>
     <td style="color:var(--yw)">− ₹${p.totalFee.toLocaleString("en-IN")}</td>
     <td style="color:var(--tx3)">${p.cashCollected?"− ₹"+p.cashCollected.toLocaleString("en-IN")+" (cash kept)":"—"}</td>
+    <td style="color:var(--rd)">${p.penaltyOwed?"− ₹"+p.penaltyOwed.toLocaleString("en-IN"):"—"}</td>
     <td style="font-weight:700;color:${p.net>=0?"var(--gn)":"var(--rd)"}">${p.net>=0?"Pay ₹"+p.net.toLocaleString("en-IN"):"Collect ₹"+Math.abs(p.net).toLocaleString("en-IN")}</td>
-    <td><button class="action-btn green" style="font-size:11px" onclick="markMechSettled('${p.mechId}','${escapeHtml(p.name).replace(/'/g,"")}',${p.net})">✅ Mark paid (27th)</button></td>
+    <td style="display:flex;gap:4px;flex-wrap:wrap">
+      <button class="action-btn green" style="font-size:10px" onclick="markMechSettled('${p.mechId}','${escapeHtml(p.name).replace(/'/g,"")}',${p.net})">✅ Mark paid</button>
+      <button class="action-btn" style="font-size:10px;background:var(--rd2);color:var(--rd)" onclick="markMissedSubmission('${p.mechId}','${escapeHtml(p.name).replace(/'/g,"")}')">⚠️ Missed cash today</button>
+    </td>
   </tr>`).join("");
 }
 // Closes out this mechanic's running balance: logs what was settled (so there's a paper
-// trail for "how much did I pay X this month") and moves the settledUpTo cursor forward so
-// already-paid jobs never get counted into a future payout run again.
+// trail for "how much did I pay X this week") and moves the settledUpTo cursor forward so
+// already-paid jobs never get counted into a future payout run again. Also clears any
+// penalty fees that were just folded into this payout, but keeps the lifetime strike count
+// (that's a behaviour record, not something a payout should erase).
 window.markMechSettled=(mechId,name,net)=>{
   const dirText=net>=0?("You pay "+name+" ₹"+net):(name+" owes you ₹"+Math.abs(net));
-  if(!confirm("Mark this month settled?\n\n"+dirText+"\n\nThis records the payout and resets their running balance to zero."))return;
+  if(!confirm("Mark this week settled?\n\n"+dirText+"\n\nThis records the payout and resets their running balance to zero."))return;
   const now=Date.now();
-  update(ref(db,"mechanics/"+mechId),{settledUpTo:now});
+  update(ref(db,"mechanics/"+mechId),{settledUpTo:now,penaltyOwed:0});
   push(ref(db,"settlements/"+mechId),{mechId,name,net,settledAt:now,settledBy:"admin"});
   toast("✅ Settlement recorded for "+name);
   renderPayouts();
+};
+// A mechanic who collected cash from a customer is supposed to hand it in to RoadFix by
+// end of day. This lets admin flag a day they didn't: it adds a penalty fee (deducted from
+// what they're owed at the next payout, or added to what they owe) and logs a strike. Once
+// strikes reach the limit, admin is prompted to blacklist them outright — reusing the same
+// blacklist flow already used elsewhere, so a repeat offender can actually be locked out.
+window.markMissedSubmission=(mechId,name)=>{
+  if(!confirm(name+" didn't hand in today's cash collections?\n\nThis adds a ₹"+CASH_PENALTY_FEE+" penalty fee (deducted from their payout) and logs a strike."))return;
+  const mech=M[mechId]||{};
+  const strikes=(mech.missedSubmissions||0)+1;
+  const penaltyOwed=(mech.penaltyOwed||0)+CASH_PENALTY_FEE;
+  update(ref(db,"mechanics/"+mechId),{missedSubmissions:strikes,penaltyOwed});
+  push(ref(db,"settlements/"+mechId),{mechId,name,type:"penalty",amount:CASH_PENALTY_FEE,strikes,at:Date.now(),by:"admin"});
+  if(strikes>=PENALTY_STRIKE_LIMIT){
+    if(confirm(name+" has now missed their end-of-day cash hand-in "+strikes+" times.\n\nBlacklist this mechanic now?")){
+      blacklistUser("mechanic",mechId,name);
+      return; // blacklistUser already toasts + the M listener will re-render everything
+    }
+  }
+  toast("⚠️ ₹"+CASH_PENALTY_FEE+" penalty added — "+name+" now has "+strikes+" strike(s)");
+  renderPayouts();renderMechanics();
 };
 
 function updateKPIs(){
@@ -328,7 +363,7 @@ function renderMechanics(){
     const blBtn=m.blacklisted
       ? `<button class="action-btn green" style="font-size:10px" onclick="unblacklistUser('mechanic','${uid}','${nm}')">Un-blacklist</button>`
       : `<button class="del-btn" style="font-size:10px" onclick="blacklistUser('mechanic','${uid}','${nm}')">🚫</button>`;
-    return `<tr${m.blacklisted?' style="opacity:.55"':''}>
+    return `<tr id="mech-row-${uid}"${m.blacklisted?' style="opacity:.55"':''}>
       <td><div style="display:flex;align-items:center;gap:6px">${pfpHtml}<span style="font-size:12px">${m.name||"—"}</span>${blBadge}${badBadge}</div></td>
       <td style="font-size:11px">${m.phone||"—"}</td>
       <td style="font-size:11px">${m.city||"—"}</td>
@@ -379,7 +414,7 @@ function renderCustomers(){
     const blBtn=c.blacklisted
       ? `<button class="action-btn green" style="font-size:10px" onclick="unblacklistUser('customer','${uid}','${cnm}')">Un-BL</button>`
       : `<button class="del-btn" style="font-size:10px" onclick="blacklistUser('customer','${uid}','${cnm}')">🚫</button>`;
-    return `<tr${c.blacklisted?' style="opacity:.55"':''}>
+    return `<tr id="cust-row-${uid}"${c.blacklisted?' style="opacity:.55"':''}>
       <td><div style="display:flex;align-items:center;gap:6px">${pfpHtml}<span>${c.name||"—"}</span>${blBadge}${badBadge}</div></td>
       <td>${c.phone||"—"}</td>
       <td>${c.email||"—"}</td>
@@ -449,6 +484,23 @@ window.delAlert=id=>{remove(ref(db,"alerts/"+id));toast("Alert removed");};
 window.resolveAlert=id=>{update(ref(db,"alerts/"+id),{status:"resolved",resolvedAt:Date.now()});};
 // Blacklist / un-blacklist a mechanic or customer. Blacklisting sets a flag that each app's
 // profile listener checks — a blacklisted user is signed out and blocked on their next tick.
+// BUGFIX: names in the Finance table used to be plain text — there was no way to click
+// through from "who does this job belong to" to their actual Mechanics/Customers record.
+// These jump to that person's tab and highlight their row so they're easy to spot.
+window.jumpToMech=(uid)=>{
+  showView("v-mechs");
+  setTimeout(()=>{
+    const row=document.getElementById("mech-row-"+uid);
+    if(row){row.scrollIntoView({behavior:"smooth",block:"center"});row.classList.add("row-flash");setTimeout(()=>row.classList.remove("row-flash"),2200);}
+  },60);
+};
+window.jumpToCust=(uid)=>{
+  showView("v-custs");
+  setTimeout(()=>{
+    const row=document.getElementById("cust-row-"+uid);
+    if(row){row.scrollIntoView({behavior:"smooth",block:"center"});row.classList.add("row-flash");setTimeout(()=>row.classList.remove("row-flash"),2200);}
+  },60);
+};
 window.blacklistUser=(role,id,name)=>{
   const node=role==="mechanic"?"mechanics/":"customers/";
   if(!confirm("Blacklist "+role+' "'+name+'"?\n\nThey will be signed out and blocked from using the app until you un-blacklist them.'))return;
@@ -544,6 +596,8 @@ html,body{height:100%;overflow:hidden;background:var(--bg);font-family:var(--fb)
 .empty-row{text-align:center;color:var(--tx3);padding:22px 20px;font-size:13px}
 .empty-card{text-align:center;color:var(--tx3);padding:32px 20px;font-size:13px;background:var(--card);border-radius:var(--r2);border:1px solid var(--bdr)}
 .status-on{color:var(--gn);font-size:12px;font-weight:500}.status-warn{color:var(--yw);font-size:12px;font-weight:500}.status-off{color:var(--tx3);font-size:12px}
+@keyframes rowFlash{0%,100%{background:transparent}30%,70%{background:rgba(34,197,94,.18)}}
+.row-flash{animation:rowFlash 2.2s ease-in-out}
 .action-btn{background:var(--bl2);color:var(--bl);border:none;border-radius:5px;padding:3px 8px;font-size:11px;font-weight:600;cursor:pointer;font-family:var(--fh)}
 .action-btn.green{background:var(--gn2);color:var(--gn)}
 .del-btn{background:var(--rd2);color:var(--rd);border:none;border-radius:5px;padding:3px 8px;font-size:11px;font-weight:600;cursor:pointer;font-family:var(--fh)}
@@ -670,20 +724,21 @@ tr.row-done td{opacity:.6}
         </div>
         <div class="table-wrap">
           <div class="table-head"><div class="table-head-title">Completed jobs — money breakdown</div><span class="bdg b-g">● Live</span></div>
-          <div style="padding:8px 15px;font-size:11px;color:var(--tx2);border-bottom:1px solid var(--bdr)">👉 Want the per-mechanic total to actually pay out each month? See <span style="color:var(--gn);cursor:pointer;font-weight:700" onclick="showView('v-payouts')">Pay Mechanics →</span></div>
+          <div style="padding:8px 15px;font-size:11px;color:var(--tx2);border-bottom:1px solid var(--bdr)">👉 Want the per-mechanic total to actually pay out each week? See <span style="color:var(--gn);cursor:pointer;font-weight:700" onclick="showView('v-payouts')">Pay Mechanics →</span></div>
           <div style="overflow-x:auto"><table><thead><tr><th style="width:80px">Job</th><th style="width:110px">Customer</th><th style="width:100px">Mechanic</th><th style="width:70px">Method</th><th style="width:90px">Repair</th><th style="width:100px">Customer paid</th><th style="width:100px">Mechanic got</th><th style="width:100px">Your fee</th><th style="width:120px">Settlement</th></tr></thead><tbody id="finance-tbody"><tr><td colspan="9" class="empty-row">No completed paid jobs yet</td></tr></tbody></table></div>
         </div>
       </div>
       <div id="v-payouts" class="view">
         <div class="info-box">
-          <h3>💵 Mechanic payout — <span id="payout-month-label" style="color:var(--gn)">this month</span>, paid on the 27th</h3>
-          <div class="info-step"><div class="info-n">1</div><div>Every job — cash or digital — carries the same <strong>10% RoadFix fee</strong>. <strong>Total job value</strong> and <strong>Platform fee</strong> below are added up across ALL of a mechanic's jobs, so you can see exactly how many jobs they did and how much that fee cut comes to.</div></div>
-          <div class="info-step"><div class="info-n">2</div><div>On <strong>cash</strong> jobs the mechanic already collected the money directly, so that amount is subtracted too (<strong>cash kept</strong>) — it doesn't need to be paid out again.</div></div>
-          <div class="info-step"><div class="info-n">3</div><div>What's left is the <strong>Pay on 27th</strong> column — the actual amount to hand each mechanic this month (or, if it's negative, what they still owe you). Click <strong>Mark paid</strong> once you've actually paid them — this resets their count to zero so the same jobs never get counted twice.</div></div>
+          <h3>💵 Weekly mechanic payout — paid every weekend</h3>
+          <div class="info-step"><div class="info-n">1</div><div>Every job — cash or digital — carries the same <strong>10% RoadFix fee</strong>. <strong>Total job value</strong> and <strong>Platform fee</strong> below are added up across ALL of a mechanic's jobs since their last payout, so you can see exactly how many jobs they did and how much that fee cut comes to.</div></div>
+          <div class="info-step"><div class="info-n">2</div><div>Mechanics are expected to hand in their <strong>cash collections every day</strong> (see the reminder in their app). If they did, that amount shows as <strong>cash kept</strong> and is subtracted here since it doesn't need to be paid out again.</div></div>
+          <div class="info-step"><div class="info-n">3</div><div>If a mechanic <strong>doesn't</strong> hand in their cash one day, click <strong>⚠️ Missed cash today</strong> — this adds a ₹100 penalty and logs a strike (shown next to their name). After 3 strikes you'll be asked if you want to blacklist them.</div></div>
+          <div class="info-step"><div class="info-n">4</div><div>What's left is the <strong>Pay this week</strong> column — the actual amount to hand each mechanic this weekend (or, if it's negative, what they still owe you). Click <strong>Mark paid</strong> once you've actually paid them — this resets their balance to zero so the same jobs never get counted twice.</div></div>
         </div>
         <div class="table-wrap">
-          <div class="table-head"><div class="table-head-title">Per-mechanic payout — jobs done this cycle</div><span class="bdg b-g">● Live</span></div>
-          <div style="overflow-x:auto"><table><thead><tr><th style="width:140px">Mechanic</th><th style="width:70px">Jobs done</th><th style="width:130px">Total job value</th><th style="width:120px">Platform fee (10%)</th><th style="width:150px">Cash kept by mechanic</th><th style="width:150px">Pay on 27th</th><th style="width:150px">Action</th></tr></thead><tbody id="payouts-tbody"><tr><td colspan="7" class="empty-row">No unsettled completed jobs right now.</td></tr></tbody></table></div>
+          <div class="table-head"><div class="table-head-title">Per-mechanic payout — jobs done this week</div><span class="bdg b-g">● Live</span></div>
+          <div style="overflow-x:auto"><table><thead><tr><th style="width:140px">Mechanic</th><th style="width:70px">Jobs done</th><th style="width:120px">Total job value</th><th style="width:110px">Platform fee (10%)</th><th style="width:140px">Cash kept by mechanic</th><th style="width:100px">Penalty</th><th style="width:140px">Pay this week</th><th style="width:170px">Action</th></tr></thead><tbody id="payouts-tbody"><tr><td colspan="8" class="empty-row">No unsettled completed jobs right now.</td></tr></tbody></table></div>
         </div>
       </div>
       <div id="v-alerts" class="view">

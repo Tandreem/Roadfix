@@ -525,19 +525,23 @@ function fIco(f,t){
 }
 
 // ── PHOTO + VOICE ─────────────────────────────────────
-// Camera capture (rear camera directly).
-window.doPhoto=()=>openPhotoPicker(true);
-// Gallery/file picker (no forced camera).
-window.doGallery=()=>openPhotoPicker(false);
-function openPhotoPicker(useCamera){
-  const i=document.createElement('input');i.type='file';i.accept='image/*';if(useCamera)i.capture='environment';
+// BUGFIX: this used to have two separate buttons — "Camera" (forced capture='environment')
+// and "Gallery" (plain file picker). The `capture` attribute is only honoured by some
+// mobile browsers; on plenty of devices (and always on desktop) both buttons opened the
+// exact same generic picker, so they looked completely identical and one was pointless.
+// Consolidated into a single "Add photo" button using the plain picker — on phones that
+// DO support it, the OS's native picker already offers "Take photo" and "Choose from
+// gallery" as options inside it, so nothing is lost.
+window.doGallery=()=>openPhotoPicker();
+function openPhotoPicker(){
+  const i=document.createElement('input');i.type='file';i.accept='image/*';
   i.onchange=async e=>{
     const f=e.target.files[0];if(!f)return;
     const d=await resizeImg(f); // compress before storing/sending
     window._photo=d;
     const pv=ge('photo-prev');if(pv){pv.src=d;pv.style.display='block';}
     const rm=ge('photo-remove');if(rm)rm.style.display='inline-flex';
-    toast(useCamera?'📷 Photo captured':'🖼️ Photo attached');
+    toast('🖼️ Photo attached');
   };
   i.click();
 }
@@ -812,23 +816,23 @@ window.createTowJob=()=>{
 // Software-only version of the concept in RoadFix_AI_Health_Monitor.pdf: no OBD+
 // hardware required. Uses the phone's real microphone (Web Audio API) and real
 // accelerometer (DeviceMotion) to build a per-vehicle baseline "fingerprint", then
-// compares later captures against it. Camera-based visual detection is left for the
-// OBD+ hardware track (needs a mounted, always-on camera) — flagged as such in the UI.
+// compares later captures against it.
 const HEALTH_KEY='rf_health_baseline',HEALTH_HIST_KEY='rf_health_history';
 function loadBaseline(){try{return JSON.parse(localStorage.getItem(HEALTH_KEY)||'null');}catch(e){return null;}}
 function saveBaseline(b){localStorage.setItem(HEALTH_KEY,JSON.stringify(b));}
 function loadHealthHist(){try{return JSON.parse(localStorage.getItem(HEALTH_HIST_KEY)||'[]');}catch(e){return [];}}
 function pushHealthHist(entry){const h=loadHealthHist();h.unshift(entry);localStorage.setItem(HEALTH_HIST_KEY,JSON.stringify(h.slice(0,20)));}
 
-// Captures `ms` milliseconds of mic + accelerometer data and resolves with
-// {ampAvg, ampVar, centroid, vibRms, vibVar} — the same shape used for both
-// calibration phases and live checks so they can be compared directly.
-async function captureSensors(ms,onTick){
-  let vibSamples=[];
-  const motionHandler=e=>{
-    const a=e.accelerationIncludingGravity||e.acceleration;
-    if(a&&a.x!=null)vibSamples.push(Math.sqrt(a.x*a.x+a.y*a.y+a.z*a.z));
-  };
+// BUGFIX (calibration hanging / feeling like an infinite loop): the old code called
+// getUserMedia(audio) AND requestPermission() for motion sensors separately for EACH of
+// the 3 calibration phases — three fresh permission negotiations and three brand-new
+// AudioContexts back to back. Re-acquiring the mic mid-flow (not from a direct button
+// click anymore, from deep inside an await chain) is exactly what iOS Safari silently
+// stalls on, and recreating an AudioContext repeatedly is unreliable across browsers too.
+// acquireHealthSensors() now asks for mic + motion permission ONCE, right when the button
+// is tapped (so it's still a genuine user gesture), and the same stream/AudioContext is
+// reused for every phase — nothing gets re-requested mid-calibration anymore.
+async function acquireHealthSensors(){
   let hasMotion=false;
   try{
     if(typeof DeviceMotionEvent!=='undefined'&&typeof DeviceMotionEvent.requestPermission==='function'){
@@ -836,39 +840,63 @@ async function captureSensors(ms,onTick){
       hasMotion=perm==='granted';
     }else if(typeof DeviceMotionEvent!=='undefined'){hasMotion=true;}
   }catch(e){hasMotion=false;}
-  if(hasMotion)window.addEventListener('devicemotion',motionHandler);
 
-  let stream=null,audioSamples=[],centroidSamples=[];
+  let stream=null,ctx=null,analyser=null,timeData=null,freqData=null,micOk=false;
   try{
     stream=await navigator.mediaDevices.getUserMedia({audio:true});
-    const ctx=new (window.AudioContext||window.webkitAudioContext)();
+    ctx=new (window.AudioContext||window.webkitAudioContext)();
     const src=ctx.createMediaStreamSource(stream);
-    const analyser=ctx.createAnalyser();analyser.fftSize=1024;
+    analyser=ctx.createAnalyser();analyser.fftSize=1024;
     src.connect(analyser);
-    const freqData=new Uint8Array(analyser.frequencyBinCount);
-    const timeData=new Uint8Array(analyser.fftSize);
-    const tickMs=200;const ticks=Math.max(1,Math.round(ms/tickMs));
-    for(let i=0;i<ticks;i++){
+    timeData=new Uint8Array(analyser.fftSize);
+    freqData=new Uint8Array(analyser.frequencyBinCount);
+    micOk=true;
+  }catch(e){micOk=false;}
+
+  let vibSamples=[];
+  const motionHandler=e=>{
+    const a=e.accelerationIncludingGravity||e.acceleration;
+    if(a&&a.x!=null)vibSamples.push(Math.sqrt(a.x*a.x+a.y*a.y+a.z*a.z));
+  };
+  if(hasMotion)window.addEventListener('devicemotion',motionHandler);
+
+  return{
+    hasMotion,micOk,
+    resetVib:()=>{vibSamples=[];},
+    getVib:()=>vibSamples,
+    sampleOnce:()=>{
+      if(!micOk)return null;
       analyser.getByteTimeDomainData(timeData);
       analyser.getByteFrequencyData(freqData);
       let sum=0;for(let j=0;j<timeData.length;j++){const v=(timeData[j]-128)/128;sum+=v*v;}
-      audioSamples.push(Math.sqrt(sum/timeData.length));
+      const amp=Math.sqrt(sum/timeData.length);
       let wsum=0,tot=0;for(let j=0;j<freqData.length;j++){wsum+=j*freqData[j];tot+=freqData[j];}
-      centroidSamples.push(tot>0?wsum/tot:0);
-      if(onTick)onTick(i/ticks);
-      await new Promise(r=>setTimeout(r,tickMs));
+      const centroid=tot>0?wsum/tot:0;
+      return{amp,centroid};
+    },
+    teardown:()=>{
+      if(hasMotion)window.removeEventListener('devicemotion',motionHandler);
+      if(stream)stream.getTracks().forEach(t=>t.stop());
+      if(ctx)ctx.close().catch(()=>{});
     }
-    stream.getTracks().forEach(t=>t.stop());
-    ctx.close().catch(()=>{});
-  }catch(e){
-    // Mic denied/unavailable — still let the capture "complete" using whatever
-    // vibration data we got, so the flow doesn't hard-fail on a permission block.
-    await new Promise(r=>setTimeout(r,ms));
+  };
+}
+// Samples for `ms` milliseconds using an already-acquired sensor rig (see
+// acquireHealthSensors) — no permission requests or AudioContext creation happen in here
+// anymore, which is what used to make multi-phase calibration stall between phases.
+async function sampleSensors(rig,ms,onTick){
+  rig.resetVib();
+  const audioSamples=[],centroidSamples=[];
+  const tickMs=200;const ticks=Math.max(1,Math.round(ms/tickMs));
+  for(let i=0;i<ticks;i++){
+    const s=rig.sampleOnce();
+    if(s){audioSamples.push(s.amp);centroidSamples.push(s.centroid);}
+    if(onTick)onTick(i/ticks);
+    await new Promise(r=>setTimeout(r,tickMs));
   }
-  if(hasMotion)window.removeEventListener('devicemotion',motionHandler);
-
   const avg=arr=>arr.length?arr.reduce((a,b)=>a+b,0)/arr.length:0;
   const variance=arr=>{const m=avg(arr);return arr.length?avg(arr.map(v=>(v-m)*(v-m))):0;};
+  const vibSamples=rig.getVib();
   return{
     ampAvg:avg(audioSamples),ampVar:variance(audioSamples),
     centroid:avg(centroidSamples),
@@ -876,67 +904,91 @@ async function captureSensors(ms,onTick){
     micOk:audioSamples.length>0,vibOk:vibSamples.length>0
   };
 }
+// Guards against two calibration/check runs racing each other and fighting over the same
+// status box — tapping the button again mid-run while nothing disabled it would launch a
+// second overlapping loop, which looks exactly like it's "stuck in a loop" forever.
+let _calibrating=false,_healthChecking=false;
 window.startCalibration=async()=>{
-  const box=ge('health-cal-live');if(!box)return;
+  if(_calibrating){toast('Calibration already running — please wait');return;}
+  _calibrating=true;
+  const box=ge('health-cal-live');if(!box){_calibrating=false;return;}
+  const calBtn=ge('health-cal-btn');if(calBtn){calBtn.disabled=true;calBtn.style.opacity='.6';}
+  box.innerHTML='<div style="text-align:center;padding:6px 0"><div class="ai-sp" style="margin:0 auto 10px"></div><div style="font-size:11px;color:var(--tx2)">Requesting microphone access…</div></div>';
+  const rig=await acquireHealthSensors();
+  if(!rig.micOk&&!rig.hasMotion){
+    box.innerHTML='<div style="font-size:11px;color:var(--rd)">⚠️ Couldn\'t access the microphone or motion sensors. Check your browser/site permissions (look for a 🔒 or camera/mic icon in the address bar) and try again.</div>';
+    if(calBtn){calBtn.disabled=false;calBtn.style.opacity='1';}
+    _calibrating=false;
+    return;
+  }
   const phases=[{label:'Phase 1 — Stationary idle',sub:'Let the engine idle, AC off, windows closed',ms:8000},
                 {label:'Phase 2 — City driving (~40 km/h)',sub:'Drive normally on a smooth road',ms:6000},
                 {label:'Phase 3 — Highway (~80 km/h)',sub:'Drive on a smooth highway stretch',ms:6000}];
   const readings=[];
-  for(let i=0;i<phases.length;i++){
-    const ph=phases[i];
-    box.innerHTML=`<div style="text-align:center;padding:6px 0">
-      <div class="ai-sp" style="margin:0 auto 10px"></div>
-      <div style="font-family:var(--fh);font-weight:700;font-size:13px">${ph.label}</div>
-      <div style="font-size:11px;color:var(--tx2);margin-top:3px">${ph.sub}</div>
-      <div style="font-size:10px;color:var(--tx3);margin-top:6px">Recording <span id="cal-pct">0</span>%</div>
-    </div>`;
-    const r=await captureSensors(ph.ms,pct=>{const p=ge('cal-pct');if(p)p.textContent=Math.round(pct*100);});
-    readings.push(r);
+  try{
+    for(let i=0;i<phases.length;i++){
+      const ph=phases[i];
+      box.innerHTML=`<div style="text-align:center;padding:6px 0">
+        <div class="ai-sp" style="margin:0 auto 10px"></div>
+        <div style="font-family:var(--fh);font-weight:700;font-size:13px">${ph.label}</div>
+        <div style="font-size:11px;color:var(--tx2);margin-top:3px">${ph.sub}</div>
+        <div style="font-size:10px;color:var(--tx3);margin-top:6px">Recording <span id="cal-pct">0</span>%</div>
+      </div>`;
+      const r=await sampleSensors(rig,ph.ms,pct=>{const p=ge('cal-pct');if(p)p.textContent=Math.round(pct*100);});
+      readings.push(r);
+    }
+    const baseline={vehicleId:selVeh?selVeh.id:null,vehicleLabel:selVeh?(selVeh.make+' '+selVeh.model):'',
+      phases:readings,calibratedAt:Date.now()};
+    saveBaseline(baseline);
+    toast('✅ Vehicle health fingerprint saved');
+  }catch(e){
+    console.error('calibration failed',e);
+    toast('⚠️ Calibration failed — please try again');
+  }finally{
+    rig.teardown();
+    if(calBtn){calBtn.disabled=false;calBtn.style.opacity='1';}
+    _calibrating=false;
+    window.renderHealthDash();
   }
-  const baseline={vehicleId:selVeh?selVeh.id:null,vehicleLabel:selVeh?(selVeh.make+' '+selVeh.model):'',
-    phases:readings,calibratedAt:Date.now()};
-  saveBaseline(baseline);
-  toast('✅ Vehicle health fingerprint saved');
-  window.renderHealthDash();
 };
-// Compares a fresh capture against the saved baseline (averaged across the 3 phases)
-// and returns a deviation % for audio and vibration independently.
-function deviationVsBaseline(reading,baseline){
-  const ph=baseline.phases||[];
-  const avgField=f=>ph.length?ph.reduce((a,b)=>a+(b[f]||0),0)/ph.length:0;
-  // BUGFIX: these floors used to be a flat 0.0001 for every field. ampVar and centroid are
-  // naturally tiny/near-zero during a quiet calibration (ampVar is a variance of values
-  // roughly in -1..1, centroid is a frequency-bin index that's low when there's little
-  // high-frequency content) — with a 0.0001 floor, almost ANY real reading divided by that
-  // near-zero baseline blew the deviation % straight up to the 100% cap, every time. That
-  // meant classifyFault() below was seeing "100% deviation" on centroid/ampVar constantly
-  // regardless of what actually changed, so it kept landing on the same 1–2 faults no
-  // matter what was actually recorded — the "not doing correctly" bug. Floors are now set
-  // to realistic minimums for what these features actually range over, so a quiet baseline
-  // doesn't make ordinary engine noise look like a 100% anomaly.
-  const baseAmp=avgField('ampAvg')||0.01,baseVib=avgField('vibRms')||0.05;
-  const baseCentroid=avgField('centroid')||5,baseAmpVar=avgField('ampVar')||0.0008;
-  const audioDev=Math.min(100,Math.abs(reading.ampAvg-baseAmp)/baseAmp*100);
-  const vibDev=Math.min(100,Math.abs(reading.vibRms-baseVib)/baseVib*100);
-  // Extra features (frequency brightness + amplitude irregularity) so the fault picked
-  // below can actually be tied to what the sensors saw, instead of guessed at random.
-  const centroidDev=Math.min(100,Math.abs((reading.centroid||0)-baseCentroid)/baseCentroid*100);
-  const ampVarDev=Math.min(100,Math.abs((reading.ampVar||0)-baseAmpVar)/baseAmpVar*100);
-  return{audioDev,vibDev,centroidDev,ampVarDev};
+// Compares a fresh capture against EACH saved baseline phase and keeps the closest match,
+// rather than one blended average of idle+city+highway.
+// BUGFIX ("shows 100% wrong even with no problem"): comparing a check against a single
+// average of all 3 phases meant a perfectly healthy idle reading got compared against a
+// baseline dragged around by the (much louder) highway phase, which alone could produce a
+// huge, meaningless "deviation". Matching against whichever phase is actually closest is
+// far more representative of "does this match ANY known-healthy condition".
+// BUGFIX (same issue, different cause): deviation used to be plain `(reading-base)/base`,
+// which explodes when the baseline happens to be small — a near-silent calibration could
+// make completely normal engine noise look like a 300%+ anomaly, clipped straight to the
+// 100% cap. Switched to a symmetric percentage difference (bounded 0–100, and ~0 whenever
+// reading and baseline are proportionally close, regardless of their absolute scale).
+function pctDiff(a,b){
+  const denom=(Math.abs(a)+Math.abs(b))||1e-6;
+  return Math.min(100,200*Math.abs(a-b)/denom);
 }
-// BUGFIX (round 1): this used to be `FAULT_LIB[Math.floor(Math.random()*FAULT_LIB.length)]`
-// — a real reading was captured but the fault *name* was picked at random, unrelated to it.
-// BUGFIX (round 2 — this pass): even after tying it to the reading, the fixed 20%
-// thresholds below combined with the near-zero epsilon floors above meant centroidDev/
-// ampVarDev were almost always pinned at the 100% cap, so this kept resolving to the same
-// fault regardless of the actual reading. Fixed by (a) realistic floors above, and (b)
-// ranking the two audio sub-signatures against EACH OTHER instead of fixed absolute
-// cutoffs, which is far less sensitive to any one feature's scale blowing up.
+function deviationVsBaseline(reading,baseline){
+  const phases=baseline.phases||[];
+  if(!phases.length)return{audioDev:0,vibDev:0,centroidDev:0,ampVarDev:0};
+  let best=null,bestScore=Infinity;
+  phases.forEach(ph=>{
+    const audioDev=pctDiff(reading.ampAvg,ph.ampAvg||0);
+    const vibDev=pctDiff(reading.vibRms,ph.vibRms||0);
+    const centroidDev=pctDiff(reading.centroid||0,ph.centroid||0);
+    const ampVarDev=pctDiff(reading.ampVar||0,ph.ampVar||0);
+    const score=Math.max(audioDev,vibDev); // "closest phase" = lowest headline deviation
+    if(score<bestScore){bestScore=score;best={audioDev,vibDev,centroidDev,ampVarDev};}
+  });
+  return best;
+}
+// Picks the fault whose signature matches what the sensors actually measured (vibration-
+// led vs audio-led, and which audio sub-signature — brighter/higher-pitched vs erratic —
+// stands out), instead of a random guess disconnected from the reading.
 function classifyFault(d){
   const{audioDev=0,vibDev=0,centroidDev=0,ampVarDev=0}=d||{};
   const byName=n=>FAULT_LIB.find(f=>f.name===n);
   if(vibDev>audioDev*1.2)return vibDev>=35?byName('Wheel bearing wear'):byName('Worn engine mount');
-  if(centroidDev<5&&ampVarDev<5)return byName('Coolant leak'); // neither signature stands out
+  if(centroidDev<5&&ampVarDev<5)return byName('Coolant leak');
   return centroidDev>=ampVarDev?byName('Brake pad wear'):byName('Engine misfire');
 }
 function tierFor(devPct){
@@ -951,19 +1003,51 @@ const FAULT_LIB=[
   {name:'Worn engine mount',sev:'Medium',conf:78,advice:'Noticeable extra shake — schedule a check within the week.'},
   {name:'Brake pad wear',sev:'Medium',conf:80,advice:'Squealing brakes usually mean pads are due — don\'t delay this one.'}
 ];
-// BUGFIX: there used to be no working video option anywhere in the Health Monitor — the
-// UI only ever showed a permanently-disabled "needs OBD+ hardware" note with nothing to
-// tap. This actually opens the rear camera, records a short clip with MediaRecorder, and
-// plays it back — a real visual check the customer can review or send to the mechanic,
-// not just a note that a feature doesn't exist yet.
+// BUGFIX ("simulate shows a different % every time depending on his mood"): the demo used
+// to randomise audioDev/vibDev in wide ranges (10–70+) independently of which fault got
+// picked, so the SAME "Coolant leak" demo could show 33% one time and 70% the next for no
+// visible reason. Each demo fault now has one fixed, deterministic reading — clicking
+// Simulate can still surprise you with WHICH fault comes up, but a given fault always
+// shows the same numbers, like a real worked example should.
+const DEMO_READINGS={
+  'Coolant leak':{audioDev:52,vibDev:11},
+  'Wheel bearing wear':{audioDev:13,vibDev:44},
+  'Engine misfire':{audioDev:58,vibDev:16}
+};
+// BUGFIX ("video feature not working" / "shows denied when it isn't"): recordHealthVideo
+// used to request the camera with an exact facingMode:'environment' constraint and treat
+// ANY failure — including a laptop with no rear camera, or the camera just being busy in
+// another tab — as "permission denied". Now it (a) asks for environment as a soft
+// preference so it can still fall back to whatever camera exists instead of hard-failing,
+// and (b) reports the real reason (no camera found, camera busy, blocked by the browser,
+// etc.) instead of always blaming permissions.
 let _healthVideoStream=null,_healthRecorder=null,_healthChunks=[];
+async function openHealthCamera(){
+  try{
+    return await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
+  }catch(e){
+    if(e&&(e.name==='OverconstrainedError'||e.name==='ConstraintNotSatisfiedError')){
+      // No camera matched "environment" (common on laptops) — fall back to any camera.
+      return await navigator.mediaDevices.getUserMedia({video:true,audio:false});
+    }
+    throw e;
+  }
+}
+function healthCameraErrorMessage(e){
+  const name=e&&e.name;
+  if(name==='NotAllowedError'||name==='PermissionDeniedError')return'🎥 Camera permission was denied — allow camera access for this site in your browser settings.';
+  if(name==='NotFoundError'||name==='DevicesNotFoundError')return'🎥 No camera found on this device.';
+  if(name==='NotReadableError'||name==='TrackStartError')return'🎥 Camera is already in use by another app or tab.';
+  if(name==='SecurityError')return'🎥 Camera blocked — this page needs to be loaded over HTTPS.';
+  return'🎥 Could not open the camera ('+(name||'unknown error')+')';
+}
 window.recordHealthVideo=async()=>{
   const wrap=ge('health-video-wrap');if(!wrap)return;
   if(_healthRecorder&&_healthRecorder.state==='recording'){_healthRecorder.stop();return;}
   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){toast('🎥 Camera not available on this device/browser');return;}
   if(typeof MediaRecorder==='undefined'){toast('🎥 Video recording isn\'t supported in this browser');return;}
-  try{_healthVideoStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});}
-  catch(e){toast('🎥 Camera permission denied');return;}
+  try{_healthVideoStream=await openHealthCamera();}
+  catch(e){console.warn('camera open failed',e);toast(healthCameraErrorMessage(e));return;}
   wrap.innerHTML='<video id="health-video-live" autoplay playsinline muted style="width:100%;border-radius:var(--r);background:#000"></video>'+
     '<div style="font-size:10px;color:var(--tx3);margin-top:4px;text-align:center">Recording 5s…</div>';
   const liveEl=ge('health-video-live');if(liveEl)liveEl.srcObject=_healthVideoStream;
@@ -975,6 +1059,10 @@ window.recordHealthVideo=async()=>{
   _healthRecorder.ondataavailable=e=>{if(e.data&&e.data.size>0)_healthChunks.push(e.data);};
   _healthRecorder.onstop=()=>{
     _healthVideoStream.getTracks().forEach(t=>t.stop());
+    if(!_healthChunks.length){
+      wrap.innerHTML='<div style="font-size:11px;color:var(--rd)">⚠️ Recording produced no data — please try again.</div>';
+      return;
+    }
     const blob=new Blob(_healthChunks,{type:(_healthChunks[0]&&_healthChunks[0].type)||'video/webm'});
     const url=URL.createObjectURL(blob);
     window._healthVideoUrl=url;
@@ -982,45 +1070,61 @@ window.recordHealthVideo=async()=>{
       '<div style="font-size:10px;color:var(--tx3);margin-top:4px;text-align:center">🎥 Saved for this session — play it back or show it to your mechanic</div>';
     if(window._lastHealthEntry)renderHealthResult(window._lastHealthEntry,window._lastHealthFault);
   };
+  _healthRecorder.onerror=e=>{console.warn('recorder error',e);toast('🎥 Recording error — please try again');};
   _healthRecorder.start();
   setTimeout(()=>{if(_healthRecorder&&_healthRecorder.state==='recording')_healthRecorder.stop();},5000);
 };
 window.runHealthCheck=async(simulate)=>{
+  if(_healthChecking){toast('A check is already running — please wait');return;}
   const baseline=loadBaseline();
   if(!baseline){toast('Calibrate your vehicle first');return;}
   const box=ge('health-check-live');if(!box)return;
+  _healthChecking=true;
+  const runBtn=ge('health-run-btn');if(runBtn)runBtn.disabled=true;
   box.innerHTML=`<div style="text-align:center;padding:10px 0"><div class="ai-sp" style="margin:0 auto 10px"></div><div style="font-size:12px;color:var(--tx2)">${simulate?'Simulating a developing fault…':'Listening + sensing… drive normally'}</div></div>`;
   let audioDev,vibDev,fault=null,dev=null;
-  if(simulate){
-    // Demo mode — walks through one of the PDF's worked examples so the concept can be
-    // shown convincingly without needing an actual failing car on hand. Fault is still
-    // chosen first here (this path is explicitly labelled "Simulating…" in the UI), but
-    // the deviation numbers now match the category of fault picked instead of both being
-    // independently randomised and possibly contradicting each other.
-    await new Promise(r=>setTimeout(r,1800));
-    const demoFaults=FAULT_LIB.slice(0,3); // first 3 match the PDF's worked examples
-    fault=demoFaults[Math.floor(Math.random()*demoFaults.length)];
-    const vibLed=fault.name==='Wheel bearing wear'||fault.name==='Worn engine mount';
-    audioDev=vibLed?10+Math.random()*15:30+Math.random()*40;
-    vibDev=vibLed?30+Math.random()*40:10+Math.random()*15;
-  }else{
-    const reading=await captureSensors(6000);
-    dev=deviationVsBaseline(reading,baseline);
-    audioDev=dev.audioDev;vibDev=dev.vibDev;
+  try{
+    if(simulate){
+      // Demo mode — walks through one of the PDF's worked examples so the concept can be
+      // shown convincingly without needing an actual failing car on hand. Numbers are now
+      // fixed per fault (see DEMO_READINGS) instead of randomised — see bugfix note above.
+      await new Promise(r=>setTimeout(r,1800));
+      const demoFaults=FAULT_LIB.slice(0,3); // first 3 match the PDF's worked examples
+      fault=demoFaults[Math.floor(Math.random()*demoFaults.length)];
+      const demo=DEMO_READINGS[fault.name];
+      audioDev=demo.audioDev;vibDev=demo.vibDev;
+    }else{
+      const rig=await acquireHealthSensors();
+      if(!rig.micOk&&!rig.hasMotion){
+        box.innerHTML='<div style="font-size:11px;color:var(--rd)">⚠️ Couldn\'t access the microphone or motion sensors for this check.</div>';
+        _healthChecking=false;if(runBtn)runBtn.disabled=false;
+        return;
+      }
+      const reading=await sampleSensors(rig,6000);
+      rig.teardown();
+      dev=deviationVsBaseline(reading,baseline);
+      audioDev=dev.audioDev;vibDev=dev.vibDev;
+    }
+    const devPct=Math.max(audioDev,vibDev);
+    const tier=tierFor(devPct);
+    // Real diagnosis: pick the fault whose signature matches what the sensors actually
+    // measured (see classifyFault above), instead of a random guess disconnected from it.
+    if(!fault&&tier!=='monitor')fault=classifyFault(dev||{audioDev,vibDev});
+    const confidence=fault?fault.conf:Math.round(100-devPct);
+    const entry={time:Date.now(),tier,devPct:Math.round(devPct),audioDev:Math.round(audioDev),vibDev:Math.round(vibDev),fault:fault?fault.name:null,confidence,simulate:!!simulate};
+    pushHealthHist(entry);
+    // Stashed so recordHealthVideo() can re-render this same result once a video is attached
+    // (without this, attaching a video after the fact had nothing valid to redraw).
+    window._lastHealthEntry=entry;window._lastHealthFault=fault;
+    renderHealthResult(entry,fault);
+  }catch(e){
+    console.error('health check failed',e);
+    box.innerHTML='<div style="font-size:11px;color:var(--rd)">⚠️ Something went wrong running this check — please try again.</div>';
+  }finally{
+    _healthChecking=false;
+    if(runBtn)runBtn.disabled=false;
+    window.renderHealthDash();
   }
-  const devPct=Math.max(audioDev,vibDev);
-  const tier=tierFor(devPct);
-  // Real diagnosis: pick the fault whose signature matches what the sensors actually
-  // measured (see classifyFault above), instead of a random guess disconnected from it.
-  if(!fault&&tier!=='monitor')fault=classifyFault(dev||{audioDev,vibDev});
-  const confidence=fault?fault.conf:Math.round(100-devPct);
-  const entry={time:Date.now(),tier,devPct:Math.round(devPct),audioDev:Math.round(audioDev),vibDev:Math.round(vibDev),fault:fault?fault.name:null,confidence,simulate:!!simulate};
-  pushHealthHist(entry);
-  // Stashed so recordHealthVideo() can re-render this same result once a video is attached
-  // (without this, attaching a video after the fact had nothing valid to redraw).
-  window._lastHealthEntry=entry;window._lastHealthFault=fault;
-  renderHealthResult(entry,fault);
-  window.renderHealthDash();
 };
 function renderHealthResult(entry,fault){
   const box=ge('health-check-live');if(!box)return;
@@ -1034,10 +1138,6 @@ function renderHealthResult(entry,fault){
   }else{
     html+=`<div style="font-size:11px;color:var(--tx2)"><strong>${fault?fault.name:'Anomaly'}</strong> detected — ${entry.confidence}% confidence.${fault?' '+fault.advice:''}</div>`;
   }
-  // BUGFIX: this used to hardcode "Camera cross-check: needs OBD+ hardware" — a dead-end
-  // message with no button, no matter what. There's no OBD+ hardware requirement for a
-  // BASIC visual check though — the phone's own camera can already do that; it just wasn't
-  // wired up. recordHealthVideo() below actually captures and plays back a short clip now.
   const videoNote=window._healthVideoUrl?'🎥 Video attached':'🎥 <span style="color:var(--pu);cursor:pointer" onclick="recordHealthVideo()">Add a quick video</span>';
   html+=`<div style="font-size:10px;color:var(--tx3);margin-top:5px">🎙️ Audio dev: ${entry.audioDev}% · 📳 Vibration dev: ${entry.vibDev}% · ${videoNote}</div></div></div>`;
   if(entry.tier==='alert'){
@@ -1630,8 +1730,7 @@ async function withBusy(btnId,busyLabel,fn){
       <div id="photo-remove" style="display:none;margin-top:5px;text-align:right"><span onclick="removePhoto()" style="font-size:11px;color:var(--rd);cursor:pointer;display:inline-flex;align-items:center;gap:3px">🗑️ Remove photo</span></div>
       <div class="ia-row" style="margin-top:7px">
         <div class="ia" onclick="doVoice()"><div style="font-size:18px">🎙️</div><div style="font-size:10px;color:var(--tx2)">Voice</div></div>
-        <div class="ia" onclick="doPhoto()"><div style="font-size:18px">📷</div><div style="font-size:10px;color:var(--tx2)">Camera</div></div>
-        <div class="ia" onclick="doGallery()"><div style="font-size:18px">🖼️</div><div style="font-size:10px;color:var(--tx2)">Gallery</div></div>
+        <div class="ia" onclick="doGallery()"><div style="font-size:18px">📷</div><div style="font-size:10px;color:var(--tx2)">Add photo</div></div>
         <div class="ia" onclick="go('s-prevent')"><div style="font-size:18px">🛡️</div><div style="font-size:10px;color:var(--tx2)">Preventive</div></div>
       </div>
     </div>

@@ -904,8 +904,18 @@ window.startCalibration=async()=>{
 function deviationVsBaseline(reading,baseline){
   const ph=baseline.phases||[];
   const avgField=f=>ph.length?ph.reduce((a,b)=>a+(b[f]||0),0)/ph.length:0;
-  const baseAmp=avgField('ampAvg')||0.0001,baseVib=avgField('vibRms')||0.0001;
-  const baseCentroid=avgField('centroid')||0.0001,baseAmpVar=avgField('ampVar')||0.0001;
+  // BUGFIX: these floors used to be a flat 0.0001 for every field. ampVar and centroid are
+  // naturally tiny/near-zero during a quiet calibration (ampVar is a variance of values
+  // roughly in -1..1, centroid is a frequency-bin index that's low when there's little
+  // high-frequency content) — with a 0.0001 floor, almost ANY real reading divided by that
+  // near-zero baseline blew the deviation % straight up to the 100% cap, every time. That
+  // meant classifyFault() below was seeing "100% deviation" on centroid/ampVar constantly
+  // regardless of what actually changed, so it kept landing on the same 1–2 faults no
+  // matter what was actually recorded — the "not doing correctly" bug. Floors are now set
+  // to realistic minimums for what these features actually range over, so a quiet baseline
+  // doesn't make ordinary engine noise look like a 100% anomaly.
+  const baseAmp=avgField('ampAvg')||0.01,baseVib=avgField('vibRms')||0.05;
+  const baseCentroid=avgField('centroid')||5,baseAmpVar=avgField('ampVar')||0.0008;
   const audioDev=Math.min(100,Math.abs(reading.ampAvg-baseAmp)/baseAmp*100);
   const vibDev=Math.min(100,Math.abs(reading.vibRms-baseVib)/baseVib*100);
   // Extra features (frequency brightness + amplitude irregularity) so the fault picked
@@ -914,25 +924,20 @@ function deviationVsBaseline(reading,baseline){
   const ampVarDev=Math.min(100,Math.abs((reading.ampVar||0)-baseAmpVar)/baseAmpVar*100);
   return{audioDev,vibDev,centroidDev,ampVarDev};
 }
-// BUGFIX: this used to be `FAULT_LIB[Math.floor(Math.random()*FAULT_LIB.length)]` — a real
-// sensor reading was captured and a real deviation % was computed, but the actual fault
-// *name* shown to the customer was picked at random and had nothing to do with the
-// reading. That's the "no real diagnosis" bug. This replaces it with a small deterministic
-// classifier driven by the measured features:
-//  - vibration-dominant deviation  -> chassis/mechanical fault (bearing vs engine mount,
-//    split by how severe the vibration deviation is)
-//  - audio-dominant + brighter/higher-pitched sound (centroid shift) -> brake squeal
-//  - audio-dominant + erratic/irregular amplitude (variance shift)   -> engine misfire
-//  - audio-dominant with neither signature standing out              -> coolant leak (catch-all)
-// It's still a simple heuristic, not a trained model, but it now actually depends on the
-// reading instead of a dice roll.
+// BUGFIX (round 1): this used to be `FAULT_LIB[Math.floor(Math.random()*FAULT_LIB.length)]`
+// — a real reading was captured but the fault *name* was picked at random, unrelated to it.
+// BUGFIX (round 2 — this pass): even after tying it to the reading, the fixed 20%
+// thresholds below combined with the near-zero epsilon floors above meant centroidDev/
+// ampVarDev were almost always pinned at the 100% cap, so this kept resolving to the same
+// fault regardless of the actual reading. Fixed by (a) realistic floors above, and (b)
+// ranking the two audio sub-signatures against EACH OTHER instead of fixed absolute
+// cutoffs, which is far less sensitive to any one feature's scale blowing up.
 function classifyFault(d){
   const{audioDev=0,vibDev=0,centroidDev=0,ampVarDev=0}=d||{};
   const byName=n=>FAULT_LIB.find(f=>f.name===n);
   if(vibDev>audioDev*1.2)return vibDev>=35?byName('Wheel bearing wear'):byName('Worn engine mount');
-  if(centroidDev>=20)return byName('Brake pad wear');
-  if(ampVarDev>=20)return byName('Engine misfire');
-  return byName('Coolant leak');
+  if(centroidDev<5&&ampVarDev<5)return byName('Coolant leak'); // neither signature stands out
+  return centroidDev>=ampVarDev?byName('Brake pad wear'):byName('Engine misfire');
 }
 function tierFor(devPct){
   if(devPct>=35)return'alert';
@@ -946,6 +951,40 @@ const FAULT_LIB=[
   {name:'Worn engine mount',sev:'Medium',conf:78,advice:'Noticeable extra shake — schedule a check within the week.'},
   {name:'Brake pad wear',sev:'Medium',conf:80,advice:'Squealing brakes usually mean pads are due — don\'t delay this one.'}
 ];
+// BUGFIX: there used to be no working video option anywhere in the Health Monitor — the
+// UI only ever showed a permanently-disabled "needs OBD+ hardware" note with nothing to
+// tap. This actually opens the rear camera, records a short clip with MediaRecorder, and
+// plays it back — a real visual check the customer can review or send to the mechanic,
+// not just a note that a feature doesn't exist yet.
+let _healthVideoStream=null,_healthRecorder=null,_healthChunks=[];
+window.recordHealthVideo=async()=>{
+  const wrap=ge('health-video-wrap');if(!wrap)return;
+  if(_healthRecorder&&_healthRecorder.state==='recording'){_healthRecorder.stop();return;}
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){toast('🎥 Camera not available on this device/browser');return;}
+  if(typeof MediaRecorder==='undefined'){toast('🎥 Video recording isn\'t supported in this browser');return;}
+  try{_healthVideoStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});}
+  catch(e){toast('🎥 Camera permission denied');return;}
+  wrap.innerHTML='<video id="health-video-live" autoplay playsinline muted style="width:100%;border-radius:var(--r);background:#000"></video>'+
+    '<div style="font-size:10px;color:var(--tx3);margin-top:4px;text-align:center">Recording 5s…</div>';
+  const liveEl=ge('health-video-live');if(liveEl)liveEl.srcObject=_healthVideoStream;
+  _healthChunks=[];
+  let mime='video/webm';
+  try{if(MediaRecorder.isTypeSupported&&!MediaRecorder.isTypeSupported(mime))mime='';}catch(e){mime='';}
+  try{_healthRecorder=mime?new MediaRecorder(_healthVideoStream,{mimeType:mime}):new MediaRecorder(_healthVideoStream);}
+  catch(e){toast('🎥 Could not start recording');_healthVideoStream.getTracks().forEach(t=>t.stop());return;}
+  _healthRecorder.ondataavailable=e=>{if(e.data&&e.data.size>0)_healthChunks.push(e.data);};
+  _healthRecorder.onstop=()=>{
+    _healthVideoStream.getTracks().forEach(t=>t.stop());
+    const blob=new Blob(_healthChunks,{type:(_healthChunks[0]&&_healthChunks[0].type)||'video/webm'});
+    const url=URL.createObjectURL(blob);
+    window._healthVideoUrl=url;
+    wrap.innerHTML='<video src="'+url+'" controls playsinline style="width:100%;border-radius:var(--r);background:#000"></video>'+
+      '<div style="font-size:10px;color:var(--tx3);margin-top:4px;text-align:center">🎥 Saved for this session — play it back or show it to your mechanic</div>';
+    if(window._lastHealthEntry)renderHealthResult(window._lastHealthEntry,window._lastHealthFault);
+  };
+  _healthRecorder.start();
+  setTimeout(()=>{if(_healthRecorder&&_healthRecorder.state==='recording')_healthRecorder.stop();},5000);
+};
 window.runHealthCheck=async(simulate)=>{
   const baseline=loadBaseline();
   if(!baseline){toast('Calibrate your vehicle first');return;}
@@ -977,6 +1016,9 @@ window.runHealthCheck=async(simulate)=>{
   const confidence=fault?fault.conf:Math.round(100-devPct);
   const entry={time:Date.now(),tier,devPct:Math.round(devPct),audioDev:Math.round(audioDev),vibDev:Math.round(vibDev),fault:fault?fault.name:null,confidence,simulate:!!simulate};
   pushHealthHist(entry);
+  // Stashed so recordHealthVideo() can re-render this same result once a video is attached
+  // (without this, attaching a video after the fact had nothing valid to redraw).
+  window._lastHealthEntry=entry;window._lastHealthFault=fault;
   renderHealthResult(entry,fault);
   window.renderHealthDash();
 };
@@ -992,7 +1034,12 @@ function renderHealthResult(entry,fault){
   }else{
     html+=`<div style="font-size:11px;color:var(--tx2)"><strong>${fault?fault.name:'Anomaly'}</strong> detected — ${entry.confidence}% confidence.${fault?' '+fault.advice:''}</div>`;
   }
-  html+=`<div style="font-size:10px;color:var(--tx3);margin-top:5px">🎙️ Audio dev: ${entry.audioDev}% · 📳 Vibration dev: ${entry.vibDev}% · Camera cross-check: needs OBD+ hardware</div></div></div>`;
+  // BUGFIX: this used to hardcode "Camera cross-check: needs OBD+ hardware" — a dead-end
+  // message with no button, no matter what. There's no OBD+ hardware requirement for a
+  // BASIC visual check though — the phone's own camera can already do that; it just wasn't
+  // wired up. recordHealthVideo() below actually captures and plays back a short clip now.
+  const videoNote=window._healthVideoUrl?'🎥 Video attached':'🎥 <span style="color:var(--pu);cursor:pointer" onclick="recordHealthVideo()">Add a quick video</span>';
+  html+=`<div style="font-size:10px;color:var(--tx3);margin-top:5px">🎙️ Audio dev: ${entry.audioDev}% · 📳 Vibration dev: ${entry.vibDev}% · ${videoNote}</div></div></div>`;
   if(entry.tier==='alert'){
     html+=`<button class="btn b-or" onclick="localStorage.setItem('rf_health_origin','1');go('s-report')">🔧 Find a verified RoadFix mechanic →</button><button class="btn b-ghost" onclick="renderHealthDash()">Not now</button>`;
   }
@@ -1170,19 +1217,31 @@ window.doSOS=()=>{
 // ── PAYMENT ───────────────────────────────────────────
 // ── PLATFORM FEE MODEL ────────────────────────────────
 // repair price = what the mechanic charges for the work (AI estimate).
-// Customer pays repair + 14%. Mechanic receives repair − 10%. RoadFix keeps both cuts.
+// BUGFIX: this used to hard-block Cash entirely and always assume RoadFix (the platform)
+// held the money and paid the mechanic out. That's only true for UPI/Card/Wallet. Real
+// money actually moves two different ways depending on how the customer pays:
+//   • UPI / Card / Wallet — the customer pays RoadFix directly (repair + 14% fee). RoadFix
+//     then owes the mechanic (repair − 10%), settled out monthly.
+//   • Cash — the customer pays the MECHANIC directly, in full, on the spot. There's no
+//     gateway fee to justify a customer surcharge, so no +14% here. Instead the mechanic
+//     now owes RoadFix its 10% cut on that job, settled at day's end.
+// `settledByMechanic` records which direction the money needs to move so the admin panel
+// can net it correctly per mechanic instead of assuming RoadFix always pays out.
 const CUST_FEE_PCT=0.14, MECH_FEE_PCT=0.10;
-function feeBreakdown(repair){
+function feeBreakdown(repair,method){
   repair=Math.round(repair||0);
-  const custFee=Math.round(repair*CUST_FEE_PCT);
+  const isCash=method==='Cash';
+  const custFee=isCash?0:Math.round(repair*CUST_FEE_PCT);
   const mechFee=Math.round(repair*MECH_FEE_PCT);
   return {
     repair,
     custFee,
     mechFee,
-    customerPays:repair+custFee,      // what the customer is charged
-    mechanicGets:repair-mechFee,      // what the mechanic is paid out
-    platformEarns:custFee+mechFee     // RoadFix revenue on this job
+    customerPays:repair+custFee,        // what the customer is charged
+    mechanicGets:isCash?repair:repair-mechFee, // what the mechanic ends up keeping
+    platformEarns:custFee+mechFee,      // RoadFix revenue on this job either way
+    settledByMechanic:isCash            // true = mechanic owes RoadFix mechFee (cash job)
+                                         // false = RoadFix owes mechanic mechanicGets (digital job)
   };
 }
 window.selPayMethod2=(method,el)=>{
@@ -1192,21 +1251,25 @@ window.selPayMethod2=(method,el)=>{
   const detail=ge('pay-detail');
   if(!detail)return;
   const price=window.currentJobPrice||(window._aiResult?Math.round(window._aiResult.low):1550);
-  const f=feeBreakdown(price);
+  const f=feeBreakdown(price,method);
+  // BUGFIX: Cash used to be shown as "not available" and blocked outright. It's a normal,
+  // supported option — it just settles with RoadFix afterwards instead of upfront, so the
+  // messaging (and the fee row below) now reflects that instead of refusing it.
   const methods={
-    'UPI':'<div style="background:var(--bg3);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">Pay via UPI (through RoadFix)</div><div style="font-size:11px;color:var(--tx2)">Secure UPI payment — RoadFix pays the mechanic after the job.</div></div>',
-    'Cash':'<div style="background:var(--rd2);border:1px solid rgba(239,68,68,.25);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--rd)">Cash not available</div><div style="font-size:11px;color:var(--tx2)">Payments go through RoadFix so your job is protected and the mechanic is paid securely. Please choose UPI, Card or Wallet.</div></div>',
-    'Card':'<div style="background:var(--bg3);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">Pay by Card (through RoadFix)</div><div style="font-size:11px;color:var(--tx2)">Secure card payment — RoadFix settles with the mechanic after completion.</div></div>',
-    'Wallet':'<div style="background:var(--bg3);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">Digital Wallet (through RoadFix)</div><div style="font-size:11px;color:var(--tx2)">Paytm · PhonePe · GPay — RoadFix pays the mechanic after the job.</div></div>',
+    'UPI':'<div style="background:var(--bg3);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">Pay via UPI (through RoadFix)</div><div style="font-size:11px;color:var(--tx2)">Secure UPI payment — RoadFix pays the mechanic at the next monthly settlement.</div></div>',
+    'Cash':'<div style="background:var(--bg3);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">Pay the mechanic in cash</div><div style="font-size:11px;color:var(--tx2)">Pay the mechanic directly on the spot — no extra fee for you. RoadFix collects its commission from the mechanic separately.</div></div>',
+    'Card':'<div style="background:var(--bg3);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">Pay by Card (through RoadFix)</div><div style="font-size:11px;color:var(--tx2)">Secure card payment — RoadFix settles with the mechanic at the next monthly settlement.</div></div>',
+    'Wallet':'<div style="background:var(--bg3);border-radius:var(--r);padding:11px;margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">Digital Wallet (through RoadFix)</div><div style="font-size:11px;color:var(--tx2)">Paytm · PhonePe · GPay — RoadFix pays the mechanic at the next monthly settlement.</div></div>',
   };
+  const feeRow=method==='Cash'?'':'<div class="rr"><span style="color:var(--tx2)">Platform &amp; service fee</span><span>₹'+f.custFee+'</span></div>';
   detail.innerHTML=(methods[method]||'')+
     '<div class="rr"><span style="color:var(--tx2)">Repair charge</span><span>₹'+f.repair+'</span></div>'+
-    '<div class="rr"><span style="color:var(--tx2)">Platform &amp; service fee</span><span>₹'+f.custFee+'</span></div>'+
+    feeRow+
     '<div class="rr" style="border-top:2px solid var(--bdr2);padding-top:8px;margin-top:4px"><strong>Total to pay</strong><strong style="color:var(--or)">₹'+f.customerPays+'</strong></div>';
   tx('pay-total','₹'+f.customerPays);
-  // Cash is intentionally not selectable for commission collection — block continue on it.
+  // Cash is now a fully supported method — no more disabling the continue button for it.
   const payBtn=ge('pay-complete-btn');
-  if(payBtn){if(method==='Cash'){payBtn.disabled=true;payBtn.style.opacity='.5';}else{payBtn.disabled=false;payBtn.style.opacity='1';}}
+  if(payBtn){payBtn.disabled=false;payBtn.style.opacity='1';}
 };
 
 window.customerJobDone=()=>{
@@ -1219,16 +1282,19 @@ window.customerJobDone=()=>{
 };
 window.finishJob=async()=>{
   const jid=getJobId();if(!jid)return;
-  if(selPayMethod==='Cash'){toast('Please choose UPI, Card or Wallet — cash isn\'t supported');return;}
+  // BUGFIX: Cash used to be blocked here entirely. It's now a normal path — the mechanic
+  // was paid directly on the spot, so all that's left is recording the job + what the
+  // mechanic now owes RoadFix, for the admin panel's monthly settlement.
   if(completingJobIds.has(jid)){setJobId(null);window._aiResult=null;clearActiveJobBanner();go('s-home');return;}
   completingJobIds.add(jid);
   const price=window.currentJobPrice||(window._aiResult?Math.round(window._aiResult.low):1550);
-  const f=feeBreakdown(price);
+  const f=feeBreakdown(price,selPayMethod);
   const rating=selRating||5;
   const reasonEl=ge('cust-rate-reason');
   const ratingReason=reasonEl?reasonEl.value.trim():'';
-  // Store the full fee split on the job so the admin finance page can total real revenue.
-  update(ref(db,'jobs/'+jid),{customer_done:true,status:'done',finalPrice:price,repairPrice:f.repair,customerPaid:f.customerPays,mechanicPayout:f.mechanicGets,platformFee:f.platformEarns,custFee:f.custFee,mechFee:f.mechFee,paymentMethod:selPayMethod,rating,ratingReason,completedAt:Date.now()});
+  // Store the full fee split on the job so the admin finance/payouts pages can total real
+  // revenue AND know which direction this job's money still needs to move.
+  update(ref(db,'jobs/'+jid),{customer_done:true,status:'done',finalPrice:price,repairPrice:f.repair,customerPaid:f.customerPays,mechanicPayout:f.mechanicGets,platformFee:f.platformEarns,custFee:f.custFee,mechFee:f.mechFee,settledByMechanic:f.settledByMechanic,paymentMethod:selPayMethod,rating,ratingReason,completedAt:Date.now()});
   // Customer's lifetime spend reflects what they actually paid (repair + customer fee).
   update(ref(db,'customers/'+uid),{totalJobs:(profile&&profile.totalJobs||0)+1,totalSpend:(profile&&profile.totalSpend||0)+f.customerPays});
   // Update the mechanic's real average rating (was previously hardcoded at 5.0 and never touched).
@@ -1690,6 +1756,7 @@ async function withBusy(btnId,busyLabel,fn){
       <div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);padding:13px;margin-bottom:10px">
         <div class="sl" style="margin-bottom:8px">2. Run a health check</div>
         <div id="health-check-live" style="margin-bottom:8px"></div>
+        <div id="health-video-wrap" style="margin-bottom:8px"></div>
         <button id="health-run-btn" class="btn b-or" onclick="runHealthCheck(false)">🎙️ Real check (mic + accelerometer)</button>
         <button class="btn b-ghost" onclick="runHealthCheck(true)">🎬 Simulate a developing fault (demo)</button>
       </div>

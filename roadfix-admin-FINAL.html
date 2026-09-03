@@ -8,7 +8,7 @@
 <script type="module">
 import{initializeApp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import{getAuth,signInWithEmailAndPassword,signOut,onAuthStateChanged}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import{getDatabase,ref,onValue,update,remove,get}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+import{getDatabase,ref,onValue,update,remove,get,push}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 const app=initializeApp({apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",authDomain:"roadfix-demo.firebaseapp.com",databaseURL:"https://roadfix-demo-default-rtdb.asia-southeast1.firebasedatabase.app",projectId:"roadfix-demo",storageBucket:"roadfix-demo.firebasestorage.app",messagingSenderId:"274952184107",appId:"1:274952184107:web:63188439d92ec31103a56e"});
 const auth=getAuth(app),db=getDatabase(app);
 
@@ -157,42 +157,107 @@ function renderAll(){
   try{renderCustomers();}catch(e){console.error("renderCustomers",e);}
   try{renderAlerts();}catch(e){console.error("renderAlerts",e);}
   try{renderFinance();}catch(e){console.error("renderFinance",e);}
+  try{renderPayouts();}catch(e){console.error("renderPayouts",e);}
 }
 // Finance: total real platform revenue, customer spend and mechanic payouts from every
 // completed paid job. Uses the fee fields the customer app now writes; falls back to
 // computing the 14%/10% split from the repair price for older jobs that predate them.
+// BUGFIX: this used to assume every job was paid digitally, so "mechPayout" was really
+// just "repair − 10%" added up regardless of how the customer paid. That's wrong for cash
+// jobs: on a cash job the mechanic already has the full amount in hand, so RoadFix doesn't
+// owe them anything for it — instead the MECHANIC owes RoadFix the 10% cut. This now keeps
+// the two directions separate (see settledByMechanic on each job) so the totals — and the
+// per-mechanic Payouts view below — reflect who actually owes who.
 function renderFinance(){
   const done=Object.entries(J).filter(([,j])=>j.status==="done");
-  let platform=0,custSpend=0,mechPayout=0,custFee=0,mechFee=0;
+  let platform=0,custSpend=0,owedToMechs=0,owedFromMechs=0,custFee=0,mechFee=0;
   const rows=done.map(([id,j])=>{
     const repair=j.repairPrice||j.finalPrice||j.estimateLow||0;
-    const cf=j.custFee!=null?j.custFee:Math.round(repair*0.14);
+    const isCash=j.paymentMethod==="Cash";
+    const cf=j.custFee!=null?j.custFee:(isCash?0:Math.round(repair*0.14));
     const mf=j.mechFee!=null?j.mechFee:Math.round(repair*0.10);
     const paid=j.customerPaid!=null?j.customerPaid:repair+cf;
-    const got=j.mechanicPayout!=null?j.mechanicPayout:repair-mf;
+    const got=j.mechanicPayout!=null?j.mechanicPayout:(isCash?repair:repair-mf);
     const fee=j.platformFee!=null?j.platformFee:cf+mf;
-    platform+=fee;custSpend+=paid;mechPayout+=got;custFee+=cf;mechFee+=mf;
-    return {id,cust:j.customerName||"—",mech:j.mechanic||"—",repair,paid,got,fee};
+    const settledByMechanic=j.settledByMechanic!=null?j.settledByMechanic:isCash;
+    platform+=fee;custSpend+=paid;custFee+=cf;mechFee+=mf;
+    if(settledByMechanic)owedFromMechs+=mf; else owedToMechs+=got;
+    return {id,cust:j.customerName||"—",mech:j.mechanic||"—",repair,paid,got,fee,method:j.paymentMethod||"—",settledByMechanic};
   });
   setEl("f-platform","₹"+platform.toLocaleString("en-IN"));
   setEl("f-cust-spend","₹"+custSpend.toLocaleString("en-IN"));
-  setEl("f-mech-payout","₹"+mechPayout.toLocaleString("en-IN"));
+  setEl("f-mech-payout","₹"+owedToMechs.toLocaleString("en-IN"));
   setEl("f-cust-fee","₹"+custFee.toLocaleString("en-IN"));
   setEl("f-mech-fee","₹"+mechFee.toLocaleString("en-IN"));
   setEl("f-jobs",String(rows.length));
+  const owedFromEl=document.getElementById("f-owed-from-mechs");
+  if(owedFromEl)owedFromEl.textContent="₹"+owedFromMechs.toLocaleString("en-IN");
   const tb=document.getElementById("finance-tbody");
   if(tb){
     tb.innerHTML=rows.length?rows.sort((a,b)=>b.fee-a.fee).map(r=>`<tr>
       <td><span class="mono">#${(r.id||"").slice(-6)}</span></td>
       <td style="font-size:12px">${escapeHtml(r.cust)}</td>
       <td style="font-size:12px">${escapeHtml(r.mech)}</td>
+      <td><span class="bdg ${r.method==="Cash"?"b-y":"b-b"}" style="font-size:9px">${escapeHtml(r.method)}</span></td>
       <td>₹${r.repair}</td>
       <td style="color:var(--or)">₹${r.paid}</td>
       <td style="color:var(--bl)">₹${r.got}</td>
       <td style="color:var(--gn);font-weight:700">₹${r.fee}</td>
-    </tr>`).join(""):'<tr><td colspan="7" class="empty-row">No completed paid jobs yet</td></tr>';
+      <td style="font-size:10px;color:var(--tx3)">${r.settledByMechanic?"Mechanic owes you":"You owe mechanic"}</td>
+    </tr>`).join(""):'<tr><td colspan="9" class="empty-row">No completed paid jobs yet</td></tr>';
   }
 }
+// Per-mechanic monthly settlement: nets every completed job since this mechanic was last
+// marked "paid" into one owed-either-direction total, because cash jobs (mechanic owes us
+// the 10% cut) and digital jobs (we owe the mechanic repair − 10%) pull in opposite
+// directions and previously nothing combined them into a single payable figure at all.
+function computeMechSettlements(){
+  const perMech={};
+  Object.entries(J).forEach(([id,j])=>{
+    if(j.status!=="done"||!j.mechanicId)return;
+    const settledUpTo=(M[j.mechanicId]&&M[j.mechanicId].settledUpTo)||0;
+    if((j.completedAt||0)<=settledUpTo)return; // already settled in a previous payout run
+    const repair=j.repairPrice||j.finalPrice||j.estimateLow||0;
+    const isCash=j.paymentMethod==="Cash";
+    const mf=j.mechFee!=null?j.mechFee:Math.round(repair*0.10);
+    const got=j.mechanicPayout!=null?j.mechanicPayout:(isCash?repair:repair-mf);
+    const settledByMechanic=j.settledByMechanic!=null?j.settledByMechanic:isCash;
+    const p=perMech[j.mechanicId]||(perMech[j.mechanicId]={mechId:j.mechanicId,digitalEarned:0,cashFeeOwed:0,jobCount:0});
+    p.jobCount++;
+    if(settledByMechanic)p.cashFeeOwed+=mf; else p.digitalEarned+=got;
+  });
+  return Object.values(perMech).map(p=>({
+    ...p,
+    name:(M[p.mechId]&&M[p.mechId].name)||"—",
+    net:p.digitalEarned-p.cashFeeOwed // positive = you owe mechanic, negative = mechanic owes you
+  })).sort((a,b)=>Math.abs(b.net)-Math.abs(a.net));
+}
+function renderPayouts(){
+  const tb=document.getElementById("payouts-tbody");
+  if(!tb)return;
+  const list=computeMechSettlements();
+  if(!list.length){tb.innerHTML='<tr><td colspan="6" class="empty-row">No unsettled completed jobs right now.</td></tr>';return;}
+  tb.innerHTML=list.map(p=>`<tr>
+    <td style="font-size:12px">${escapeHtml(p.name)}</td>
+    <td>${p.jobCount}</td>
+    <td style="color:var(--bl)">₹${p.digitalEarned.toLocaleString("en-IN")}</td>
+    <td style="color:var(--yw)">₹${p.cashFeeOwed.toLocaleString("en-IN")}</td>
+    <td style="font-weight:700;color:${p.net>=0?"var(--gn)":"var(--rd)"}">${p.net>=0?"You owe ₹"+p.net.toLocaleString("en-IN"):"Owes you ₹"+Math.abs(p.net).toLocaleString("en-IN")}</td>
+    <td><button class="action-btn green" style="font-size:11px" onclick="markMechSettled('${p.mechId}','${escapeHtml(p.name).replace(/'/g,"")}',${p.net})">✅ Mark month paid</button></td>
+  </tr>`).join("");
+}
+// Closes out this mechanic's running balance: logs what was settled (so there's a paper
+// trail for "how much did I pay X this month") and moves the settledUpTo cursor forward so
+// already-paid jobs never get counted into a future payout run again.
+window.markMechSettled=(mechId,name,net)=>{
+  const dirText=net>=0?("You pay "+name+" ₹"+net):(name+" owes you ₹"+Math.abs(net));
+  if(!confirm("Mark this month settled?\n\n"+dirText+"\n\nThis records the payout and resets their running balance to zero."))return;
+  const now=Date.now();
+  update(ref(db,"mechanics/"+mechId),{settledUpTo:now});
+  push(ref(db,"settlements/"+mechId),{mechId,name,net,settledAt:now,settledBy:"admin"});
+  toast("✅ Settlement recorded for "+name);
+  renderPayouts();
+};
 
 function updateKPIs(){
   const jList=Object.values(J),mList=Object.values(M),cList=Object.values(C),aList=Object.values(A);
@@ -517,6 +582,7 @@ tr.row-done td{opacity:.6}
     <div class="sb-item active" id="si-dash" onclick="showView('v-dash')"><div class="sb-ico">📊</div>Dashboard</div>
     <div class="sb-item" id="si-jobs" onclick="showView('v-jobs')"><div class="sb-ico">🔧</div>Live jobs</div>
     <div class="sb-item" id="si-finance" onclick="showView('v-finance')"><div class="sb-ico">💰</div>Finance</div>
+    <div class="sb-item" id="si-payouts" onclick="showView('v-payouts')"><div class="sb-ico">💵</div>Mechanic Payouts</div>
     <div class="sb-item" id="si-alerts" onclick="showView('v-alerts')"><div class="sb-ico">🚨</div>Alerts & SOS<span class="bdg b-y" id="br-badge" style="display:none;margin-left:auto;font-size:9px">👎 0</span></div>
     <div class="sb-sec">People</div>
     <div class="sb-item" id="si-mechs" onclick="showView('v-mechs')"><div class="sb-ico">👷</div>Mechanics</div>
@@ -577,22 +643,34 @@ tr.row-done td{opacity:.6}
         <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr)">
           <div class="kpi" style="border-color:rgba(34,197,94,.35)"><div class="kpi-ico">💰</div><div class="kpi-val" style="color:var(--gn)" id="f-platform">₹0</div><div class="kpi-lbl">Your platform earnings</div><div class="kpi-hint">14% from customers + 10% from mechanics</div></div>
           <div class="kpi"><div class="kpi-ico">🧾</div><div class="kpi-val" style="color:var(--or)" id="f-cust-spend">₹0</div><div class="kpi-lbl">Total customer spend</div><div class="kpi-hint">what customers paid in total</div></div>
-          <div class="kpi"><div class="kpi-ico">🔧</div><div class="kpi-val" style="color:var(--bl)" id="f-mech-payout">₹0</div><div class="kpi-lbl">Paid out to mechanics</div><div class="kpi-hint">after 10% commission</div></div>
+          <div class="kpi"><div class="kpi-ico">🔧</div><div class="kpi-val" style="color:var(--bl)" id="f-mech-payout">₹0</div><div class="kpi-lbl">Owed to mechanics</div><div class="kpi-hint">digital jobs, after 10% commission</div></div>
         </div>
         <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr)">
           <div class="kpi"><div class="kpi-ico">📥</div><div class="kpi-val" style="color:var(--gn);font-size:15px" id="f-cust-fee">₹0</div><div class="kpi-lbl">From customer fees (14%)</div></div>
-          <div class="kpi"><div class="kpi-ico">📤</div><div class="kpi-val" style="color:var(--gn);font-size:15px" id="f-mech-fee">₹0</div><div class="kpi-lbl">From mechanic fees (10%)</div></div>
+          <div class="kpi"><div class="kpi-ico">📤</div><div class="kpi-val" style="color:var(--yw);font-size:15px" id="f-owed-from-mechs">₹0</div><div class="kpi-lbl">Owed FROM mechanics</div><div class="kpi-hint">cash jobs' 10% commission, not yet collected</div></div>
           <div class="kpi"><div class="kpi-ico">✅</div><div class="kpi-val" style="font-size:15px" id="f-jobs">0</div><div class="kpi-lbl">Completed paid jobs</div></div>
         </div>
         <div class="info-box">
           <h3>💡 How the money works</h3>
-          <div class="info-step"><div class="info-n">1</div><div>Customer pays <strong>repair + 14%</strong> through RoadFix (UPI / card / wallet — not cash).</div></div>
-          <div class="info-step"><div class="info-n">2</div><div>RoadFix keeps its cut and <strong>pays the mechanic repair − 10%</strong> via payment-gateway payout/settlement.</div></div>
-          <div class="info-step"><div class="info-n">3</div><div>Your earnings per job = <strong>14% + 10% = 24% of the repair charge</strong>. These totals are computed live from every completed paid job.</div></div>
+          <div class="info-step"><div class="info-n">1</div><div><strong>UPI / Card / Wallet:</strong> customer pays <strong>repair + 14%</strong> straight to RoadFix. RoadFix then owes the mechanic <strong>repair − 10%</strong>, paid out at the next monthly settlement.</div></div>
+          <div class="info-step"><div class="info-n">2</div><div><strong>Cash:</strong> customer pays the <strong>mechanic directly</strong>, in full, on the spot — no customer fee. The mechanic then owes RoadFix its <strong>10% commission</strong> on that job, settled at day's end / next payout.</div></div>
+          <div class="info-step"><div class="info-n">3</div><div>Your earnings per job = <strong>14% (digital only) + 10% (always) of the repair charge</strong>, regardless of which way the cash moves. See <strong>Mechanic Payouts</strong> for the net amount owed to/from each mechanic.</div></div>
         </div>
         <div class="table-wrap">
           <div class="table-head"><div class="table-head-title">Completed jobs — money breakdown</div><span class="bdg b-g">● Live</span></div>
-          <div style="overflow-x:auto"><table><thead><tr><th style="width:80px">Job</th><th style="width:110px">Customer</th><th style="width:100px">Mechanic</th><th style="width:90px">Repair</th><th style="width:100px">Customer paid</th><th style="width:100px">Mechanic got</th><th style="width:100px">Your fee</th></tr></thead><tbody id="finance-tbody"><tr><td colspan="7" class="empty-row">No completed paid jobs yet</td></tr></tbody></table></div>
+          <div style="overflow-x:auto"><table><thead><tr><th style="width:80px">Job</th><th style="width:110px">Customer</th><th style="width:100px">Mechanic</th><th style="width:70px">Method</th><th style="width:90px">Repair</th><th style="width:100px">Customer paid</th><th style="width:100px">Mechanic got</th><th style="width:100px">Your fee</th><th style="width:120px">Settlement</th></tr></thead><tbody id="finance-tbody"><tr><td colspan="9" class="empty-row">No completed paid jobs yet</td></tr></tbody></table></div>
+        </div>
+      </div>
+      <div id="v-payouts" class="view">
+        <div class="info-box">
+          <h3>💵 Monthly mechanic settlement</h3>
+          <div class="info-step"><div class="info-n">1</div><div>Digital jobs (UPI/Card/Wallet) mean <strong>you owe the mechanic</strong> — you were paid directly, so their share is still with you.</div></div>
+          <div class="info-step"><div class="info-n">2</div><div>Cash jobs mean <strong>the mechanic owes you</strong> — they were paid directly, so your 10% commission is still with them.</div></div>
+          <div class="info-step"><div class="info-n">3</div><div>The <strong>Net</strong> column nets both directions into one number. Once you've actually paid/collected it, click <strong>Mark month paid</strong> — this resets their balance to zero so old jobs never get counted again.</div></div>
+        </div>
+        <div class="table-wrap">
+          <div class="table-head"><div class="table-head-title">Outstanding balance per mechanic</div><span class="bdg b-g">● Live</span></div>
+          <div style="overflow-x:auto"><table><thead><tr><th style="width:140px">Mechanic</th><th style="width:70px">Jobs</th><th style="width:130px">Digital earned (owed to them)</th><th style="width:130px">Cash fee owed (owed by them)</th><th style="width:160px">Net settlement</th><th style="width:150px">Action</th></tr></thead><tbody id="payouts-tbody"><tr><td colspan="6" class="empty-row">No unsettled completed jobs right now.</td></tr></tbody></table></div>
         </div>
       </div>
       <div id="v-alerts" class="view">
@@ -647,9 +725,9 @@ tr.row-done td{opacity:.6}
   </div>
 </div>
 <script>
-var views=["v-dash","v-jobs","v-finance","v-alerts","v-mechs","v-custs","v-pb"];
-var siMap={"v-dash":"si-dash","v-jobs":"si-jobs","v-finance":"si-finance","v-alerts":"si-alerts","v-mechs":"si-mechs","v-custs":"si-custs","v-pb":"si-pb"};
-var titles={"v-dash":"Dashboard","v-jobs":"Live jobs","v-finance":"Finance","v-alerts":"Alerts & SOS","v-mechs":"Mechanics","v-custs":"Customers","v-pb":"Pre-bookings"};
+var views=["v-dash","v-jobs","v-finance","v-payouts","v-alerts","v-mechs","v-custs","v-pb"];
+var siMap={"v-dash":"si-dash","v-jobs":"si-jobs","v-finance":"si-finance","v-payouts":"si-payouts","v-alerts":"si-alerts","v-mechs":"si-mechs","v-custs":"si-custs","v-pb":"si-pb"};
+var titles={"v-dash":"Dashboard","v-jobs":"Live jobs","v-finance":"Finance","v-payouts":"Mechanic Payouts","v-alerts":"Alerts & SOS","v-mechs":"Mechanics","v-custs":"Customers","v-pb":"Pre-bookings"};
 function showView(id){
   views.forEach(v=>{var e=document.getElementById(v);if(e)e.classList.remove("active");});
   var n=document.getElementById(id);if(n)n.classList.add("active");

@@ -196,13 +196,19 @@ function startListeners(){
         // guarded so it only ever fires once per job regardless of which side finished first.
         if(!completingJobIds.has(myJobId)){
           completingJobIds.add(myJobId);
-          // Mechanic is paid the repair charge minus RoadFix's 10% commission. The customer
-          // app writes mechanicPayout on the job; fall back to computing it if it's missing.
+          // What the mechanic ends up keeping depends on how the customer paid:
+          //  • Cash: they were paid the full repair amount on the spot already — RoadFix's
+          //    10% commission on it is settled up separately (see admin Mechanic Payouts).
+          //  • UPI/Card/Wallet: RoadFix holds the money and owes them repair − 10%, paid out
+          //    at the next monthly settlement.
+          // The customer app writes mechanicPayout on the job either way; fall back to the
+          // old always-digital assumption only for legacy jobs that predate this field.
           const repair=j.repairPrice||j.finalPrice||j.estimateLow||0;
-          const earn=j.mechanicPayout!=null?j.mechanicPayout:Math.round(repair*0.90);
+          const isCash=j.paymentMethod==="Cash";
+          const earn=j.mechanicPayout!=null?j.mechanicPayout:(isCash?repair:Math.round(repair*0.90));
           update(ref(db,"mechanics/"+uid),{status:"online",activeJob:null,totalJobs:(profile&&profile.totalJobs||0)+1,totalEarned:(profile&&profile.totalEarned||0)+earn});
           toast("✅ Payment received — job complete!");
-          notify("✅ Job complete","₹"+earn+" credited (after 10% RoadFix fee)");
+          notify("✅ Job complete",isCash?("₹"+earn+" collected in cash — RoadFix's 10% commission is settled separately"):("₹"+earn+" credited — paid out at your next monthly settlement"));
         }
         window._lastCompletedJobId=myJobId; // the rating screen (m-done) needs this to know which job to rate
         setJobId(null);setPendingGigId(null);shownGig=false;tx("active-job","None");hideGigBanner();watchChatForNotifications(null);

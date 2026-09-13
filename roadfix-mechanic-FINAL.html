@@ -316,6 +316,13 @@ function populateGig(id,job){
   // Show the mechanic their actual take-home (repair − 10% RoadFix fee).
   const lo=Math.round((job.estimateLow||0)*0.90),hi=Math.round((job.estimateHigh||0)*0.90);
   const ge2=ge("gig-earn");if(ge2)ge2.textContent="You earn ₹"+lo+"–₹"+hi+" (after 10% fee)";
+  // Demand-pricing transparency — this price already includes any night/availability
+  // surcharge the customer was quoted, so the mechanic can see why it's higher too.
+  const sn=ge("gig-surge-note");
+  if(sn){
+    if(job.surgeReasons&&job.surgeReasons.length){sn.style.display="block";sn.innerHTML="<svg class='ic'><use href='#i-alert-triangle'></use></svg> Includes demand pricing: "+job.surgeReasons.join(" · ");}
+    else sn.style.display="none";
+  }
   tx("gig-cust",job.customerName||"—");tx("gig-cph",job.customerPhone||"—");
   const vs=job.vehicle||((job.vehicleMake||"")+" "+(job.vehicleModel||"")+" "+(job.vehicleYear||"")+" "+(job.vehicleFuel||"")).trim();
   tx("gig-veh",vs||"Not specified");tx("gig-parts",job.partType||"OEM");tx("gig-cats",job.categories||"General");
@@ -590,14 +597,65 @@ function loadActiveJobDetails(jid){
   });
 }
 window.loadActiveJobDetails=loadActiveJobDetails; // called from the classic go() script on active/re-diagnosis screens
-// Problem 3: mechanic doesn't have the right tools on hand and needs to fetch them.
+// ── LATE-NIGHT MULTIPLIER ─────────────────────────────
+// Mirrors the customer app's pricing engine (separate static file, no shared module) —
+// used below so a garage run at 2am costs more than the same run at 2pm, same as every
+// other surcharge in RoadFix.
+const NIGHT_START_HOUR=22, NIGHT_END_HOUR=6, NIGHT_MULTIPLIER=1.30;
+function getNightMultiplier(){
+  const h=new Date().getHours();
+  return (h>=NIGHT_START_HOUR||h<NIGHT_END_HOUR)?NIGHT_MULTIPLIER:1;
+}
+// Problem 3: mechanic doesn't have the right tools on hand and needs to fetch them from
+// their garage. That round trip costs the mechanic real time and fuel, so it's no longer
+// free for the customer either — a return-trip surcharge (base fee + per-km + per-minute,
+// at the late-night rate when it applies) is calculated from a distance the mechanic
+// enters and ADDED on top of the existing estimate, then the customer is notified with the
+// new total — same treatment as a re-diagnosis price change.
+const TOOLFETCH_BASE_FEE=100, TOOLFETCH_PER_KM=15, TOOLFETCH_AVG_SPEED_KMH=25, TOOLFETCH_PER_MIN=3;
+function computeToolFetchFee(distKm){
+  distKm=Math.max(0,parseFloat(distKm)||0);
+  const minutes=distKm/TOOLFETCH_AVG_SPEED_KMH*60;
+  const base=TOOLFETCH_BASE_FEE+distKm*TOOLFETCH_PER_KM+minutes*TOOLFETCH_PER_MIN;
+  return Math.round(base*getNightMultiplier());
+}
+window.updateToolFetchEstimate=()=>{
+  const dist=gv("toolfetch-dist")||"6";
+  const fee=computeToolFetchFee(dist);
+  const el=ge("toolfetch-fee-est");
+  if(el)el.textContent="+₹"+fee+(getNightMultiplier()>1?" (late-night rate)":"");
+};
+// Opens the round-trip-distance form instead of firing an instant confirm() — the
+// surcharge amount depends on a real distance, so the mechanic sees and agrees to the
+// number before it's sent to the customer.
 window.needTools=()=>{
   const jid=getJobId();if(!jid)return;
-  if(!confirm("Tell the customer you need to fetch tools and will return shortly?"))return;
-  update(ref(db,"jobs/"+jid),{status:"fetching_tools",toolsNote:"Mechanic went to collect the required tools/parts — returning shortly",updatedAt:Date.now()});
-  // auto-post into chat so the customer sees it in context too
-  push(ref(db,"chats/"+jid),{senderId:uid,senderName:(profile&&profile.name)||"Mechanic",senderRole:"mechanic",text:"I don't have the right tools with me for this — going to collect them and will be back shortly.",time:Date.now()}).catch(()=>{});
-  toast("Customer notified — you can head back to fetch tools");
+  const form=ge("toolfetch-form");
+  if(form)form.style.display="block";
+  const btn=ge("active-tools-btn");if(btn)btn.style.display="none";
+  updateToolFetchEstimate();
+};
+window.cancelToolFetch=()=>{
+  const form=ge("toolfetch-form");if(form)form.style.display="none";
+  const btn=ge("active-tools-btn");if(btn)btn.style.display="block";
+};
+window.confirmToolFetch=async()=>{
+  const jid=getJobId();if(!jid)return;
+  const dist=Math.max(1,parseFloat(gv("toolfetch-dist")||"6")||6);
+  const fee=computeToolFetchFee(dist);
+  const jobSnap=await get(ref(db,"jobs/"+jid));
+  const job=jobSnap.val()||{};
+  const newLow=Math.round((job.estimateLow||0)+fee), newHigh=Math.round((job.estimateHigh||0)+fee);
+  update(ref(db,"jobs/"+jid),{
+    status:"fetching_tools",
+    toolsNote:"Mechanic went to collect the required tools/parts — returning shortly",
+    toolFetchDistanceKm:dist,toolFetchFee:fee,toolFetchAppliedAt:Date.now(),
+    estimateLow:newLow,estimateHigh:newHigh,updatedAt:Date.now()
+  });
+  // auto-post into chat so the customer sees the reason and the new price in context too
+  push(ref(db,"chats/"+jid),{senderId:uid,senderName:(profile&&profile.name)||"Mechanic",senderRole:"mechanic",text:"I don't have the right tools with me for this — going to collect them ("+dist+"km round trip) and will be back shortly. A ₹"+fee+" return-trip surcharge has been added — new estimate ₹"+newLow+"–₹"+newHigh+".",time:Date.now()}).catch(()=>{});
+  toast("Customer notified — ₹"+fee+" surcharge added, you can head back to fetch tools");
+  const form=ge("toolfetch-form");if(form)form.style.display="none";
   refreshActiveJobUI("fetching_tools");
 };
 // Mechanic returns after fetching tools/parts — puts the job back into the "fixing" state
@@ -614,11 +672,14 @@ window.backWithTools=()=>{
 // this prevents the mechanic completing a job while status is stuck at fetching_tools, which
 // was silently blocking the customer's confirm-&-pay prompt (that prompt keys off 'fixing').
 function refreshActiveJobUI(status){
-  const fetchWrap=ge("active-fetch-wrap"),completeWrap=ge("active-complete-wrap"),toolsBtn=ge("active-tools-btn");
+  const fetchWrap=ge("active-fetch-wrap"),completeWrap=ge("active-complete-wrap"),toolsBtn=ge("active-tools-btn"),toolfetchForm=ge("toolfetch-form");
   const isFetching=status==="fetching_tools";
   if(fetchWrap)fetchWrap.style.display=isFetching?"block":"none";
   if(completeWrap)completeWrap.style.display=isFetching?"none":"block";
   if(toolsBtn)toolsBtn.style.display=isFetching?"none":"block";
+  // Always start collapsed — needTools() is what re-opens it — so navigating back to an
+  // already-fixing job never leaves a stale distance form sitting open.
+  if(toolfetchForm)toolfetchForm.style.display="none";
   const banner=ge("active-fetch-banner");
   if(banner)banner.style.display=isFetching?"block":"none";
 }
@@ -646,17 +707,24 @@ window.reanalyzeJob=async()=>{
   }
   window._pendingReanalysis={jid,result,issue};
 };
-window.confirmReanalysis=()=>{
+window.confirmReanalysis=async()=>{
   const p=window._pendingReanalysis;if(!p)return;
   const {jid,result,issue}=p;
+  // BUGFIX: if a tool-fetch surcharge was already added to this job, a re-diagnosis used to
+  // silently wipe it out (it replaced estimateLow/High outright). Carry that surcharge
+  // forward onto the new estimate instead of losing it.
+  const jobSnap=await get(ref(db,"jobs/"+jid));
+  const job=jobSnap.val()||{};
+  const carryFee=job.toolFetchFee||0;
+  const newLow=result.low+carryFee, newHigh=result.high+carryFee;
   update(ref(db,"jobs/"+jid),{
-    estimateLow:result.low,estimateHigh:result.high,
+    estimateLow:newLow,estimateHigh:newHigh,
     aiFaults:result.faults,partsDetail:result.partsDetail||[],parts:result.parts||"",
     issue:issue,rediagnosed:true,rediagnosedAt:Date.now(),
     rediagnosedBy:(profile&&profile.name)||"Mechanic",updatedAt:Date.now()
   });
   // Tell the customer through chat + a status flag their app already watches.
-  push(ref(db,"chats/"+jid),{senderId:uid,senderName:(profile&&profile.name)||"Mechanic",senderRole:"mechanic",text:"After inspecting your vehicle, the actual issue is different from the initial AI estimate. I've re-analysed it — the updated price is ₹"+result.low+"–₹"+result.high+". Please review.",time:Date.now()}).catch(()=>{});
+  push(ref(db,"chats/"+jid),{senderId:uid,senderName:(profile&&profile.name)||"Mechanic",senderRole:"mechanic",text:"After inspecting your vehicle, the actual issue is different from the initial AI estimate. I've re-analysed it — the updated price is ₹"+newLow+"–₹"+newHigh+(carryFee?" (includes the earlier ₹"+carryFee+" tool-fetch surcharge)":"")+". Please review.",time:Date.now()}).catch(()=>{});
   window._pendingReanalysis=null;
   toast("Diagnosis updated — customer notified");
   loadActiveJobDetails(jid);
@@ -1068,6 +1136,7 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
           <div><span id="gig-origin-badge" style="display:none;font-size:9px;background:rgba(168,85,247,.15);color:var(--pu);border-radius:4px;padding:2px 5px;margin-bottom:3px;display:inline-block"><svg class="ic"><use href="#i-mic"></use></svg> AI Health Monitor alert</span><div style="font-family:var(--fh);font-size:14px;font-weight:700" id="gig-issue">—</div><div style="font-size:11px;color:var(--tx2);margin-top:2px" id="gig-loc">—</div></div>
           <div style="text-align:right"><div style="font-family:var(--fh);font-size:22px;font-weight:800;color:var(--gn)" id="gig-price">₹—</div><div style="font-size:10px;color:var(--tx3);margin-top:2px" id="gig-earn"></div></div>
         </div>
+        <div id="gig-surge-note" style="display:none;font-size:10px;color:var(--yw);font-weight:600;margin:-4px 0 9px"></div>
         <!-- CUSTOMER GPS LINK -->
         <a id="cust-gps-link" href="#" target="_blank" style="display:none;background:var(--bl2);border:1px solid rgba(96,165,250,.3);border-radius:var(--r);padding:8px 11px;text-align:center;font-size:12px;color:var(--bl);text-decoration:none;font-weight:600;display:block;margin-bottom:9px"><svg class="ic"><use href="#i-map-pin"></use></svg> Navigate to customer — Google Maps →</a>
         <div style="font-size:10px;color:var(--tx3);margin-bottom:9px" id="cust-coords"></div>
@@ -1151,6 +1220,18 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
         <button class="btn b-ghost" style="color:var(--am);border-color:rgba(234,179,8,.35)" onclick="go('m-redoai')"><svg class="ic"><use href="#i-search"></use></svg> Wrong diagnosis?</button>
         <button id="active-tools-btn" class="btn b-ghost" style="color:var(--bl);border-color:rgba(96,165,250,.35)" onclick="needTools()"><svg class="ic"><use href="#i-toolbox"></use></svg> Need to fetch tools</button>
+      </div>
+      <!-- Round-trip distance entry for the tool-fetch surcharge — shown after tapping
+           "Need to fetch tools", before it's confirmed and sent to the customer. -->
+      <div id="toolfetch-form" style="display:none;background:var(--bl2, rgba(96,165,250,.08));border:1.5px solid rgba(96,165,250,.35);border-radius:var(--r2);padding:11px;margin-bottom:10px">
+        <div style="font-size:12px;font-weight:700;color:var(--bl);margin-bottom:6px"><svg class="ic"><use href="#i-toolbox"></use></svg> Fetching tools from your garage</div>
+        <div style="font-size:11px;color:var(--tx2);margin-bottom:8px">This adds a return-trip surcharge to the customer's price — enter your real round-trip distance so it's fair.</div>
+        <div class="f"><label>Round-trip distance to garage &amp; back (km)</label><input id="toolfetch-dist" type="number" value="6" min="1" max="100" oninput="updateToolFetchEstimate()"></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:9px"><span style="font-size:11px;color:var(--tx2)">Surcharge to add</span><span id="toolfetch-fee-est" style="font-family:var(--fh);font-size:15px;font-weight:800;color:var(--bl)">+₹0</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <button class="btn b-ghost" style="margin-bottom:0" onclick="cancelToolFetch()">Cancel</button>
+          <button class="btn b-bl" style="margin-bottom:0" onclick="confirmToolFetch()">Confirm &amp; notify customer</button>
+        </div>
       </div>
       <div class="sl">Checklist</div>
       <div class="card" style="padding:7px 12px;margin-bottom:9px">

@@ -117,7 +117,7 @@ let uid=null,profile=null,selVeh=null,selPT='OEM',selPD='Company outlet',selPayM
 let cats=[],chatUnsub=null,bookedMechPhone='',bookedMechId='';
 let jobsUnsub=null,mechsUnsub=null,profUnsub=null,vehUnsub=null;
 let globalChatUnsub=null,chatSeenCount=0,chatWatchJobId=null;
-let jobHistory=[],allMechanics={},currentSearchRadius=2;
+let jobHistory=[],allMechanics={},currentSearchRadius=2,lastNearbyMechs=[];
 let completingJobIds=new Set(); // guards against double-firing job completion from the live jobs listener
 let lastNotifiedJobStatus={},lastKnownMechanicId={},lastRediagnosedAt={},lastMechDoneNotified={},lastToolFetchAt={};
 // BUGFIX: previously this was ONLY ever populated from localStorage, which starts empty
@@ -265,8 +265,8 @@ function startApp(){
       // invisible to the customer, who'd just sit on the tracking screen indefinitely.
       if(lastKnownMechanicId[myJob.id]&&!myJob.mechanicId&&myJob.status==='searching_mechanic'){
         lastKnownMechanicId[myJob.id]=null;
-        toast('Your mechanic had to cancel — please pick another');
-        notify('Mechanic cancelled',"Your mechanic couldn't make it — please pick another");
+        toast('Your mechanic had to cancel — notify nearby mechanics again');
+        notify('Mechanic cancelled',"Your mechanic couldn't make it — notify nearby mechanics again");
         currentSearchRadius=2;go('s-mechs');
       }
       if(myJob.mechanicId)lastKnownMechanicId[myJob.id]=myJob.mechanicId;
@@ -1321,9 +1321,9 @@ window.runPreventiveCheck=()=>{
 // ── NEARBY MECHANICS (GPS RADIUS SEARCH) ─────────────
 window.submitJob=()=>{
   const jid=getJobId();
-  // Don't broadcast the job yet — just save the part/delivery choice and show nearby
-  // mechanics so the customer can pick one. The job only becomes visible to a mechanic
-  // once the customer taps "Request →" on that specific mechanic (see bookMech below).
+  // Don't broadcast the job yet — just save the part/delivery choice and show the live
+  // list of nearby mechanics first. The job only becomes visible to mechanics once the
+  // customer taps "Notify nearby mechanics" (see broadcastJob below).
   if(jid)update(ref(db,'jobs/'+jid),{partType:selPT,delivery:selPD,updatedAt:Date.now()});
   currentSearchRadius=2;go('s-mechs');
 };
@@ -1389,12 +1389,14 @@ function buildMechList(){
   })();
   const vehTypeLabel=wantType==='bike'?'Bike':'Car';
   const vehTypeIcon=wantType==='bike'?'i-bike':'i-car';
+  // Stashed so broadcastJob() knows how many (and which) nearby mechanics are about to
+  // get the gig alert when the customer taps "Notify nearby mechanics" below.
+  lastNearbyMechs=nearby;
   list.innerHTML=nearby.map(([id,m])=>{
     const ini=(m.name||'M').split(' ').map(w=>w[0]).join('').substr(0,2).toUpperCase();
     const avi=m.pfp?`<img src="${m.pfp}" style="width:40px;height:40px;border-radius:50%;object-fit:cover;flex-shrink:0">`:`<div style="width:40px;height:40px;border-radius:50%;background:#1D4ED8;color:#fff;font-family:var(--fh);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${ini}</div>`;
     const dist=(hasGPS&&m.lat&&m.lng)?haversine(window._lat,window._lng,m.lat,m.lng).toFixed(1)+'km':'—';
     const mapsUrl=m.lat?`https://maps.google.com/?q=${m.lat},${m.lng}`:'';
-    const nm=(m.name||'Mechanic').replace(/'/g,"\\'"),ph=(m.phone||'').replace(/'/g,"\\'");
     const speciality=m.brandSpeciality||m.skills||'General';
     return `<div class="mrow">
       ${avi}
@@ -1405,10 +1407,17 @@ function buildMechList(){
       </div>
       <div style="text-align:right;flex-shrink:0">
         <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--or)">${priceTxt}</div>
-        <button class="bk-btn" onclick="bookMech('${id}','${nm}','${ph}')">Request →</button>
+        <span class="bdg b-g" style="margin-top:4px">Will be notified</span>
       </div>
     </div>`;
   }).join('');
+  const bbtn=ge('broadcast-btn');
+  if(bbtn){
+    bbtn.disabled=!nearby.length;
+    bbtn.style.opacity=nearby.length?'1':'.5';
+  }
+  const bbtnTxt=ge('broadcast-btn-txt');
+  if(bbtnTxt)bbtnTxt.textContent=nearby.length?`Notify ${nearby.length} nearby mechanic${nearby.length===1?'':'s'}`:'Notify nearby mechanics';
 }
 // Exposed on window because the classic <script> at the bottom (go(), which handles
 // screen navigation) calls this directly when navigating to 's-mechs' — functions
@@ -1422,20 +1431,22 @@ window.buildMechList=buildMechList;
 // (it silently creates an unrelated global instead). This wrapper does both correctly.
 window.resetMechSearch=function(){currentSearchRadius=2;buildMechList();};
 
-window.bookMech=(mechId,mechName,mechPhone)=>{
+// Broadcasts the job to EVERY nearby verified mechanic at once (Rapido-style gig alert)
+// instead of requesting one specific mechanic. Leaving preferredMechanicId unset means
+// any matching nearby mechanic's app will show this as an open gig — see the "isForMe"
+// check in the mechanic app. Whichever mechanic taps Accept first actually wins the job:
+// the mechanic app's acceptGig() now uses a Firebase transaction so two simultaneous
+// accepts can't both succeed, which is what makes "fastest wins" a real guarantee instead
+// of just a UI suggestion — this creates genuine competition among nearby mechanics.
+window.broadcastJob=()=>{
   const jid=getJobId();if(!jid){toast('Complete AI analysis first');return;}
-  bookedMechId=mechId;bookedMechPhone=mechPhone;
-  update(ref(db,'jobs/'+jid),{preferredMechanic:mechName,preferredMechanicId:mechId,status:'searching_mechanic',updatedAt:Date.now()});
-  toast('Request sent to '+mechName+' — waiting...');go('s-waiting');
-};
-// Releases whichever mechanic was requested (so their gig notification clears) and lets
-// the customer pick someone else. Previously "back()" just changed the customer's own
-// screen without telling the database anything — the original mechanic kept the request
-// sitting in their queue indefinitely.
-window.chooseAnotherMechanic=()=>{
-  const jid=getJobId();
-  if(jid)update(ref(db,'jobs/'+jid),{preferredMechanic:null,preferredMechanicId:null,status:'pending',updatedAt:Date.now()});
-  currentSearchRadius=2;go('s-mechs');
+  const count=lastNearbyMechs.length;
+  if(!count){toast('No mechanics nearby yet — hang on');return;}
+  bookedMechId='';bookedMechPhone='';
+  update(ref(db,'jobs/'+jid),{preferredMechanic:null,preferredMechanicId:null,status:'searching_mechanic',broadcastAt:Date.now(),notifiedCount:count,updatedAt:Date.now()});
+  tx('waiting-count',`${count} nearby mechanic${count===1?'':'s'}`);
+  toast(`Notified ${count} nearby mechanic${count===1?'':'s'} — first to accept gets the job!`);
+  go('s-waiting');
 };
 // Fully cancels the job. If a mechanic was already assigned, frees them back to "online"
 // so they aren't stuck showing an activeJob that no longer exists for them.
@@ -2162,12 +2173,14 @@ async function withBusy(btnId,busyLabel,fn){
   </div>
 </div>
 <div id="s-mechs" class="scr">
-  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Verified mechanics</div><span class="bdg b-g">● Live GPS</span></div>
+  <div class="topbar"><div class="back" onclick="back()">← Back</div><div class="pgt">Find a mechanic</div><span class="bdg b-g">● Live GPS</span></div>
   <div class="sb">
     <div class="sec">
       <div class="radius-bar" id="radius-lbl" style="font-size:12px;color:var(--bl);font-weight:600">Finding mechanics near you...</div>
       <div id="mechs-surge-note" style="display:none;font-size:11px;color:var(--yw);font-weight:600;text-align:center;margin-bottom:9px"></div>
-      <div id="mech-list" style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);overflow:hidden"><div style="text-align:center;padding:16px;color:var(--tx3);font-size:12px">Loading...</div></div>
+      <div id="mech-list" style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r2);overflow:hidden;margin-bottom:12px"><div style="text-align:center;padding:16px;color:var(--tx3);font-size:12px">Loading...</div></div>
+      <button class="btn b-or" id="broadcast-btn" onclick="broadcastJob()" disabled style="opacity:.5"><svg class="ic"><use href="#i-bell"></use></svg> <span id="broadcast-btn-txt">Notify nearby mechanics</span></button>
+      <div style="font-size:11px;color:var(--tx3);text-align:center;margin-top:6px;line-height:1.6">Every mechanic above gets the alert at the same time — whoever accepts first gets the job.</div>
     </div>
   </div>
 </div>
@@ -2176,9 +2189,9 @@ async function withBusy(btnId,busyLabel,fn){
   <div class="sb">
     <div class="sec" style="text-align:center;padding-top:36px">
       <div style="font-size:52px;margin-bottom:14px;animation:pp 1.5s infinite">⏳</div>
-      <div style="font-family:var(--fh);font-size:19px;font-weight:800;margin-bottom:8px">Request sent!</div>
-      <div style="font-size:13px;color:var(--tx2);margin-bottom:22px;line-height:1.8">Waiting for mechanic acceptance.<br><strong style="color:var(--gn)">You'll auto-redirect when they accept.</strong></div>
-      <button class="btn b-ghost" onclick="chooseAnotherMechanic()">← Choose different mechanic</button>
+      <div style="font-family:var(--fh);font-size:19px;font-weight:800;margin-bottom:8px">Nearby mechanics notified!</div>
+      <div style="font-size:13px;color:var(--tx2);margin-bottom:22px;line-height:1.8"><span id="waiting-count">Every nearby mechanic</span> just got this job alert — it's first come, first served.<br><strong style="color:var(--gn)">You'll auto-redirect the moment someone accepts.</strong></div>
+      <button class="btn b-ghost" onclick="resetMechSearch();go('s-mechs')">← Back to mechanic list</button>
       <button class="btn b-ghost" style="color:var(--rd);margin-top:8px" onclick="cancelJobRequest()">Cancel request</button>
     </div>
   </div>

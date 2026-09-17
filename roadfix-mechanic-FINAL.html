@@ -78,7 +78,7 @@ fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoi
 <script type="module">
 import{initializeApp}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import{getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,onAuthStateChanged,sendPasswordResetEmail,setPersistence,browserLocalPersistence}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import{getDatabase,ref,set,push,onValue,update,get,onDisconnect,goOnline}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+import{getDatabase,ref,set,push,onValue,update,get,onDisconnect,goOnline,runTransaction}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 import{getStorage,ref as sref,uploadString,getDownloadURL}from"https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
 const app=initializeApp({apiKey:"AIzaSyC7B9o5Q_xyys8zS05MCM0461agxV6EtMQ",authDomain:"roadfix-demo.firebaseapp.com",databaseURL:"https://roadfix-demo-default-rtdb.asia-southeast1.firebasedatabase.app",projectId:"roadfix-demo",storageBucket:"roadfix-demo.firebasestorage.app",messagingSenderId:"274952184107",appId:"1:274952184107:web:63188439d92ec31103a56e"});
 const auth=getAuth(app),db=getDatabase(app),storage=getStorage(app);
@@ -329,6 +329,9 @@ function populateGig(id,job){
   // AI Health Monitor origin badge — flags jobs that came from a customer's health-check
   // alert rather than a manual "report issue", so the mechanic knows it's a pre-emptive job.
   const ob=ge("gig-origin-badge");if(ob)ob.style.display=job.aiHealthOrigin?"inline-block":"none";
+  // Race note — only open broadcasts (no preferredMechanicId) are being shown to multiple
+  // mechanics at once, so only those actually have competition to warn about.
+  const rn=ge("gig-race-note");if(rn)rn.style.display=job.preferredMechanicId?"none":"flex";
   const isTow=job.serviceType==="towing";
   const pc=ge("parts-to-carry"),tb=ge("tow-info-box");
   if(isTow){
@@ -541,17 +544,39 @@ window.doLogout=async()=>{
 window.acceptGig=()=>{
   const pendingId=getPendingGigId();if(!pendingId){toast("No gig available");return;}
   const p=profile||{};
-  get(ref(db,"jobs/"+pendingId)).then(snap=>{
-    const job=snap.val();
-    if(!job){toast("Job no longer exists");hideGigBanner();shownGig=false;return;}
-    if(job.status!=="searching_mechanic"||job.mechanicId){toast("Job already taken");hideGigBanner();shownGig=false;back();return;}
-    if(job.preferredMechanicId&&job.preferredMechanicId!==uid){toast("This job was requested for another mechanic");hideGigBanner();shownGig=false;back();return;}
-    update(ref(db,"jobs/"+pendingId),{status:"mechanic_assigned",mechanic:p.name,mechanicId:uid,mechanicPhone:p.phone||"—",mechanicVehicleType:p.vehicleType||"car",updatedAt:Date.now()});
+  // An open broadcast gig (no preferredMechanicId) can be showing on several mechanics'
+  // screens at once — this is the Rapido-style "fastest mechanic wins" model. A plain
+  // get()-then-update() has a race window where two mechanics who tap Accept within
+  // milliseconds of each other could BOTH pass the "still open" check and both write,
+  // double-booking the job. runTransaction re-reads the live server value right before
+  // writing and retries automatically on conflict, so only the very first accept that
+  // reaches the server actually commits — everyone else's write is rejected atomically.
+  runTransaction(ref(db,"jobs/"+pendingId),(job)=>{
+    if(job===null)return; // job deleted — nothing to claim, abort
+    if(job.status!=="searching_mechanic"||job.mechanicId)return; // already taken — abort
+    if(job.preferredMechanicId&&job.preferredMechanicId!==uid)return; // reserved for someone else — abort
+    job.status="mechanic_assigned";
+    job.mechanic=p.name||"Mechanic";
+    job.mechanicId=uid;
+    job.mechanicPhone=p.phone||"—";
+    job.mechanicVehicleType=p.vehicleType||"car";
+    job.updatedAt=Date.now();
+    return job;
+  }).then(result=>{
+    const committed=result&&result.committed;
+    const job=result&&result.snapshot&&result.snapshot.val();
+    if(!committed||!job||job.mechanicId!==uid){
+      toast(job?"Too slow — another mechanic already accepted":"Job no longer exists");
+      hideGigBanner();shownGig=false;setPendingGigId(null);back();
+      return;
+    }
     setTimeout(()=>update(ref(db,"jobs/"+pendingId),{status:"enroute"}),800);
     update(ref(db,"mechanics/"+uid),{status:"enroute",activeJob:pendingId,eta:4});
     setJobId(pendingId);setPendingGigId(null);
     tx("active-job",job.issue||"Active job");hideGigBanner();shownGig=false;
     toast("Gig accepted! Head to customer.");go("m-nav");
+  }).catch(()=>{
+    toast("Couldn't accept that gig — please try again");
   });
 };
 window.declineGig=()=>{shownGig=false;setPendingGigId(null);hideGigBanner();back();};
@@ -1131,6 +1156,7 @@ async function uploadPfp(file,path){const small=await resizeImg(file);const r=sr
   <div class="sb">
     <div class="sec">
       <div style="background:var(--rd2);border:1px solid rgba(248,113,113,.3);border-radius:var(--r);padding:8px 11px;display:flex;align-items:center;gap:7px;margin-bottom:11px;animation:bi 1.5s 3"><span style="font-size:17px"><svg class="ic"><use href="#i-siren"></use></svg></span><span style="font-size:12px;font-weight:700;color:var(--rd);font-family:var(--fh)">New job — respond quickly!</span></div>
+      <div id="gig-race-note" style="display:none;background:var(--am2,rgba(251,191,36,.12));border:1px solid rgba(251,191,36,.3);border-radius:var(--r);padding:7px 11px;font-size:11px;font-weight:600;color:var(--am);margin-bottom:11px"><svg class="ic"><use href="#i-zap"></use></svg> Other nearby mechanics are seeing this too — first to accept wins the job</div>
       <div style="background:var(--card);border:1.5px solid rgba(96,165,250,.28);border-radius:var(--r2);padding:15px;margin-bottom:10px">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:11px">
           <div><span id="gig-origin-badge" style="display:none;font-size:9px;background:rgba(168,85,247,.15);color:var(--pu);border-radius:4px;padding:2px 5px;margin-bottom:3px;display:inline-block"><svg class="ic"><use href="#i-mic"></use></svg> AI Health Monitor alert</span><div style="font-family:var(--fh);font-size:14px;font-weight:700" id="gig-issue">—</div><div style="font-size:11px;color:var(--tx2);margin-top:2px" id="gig-loc">—</div></div>
